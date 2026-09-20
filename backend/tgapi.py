@@ -46,6 +46,22 @@ async def send_photo_by_id(chat_id, file_id, caption=None, kb=None):
     return await tg("sendPhoto", **payload)
 
 
+async def send_photo_bytes(chat_id, data: bytes, filename: str = "photo.jpg", caption=None, kb=None):
+    payload = {"chat_id": str(chat_id)}
+    if caption:
+        payload["caption"] = caption
+        payload["parse_mode"] = "HTML"
+    if kb:
+        payload["reply_markup"] = kb
+    async with httpx.AsyncClient(timeout=120) as c:
+        r = await c.post(
+            f"{API}/sendPhoto",
+            data=payload,
+            files={"photo": (filename, data, "image/jpeg")},
+        )
+        return r.json()
+
+
 async def send_document(chat_id, data: bytes, filename: str, caption=None):
     payload = {"chat_id": str(chat_id)}
     if caption:
