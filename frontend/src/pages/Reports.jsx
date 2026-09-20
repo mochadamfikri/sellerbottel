@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Download, RefreshCw } from "lucide-react";
 import api, { fmtAmount } from "../lib/api";
 
@@ -17,7 +17,7 @@ export default function Reports() {
     currency,
   });
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const { data: result } = await api.get("/admin/reports", { params: params() });
