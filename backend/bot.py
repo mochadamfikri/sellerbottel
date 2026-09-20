@@ -4,6 +4,7 @@ import math
 import re
 import asyncio
 import secrets
+from html import escape
 from db import db, get_settings
 from rates import get_rate
 from chain import verify_tx, looks_like_tx_hash
@@ -874,24 +875,137 @@ async def show_balance(chat_id, user):
 
 async def show_history(chat_id, user):
     lang = user.get("lang", "id")
-    deps = await db.deposits.find({"user_tid": user["telegram_id"]}).sort("created_at", -1).to_list(5)
-    purs = await db.purchases.find({"user_tid": user["telegram_id"]}).sort("created_at", -1).to_list(5)
-    st = {"pending": "st_pending", "approved": "st_approved", "rejected": "st_rejected", "cancelled": "st_cancelled"}
-    lines = [t(lang, "hist_header"), t(lang, "hist_deposits")]
-    if deps:
-        for d in deps:
-            amt = d.get("credited_amount") or d["amount"]
-            lines.append(f"• {fmt_amount(amt, d['currency'])} — {t(lang, st.get(d['status'], 'st_pending'))} — {d['created_at'][:10]}")
-    else:
-        lines.append(t(lang, "hist_none_dep"))
-    lines.append(t(lang, "hist_purchases"))
-    if purs:
-        for p in purs:
-            names = ", ".join(f"{i['name']}×{i.get('qty',1)}" for i in p["items"])
-            lines.append(f"• {names} — {fmt_amount(p['total'], p['currency'])} — {p['created_at'][:10]}")
-    else:
-        lines.append(t(lang, "hist_none_pur"))
-    await send_message(chat_id, "\n".join(lines), kb=back_kb(lang))
+    tid = user["telegram_id"]
+    deps = await db.deposits.find({"user_tid": tid}).sort("created_at", -1).limit(20).to_list(20)
+    purs = await db.purchases.find({"user_tid": tid}).sort("created_at", -1).limit(20).to_list(20)
+
+    events = []
+    for d in deps:
+        events.append(("deposit", d.get("created_at") or "", d))
+    for o in purs:
+        events.append(("order", o.get("created_at") or "", o))
+    events.sort(key=lambda x: x[1], reverse=True)
+    events = events[:20]
+
+    if not events:
+        await send_message(chat_id, t(lang, "hist_header") + "\n\nBelum ada transaksi.", kb=back_kb(lang))
+        return
+
+    status_labels = {
+        "pending": "⏳ Pending", "approved": "✅ Disetujui", "rejected": "❌ Ditolak",
+        "cancelled": "🚫 Dibatalkan", "expired": "⌛ Kedaluwarsa", "paid": "💳 Dibayar",
+        "processing": "⚙️ Diproses", "delivered": "✅ Selesai", "delivery_failed": "⚠️ Gagal Kirim",
+        "failed": "❌ Gagal", "refunded": "↩️ Refund",
+    }
+    lines = [t(lang, "hist_header"), ""]
+    rows = []
+    for kind, _, item in events:
+        if kind == "order":
+            invoice = item.get("invoice_id", "-")
+            names = ", ".join(f"{escape(str(i.get('name','Produk')))} ×{i.get('qty',1)}" for i in item.get("items", []))
+            label = f"🧾 <code>{escape(invoice)}</code> — {fmt_amount(item.get('total', 0), item.get('currency','IDR'))}"
+            lines.append(f"{label}\n   {names}\n   {status_labels.get(item.get('status'), item.get('status','-'))}")
+            rows.append([{"text": f"🧾 {invoice} — Detail", "callback_data": f"hist:ord:{item['_id']}"}])
+        else:
+            dep_id = item.get("_id", "")
+            amount = item.get("payment_amount") or item.get("amount") or 0
+            method = "GoPay QR" if item.get("method") == "gopay" else (item.get("method") or "Deposit")
+            lines.append(f"💰 {method} — {fmt_amount(amount, item.get('currency','IDR'))}\n   {status_labels.get(item.get('status'), item.get('status','-'))}")
+            rows.append([{"text": f"💰 Deposit — Detail", "callback_data": f"hist:dep:{dep_id}"}])
+
+    rows.append([{"text": t(lang, "btn_main"), "callback_data": "menu:main"}])
+    await send_message(chat_id, "\n".join(lines), kb={"inline_keyboard": rows})
+
+
+async def show_order_history_detail(chat_id, user, order_id):
+    lang = user.get("lang", "id")
+    order = await db.purchases.find_one({"_id": order_id, "user_tid": user["telegram_id"]})
+    if not order:
+        await send_message(chat_id, "Transaksi tidak ditemukan.", kb=back_kb(lang))
+        return
+
+    status_labels = {
+        "pending": "⏳ Pending", "paid": "💳 Dibayar", "processing": "⚙️ Diproses",
+        "delivered": "✅ Selesai", "delivery_failed": "⚠️ Gagal Kirim",
+        "failed": "❌ Gagal", "refunded": "↩️ Refund",
+    }
+    lines = [
+        "🧾 <b>Detail Invoice</b>",
+        f"Invoice: <code>{escape(str(order.get('invoice_id','-')))}</code>",
+        f"Order ID: <code>{escape(str(order.get('_id','-')))}</code>",
+        f"Tanggal transaksi: <b>{escape(str(order.get('created_at','-')))}</b>",
+        f"Status: <b>{status_labels.get(order.get('status'), order.get('status','-'))}</b>",
+        f"Metode pembayaran: <b>{escape(str(order.get('payment_method','balance')))}</b>",
+        "",
+        "<b>Produk yang dibeli:</b>",
+    ]
+    for item in order.get("items", []):
+        name = escape(str(item.get("name", "Produk")))
+        qty = int(item.get("qty") or 0)
+        unit = fmt_amount(item.get("unit_price", 0), order.get("currency", "IDR"))
+        subtotal = fmt_amount(item.get("subtotal", 0), order.get("currency", "IDR"))
+        discount = fmt_amount(item.get("discount_total", 0), order.get("currency", "IDR"))
+        lines.append(f"• <b>{name}</b> ×{qty}")
+        lines.append(f"  Harga/unit: {unit} | Subtotal: {subtotal}")
+        if float(item.get("discount_total") or 0) > 0:
+            lines.append(f"  Diskon: {discount}" + (f" ({escape(str(item.get('discount_name')) )})" if item.get("discount_name") else ""))
+    lines.extend([
+        "",
+        f"Total diskon: <b>{fmt_amount(order.get('discount_total',0), order.get('currency','IDR'))}</b>",
+        f"Coupon: <b>{escape(str(order.get('coupon_code') or '-'))}</b>",
+        f"Total transaksi: <b>{fmt_amount(order.get('total',0), order.get('currency','IDR'))}</b>",
+    ])
+    if order.get("paid_at"):
+        lines.append(f"Dibayar: {escape(str(order['paid_at']))}")
+    if order.get("delivered_at"):
+        lines.append(f"Dikirim: {escape(str(order['delivered_at']))}")
+    if order.get("delivery_error"):
+        lines.append(f"Catatan: <b>{escape(str(order['delivery_error']))}</b>")
+    await send_message(chat_id, "\n".join(lines), kb={"inline_keyboard": [
+        [{"text": t(lang, "hist_back"), "callback_data": "menu:history"}],
+        [{"text": t(lang, "btn_main"), "callback_data": "menu:main"}],
+    ]})
+
+
+async def show_deposit_history_detail(chat_id, user, dep_id):
+    lang = user.get("lang", "id")
+    dep = await db.deposits.find_one({"_id": dep_id, "user_tid": user["telegram_id"]})
+    if not dep:
+        await send_message(chat_id, "Deposit tidak ditemukan.", kb=back_kb(lang))
+        return
+
+    status_labels = {
+        "pending": "⏳ Pending", "approved": "✅ Disetujui", "rejected": "❌ Ditolak",
+        "cancelled": "🚫 Dibatalkan", "expired": "⌛ Kedaluwarsa",
+    }
+    lines = [
+        "💰 <b>Detail Deposit</b>",
+        f"Deposit ID: <code>{escape(str(dep.get('_id','-')))}</code>",
+        f"Tanggal: <b>{escape(str(dep.get('created_at','-')))}</b>",
+        f"Metode: <b>{escape(str(dep.get('method','-')))}</b>",
+        f"Status: <b>{status_labels.get(dep.get('status'), dep.get('status','-'))}</b>",
+        f"Deposit: <b>{fmt_amount(dep.get('amount',0), dep.get('currency','IDR'))}</b>",
+    ]
+    if dep.get("admin_fee") is not None:
+        lines.append(f"Admin fee 0.7%: <b>{fmt_amount(dep.get('admin_fee'), dep.get('currency','IDR'))}</b>")
+    if dep.get("platform_code") is not None:
+        lines.append(f"Admin platform: <b>{dep.get('platform_code')}</b>")
+    if dep.get("payment_amount") is not None:
+        lines.append(f"Total dibayarkan: <b>{fmt_amount(dep.get('payment_amount'), dep.get('currency','IDR'))}</b>")
+    if dep.get("credited_amount") is not None:
+        lines.append(f"Saldo dikreditkan: <b>{fmt_amount(dep.get('credited_amount'), dep.get('currency','IDR'))}</b>")
+    if dep.get("coin"):
+        lines.append(f"Koin/Jaringan: <b>{escape(str(dep.get('coin')))} / {escape(str(dep.get('network')))}</b>")
+    if dep.get("tx_hash"):
+        lines.append(f"TX: <code>{escape(str(dep.get('tx_hash')))}</code>")
+    if dep.get("gopay_tx_id"):
+        lines.append(f"GoPay TX: <code>{escape(str(dep.get('gopay_tx_id')))}</code>")
+    if dep.get("decided_at"):
+        lines.append(f"Diproses: {escape(str(dep.get('decided_at')))}")
+    await send_message(chat_id, "\n".join(lines), kb={"inline_keyboard": [
+        [{"text": t(lang, "hist_back"), "callback_data": "menu:history"}],
+        [{"text": t(lang, "btn_main"), "callback_data": "menu:main"}],
+    ]})
 
 
 async def show_settings(chat_id, user):
@@ -1111,6 +1225,10 @@ async def handle_callback(cb):
         await show_balance(chat_id, user)
     elif data == "menu:history":
         await show_history(chat_id, user)
+    elif data.startswith("hist:ord:"):
+        await show_order_history_detail(chat_id, user, data.split(":", 2)[2])
+    elif data.startswith("hist:dep:"):
+        await show_deposit_history_detail(chat_id, user, data.split(":", 2)[2])
     elif data == "menu:settings":
         await show_settings(chat_id, user)
     elif data == "langmenu":
