@@ -38,6 +38,11 @@ async def ensure_settings():
 
 
 async def ensure_indexes():
+    try:
+        await db.inventory_items.drop_index("fingerprint_1")
+    except Exception:
+        pass
+
     await db.bot_users.create_index("telegram_id", unique=True)
     await db.deposits.create_index(
         "tx_hash",
