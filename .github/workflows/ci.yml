@@ -34,3 +34,21 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm run build
+
+  gopay:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend/gobiz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install GoBiz provider dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Check GoBiz JavaScript
+        run: |
+          node --check gobiz.js
+          node --check create_qris.mjs
+          node --check history.mjs
