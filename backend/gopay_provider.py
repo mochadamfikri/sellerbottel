@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import uuid
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from pymongo.errors import DuplicateKeyError
@@ -43,7 +44,8 @@ async def create_gopay_payment(user, amount):
     expires = datetime.now(timezone.utc) + timedelta(minutes=15)
 
     active_amount = None
-    for suffix in range(1, 1000):
+    for _ in range(200):
+        suffix = secrets.randbelow(9000) + 1000
         candidate = amount + suffix
         try:
             await db.gopay_payments.insert_one({
