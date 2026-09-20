@@ -15,7 +15,7 @@ from pathlib import Path
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") if os.environ.get("REACT_APP_BACKEND_URL") else \
-    "https://tg-product-seller.preview.emergentagent.com"
+    "http://127.0.0.1:8000"
 TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]

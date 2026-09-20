@@ -15,7 +15,6 @@ from auth import router as auth_router, seed_admin
 from admin_routes import router as admin_router
 from bot import process_update
 from i18n import load_overrides
-from storage import init_storage
 from tgapi import tg
 from gopay_provider import run_gopay_monitor
 
@@ -80,11 +79,6 @@ async def startup():
     await ensure_indexes()
     await load_overrides(db.bot_messages)
     await seed_admin()
-    try:
-        await init_storage()
-        logger.info("Object storage initialized")
-    except Exception as e:
-        logger.error(f"Storage init failed: {e}")
     base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
     if os.environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}:
         app.state.gopay_stop = asyncio.Event()
