@@ -352,17 +352,34 @@ async def deliver_inventory(chat_id, product, lines):
 
 
 def build_invoice_text(order):
+    currency = order.get("currency", "IDR")
     lines = [
-        f"<b>{order['invoice_id']}</b>",
-        f"tanggal transaksi: {order['created_at'][:10]}",
-        "terimakasih telah membeli",
+        f"<b>Invoice {escape(str(order.get('invoice_id', '-')))}</b>",
+        f"tanggal transaksi: {escape(str(order.get('created_at', '-')))}",
+        f"status: <b>{escape(str(order.get('status', 'pending')))}</b>",
+        f"metode pembayaran: <b>{escape(str(order.get('payment_method', 'balance')))}</b>",
         "",
-        "berikut list pembelian anda",
+        "<b>Detail pembelian:</b>",
     ]
-    for item in order["items"]:
-        lines.append(f"nama product: {item['name']}")
-        lines.append(f"quantity: {item['qty']}")
+    for item in order.get("items", []):
+        name = escape(str(item.get("name", "Produk")))
+        qty = int(item.get("qty") or 0)
+        unit = fmt_amount(item.get("unit_price", 0), currency)
+        subtotal = fmt_amount(item.get("subtotal", 0), currency)
+        lines.append(f"• <b>{name}</b>")
+        lines.append(f"  quantity: {qty} akun/item")
+        lines.append(f"  harga/unit: {unit}")
+        lines.append(f"  subtotal: {subtotal}")
+        if float(item.get("discount_total") or 0) > 0:
+            lines.append(f"  diskon: {fmt_amount(item.get('discount_total'), currency)}")
 
+    lines.extend([
+        "",
+        f"total diskon: <b>{fmt_amount(order.get('discount_total', 0), currency)}</b>",
+        f"total transaksi: <b>{fmt_amount(order.get('total', 0), currency)}</b>",
+        "",
+        "terimakasih telah membeli.",
+    ])
     return "\n".join(lines)
 
 
