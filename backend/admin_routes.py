@@ -1,16 +1,18 @@
 import io
 import csv
 import uuid
+import asyncio
+import re
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response
 from pydantic import BaseModel
-from i18n import t
+from i18n import t, message_catalog, set_override, reset_override, STRINGS
 from db import db, get_settings
 from auth import get_current_admin
 from rates import get_rate
 from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso
 from storage import put_object
-from tgapi import download_telegram_file, send_message
+from tgapi import download_telegram_file, send_message, send_photo_bytes
 from inventory import validate_items, add_items, available_count
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(get_current_admin)])
@@ -409,6 +411,316 @@ async def update_settings(body: SettingsBody):
     s = await get_settings()
     s["current_rate"] = await get_rate()
     return s
+
+
+# ============ BOT MESSAGES ============
+
+ALLOWED_PLACEHOLDERS = {
+    "user_name", "username", "product_name", "quantity", "price", "balance",
+    "invoice_id", "date", "order_id", "total", "currency", "amount",
+    "network", "coin", "reason", "name", "lang", "cur", "stock", "short",
+    "type", "desc", "bank", "account", "holder", "min", "r",
+}
+ALLOWED_HTML_TAGS = {"b", "strong", "i", "em", "u", "s", "code", "pre", "br", "a", "blockquote"}
+
+
+def validate_bot_message(text: str):
+    placeholders = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", text))
+    unknown = sorted(placeholders - ALLOWED_PLACEHOLDERS)
+    tags = re.findall(r"</?([a-zA-Z][a-zA-Z0-9]*)", text)
+    invalid_tags = sorted(set(tag.lower() for tag in tags) - ALLOWED_HTML_TAGS)
+    if unknown:
+        raise HTTPException(400, f"Placeholder tidak diizinkan: {', '.join(unknown)}")
+    if invalid_tags:
+        raise HTTPException(400, f"HTML tag tidak diizinkan: {', '.join(invalid_tags)}")
+
+
+@router.get("/messages")
+async def list_messages():
+    docs = []
+    for lang in ("id", "en"):
+        for key in message_catalog():
+            override = await db.bot_messages.find_one({"lang": lang, "key": key})
+            docs.append({
+                "lang": lang,
+                "key": key,
+                "default": STRINGS[lang].get(key, STRINGS["id"].get(key, key)),
+                "text": override.get("text") if override else STRINGS[lang].get(key, STRINGS["id"].get(key, key)),
+                "custom": bool(override),
+            })
+    return docs
+
+
+class MessageBody(BaseModel):
+    text: str
+
+
+@router.put("/messages/{lang}/{key}")
+async def update_message(lang: str, key: str, body: MessageBody):
+    if lang not in ("id", "en") or key not in message_catalog():
+        raise HTTPException(404, "Message key tidak ditemukan")
+    validate_bot_message(body.text)
+    await db.bot_messages.update_one(
+        {"lang": lang, "key": key},
+        {"$set": {"text": body.text, "active": True, "updated_at": now_iso()}},
+        upsert=True,
+    )
+    set_override(lang, key, body.text)
+    return {"lang": lang, "key": key, "text": body.text, "custom": True}
+
+
+@router.delete("/messages/{lang}/{key}")
+async def reset_message(lang: str, key: str):
+    await db.bot_messages.delete_one({"lang": lang, "key": key})
+    reset_override(lang, key)
+    return {"ok": True}
+
+
+# ============ USERS / SEARCH ============
+
+@router.get("/users/search")
+async def search_users(
+    search: str = "",
+    status: str = "all",
+    lang: str = "all",
+    has_deposit: str = "all",
+    has_order: str = "all",
+    limit: int = 200,
+):
+    query = {}
+    search = search.strip()
+    if search:
+        parts = []
+        if search.isdigit():
+            parts.append({"telegram_id": int(search)})
+        parts.extend([
+            {"username": {"$regex": re.escape(search), "$options": "i"}},
+            {"first_name": {"$regex": re.escape(search), "$options": "i"}},
+        ])
+        query["$or"] = parts
+    if status == "frozen":
+        query["frozen"] = True
+    elif status == "active":
+        query["frozen"] = {"$ne": True}
+    if lang in ("id", "en"):
+        query["lang"] = lang
+
+    users = await db.bot_users.find(query).sort("created_at", -1).limit(max(1, min(limit, 500))).to_list(max(1, min(limit, 500)))
+
+    deposit_map = {}
+    dep_cur = db.deposits.find({"status": "approved"}, {"user_tid": 1, "amount": 1, "credited_amount": 1})
+    async for dep in dep_cur:
+        deposit_map.setdefault(dep["user_tid"], 0.0)
+        deposit_map[dep["user_tid"]] += float(dep.get("credited_amount") or dep.get("amount") or 0)
+
+    order_map = {}
+    order_cur = db.purchases.find({}, {"user_tid": 1, "total": 1})
+    async for order in order_cur:
+        row = order_map.setdefault(order["user_tid"], {"count": 0, "spending": 0.0})
+        row["count"] += 1
+        row["spending"] += float(order.get("total") or 0)
+
+    result = []
+    for user in users:
+        tid = user["telegram_id"]
+        dep_total = deposit_map.get(tid, 0.0)
+        stats = order_map.get(tid, {"count": 0, "spending": 0.0})
+        if has_deposit == "yes" and dep_total <= 0:
+            continue
+        if has_deposit == "no" and dep_total > 0:
+            continue
+        if has_order == "yes" and stats["count"] <= 0:
+            continue
+        if has_order == "no" and stats["count"] > 0:
+            continue
+        user.pop("state", None)
+        user.pop("state_data", None)
+        user["total_deposit"] = dep_total
+        user["order_count"] = stats["count"]
+        user["total_spending"] = stats["spending"]
+        result.append(user)
+
+    return result
+
+
+# ============ DISCOUNTS ============
+
+class DiscountBody(BaseModel):
+    name: str
+    product_ids: list[str] = []
+    mode: str = "percent"
+    value: float = 0.0
+    min_qty: int = 1
+    max_qty: Optional[int] = None
+    active: bool = True
+    starts_at: Optional[str] = None
+    ends_at: Optional[str] = None
+    priority: int = 0
+
+
+@router.get("/discounts")
+async def list_discounts():
+    return await db.discounts.find().sort([("priority", -1), ("created_at", -1)]).to_list(500)
+
+
+@router.post("/discounts")
+async def create_discount(body: DiscountBody):
+    if body.mode not in {"percent", "fixed"}:
+        raise HTTPException(400, "Mode discount harus percent atau fixed")
+    if body.value <= 0:
+        raise HTTPException(400, "Nilai discount harus lebih dari 0")
+    if body.mode == "percent" and body.value > 100:
+        raise HTTPException(400, "Percent discount maksimal 100%")
+    if body.min_qty < 1:
+        raise HTTPException(400, "min_qty minimal 1")
+    doc = {
+        "_id": str(uuid.uuid4()),
+        **body.model_dump(),
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    await db.discounts.insert_one(doc)
+    return doc
+
+
+@router.put("/discounts/{did}")
+async def update_discount(did: str, body: DiscountBody):
+    await db.discounts.update_one({"_id": did}, {"$set": {**body.model_dump(), "updated_at": now_iso()}})
+    doc = await db.discounts.find_one({"_id": did})
+    if not doc:
+        raise HTTPException(404, "Discount tidak ditemukan")
+    return doc
+
+
+@router.patch("/discounts/{did}/toggle")
+async def toggle_discount(did: str):
+    doc = await db.discounts.find_one({"_id": did})
+    if not doc:
+        raise HTTPException(404, "Discount tidak ditemukan")
+    active = not doc.get("active", True)
+    await db.discounts.update_one({"_id": did}, {"$set": {"active": active, "updated_at": now_iso()}})
+    return {"active": active}
+
+
+@router.delete("/discounts/{did}")
+async def delete_discount(did: str):
+    await db.discounts.delete_one({"_id": did})
+    return {"ok": True}
+
+
+# ============ BROADCAST ============
+
+async def _broadcast_worker(
+    broadcast_id: str,
+    query: dict,
+    text_body: str,
+    photo_bytes: bytes | None,
+    filename: str | None,
+    button_text: str | None,
+    button_url: str | None,
+):
+    success = failed = blocked = 0
+    cursor = db.bot_users.find(query, {"telegram_id": 1})
+    async for user in cursor:
+        tid = user["telegram_id"]
+        kb = None
+        if button_text and button_url:
+            kb = {"inline_keyboard": [[{"text": button_text, "url": button_url}]]}
+        try:
+            if photo_bytes:
+                result = await send_photo_bytes(
+                    tid,
+                    photo_bytes,
+                    filename or "broadcast.jpg",
+                    caption=text_body,
+                    kb=kb,
+                )
+            else:
+                result = await send_message(tid, text_body, kb=kb)
+            if result.get("ok"):
+                success += 1
+            else:
+                failed += 1
+                if result.get("error_code") == 403:
+                    blocked += 1
+                    await db.bot_users.update_one({"telegram_id": tid}, {"$set": {"blocked": True}})
+        except Exception:
+            failed += 1
+        if (success + failed) % 20 == 0:
+            await db.broadcasts.update_one(
+                {"_id": broadcast_id},
+                {"$set": {"success": success, "failed": failed, "blocked": blocked}},
+            )
+        await asyncio.sleep(0.08)
+
+    await db.broadcasts.update_one(
+        {"_id": broadcast_id},
+        {
+            "$set": {
+                "status": "completed",
+                "success": success,
+                "failed": failed,
+                "blocked": blocked,
+                "finished_at": now_iso(),
+            }
+        },
+    )
+
+
+@router.post("/broadcasts")
+async def create_broadcast(
+    text: str = Form(...),
+    lang: str = Form("all"),
+    search: str = Form(""),
+    status: str = Form("all"),
+    button_text: str = Form(""),
+    button_url: str = Form(""),
+    photo: Optional[UploadFile] = File(None),
+):
+    if not text.strip():
+        raise HTTPException(400, "Pesan broadcast kosong")
+    query = {}
+    if lang in ("id", "en"):
+        query["lang"] = lang
+    if status == "active":
+        query["frozen"] = {"$ne": True}
+        query["blocked"] = {"$ne": True}
+    elif status == "frozen":
+        query["frozen"] = True
+    if search.strip():
+        s = re.escape(search.strip())
+        query["$or"] = [
+            {"username": {"$regex": s, "$options": "i"}},
+            {"first_name": {"$regex": s, "$options": "i"}},
+        ]
+
+    photo_bytes = None
+    filename = None
+    if photo:
+        photo_bytes = await photo.read()
+        filename = photo.filename
+
+    doc = {
+        "_id": str(uuid.uuid4()),
+        "text": text,
+        "lang": lang,
+        "status": "running",
+        "success": 0,
+        "failed": 0,
+        "blocked": 0,
+        "created_at": now_iso(),
+        "finished_at": None,
+    }
+    await db.broadcasts.insert_one(doc)
+    asyncio.create_task(_broadcast_worker(
+        doc["_id"], query, text, photo_bytes, filename, button_text or None, button_url or None
+    ))
+    return doc
+
+
+@router.get("/broadcasts")
+async def list_broadcasts():
+    return await db.broadcasts.find().sort("created_at", -1).to_list(100)
 
 @router.post("/products/import-test")
 async def import_test():
