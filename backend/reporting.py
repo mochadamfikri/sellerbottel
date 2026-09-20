@@ -84,7 +84,7 @@ async def _load_report(date=None, month=None, start_date=None, end_date=None,
         "start": start_iso,
         "end": end_iso,
         "orders": len(orders),
-        "completed_orders": len([o for o in sale_orders if o.get("status") != "refunded"]),
+        "completed_orders": len([o for o in sale_orders if o.get("status") == "delivered"]),
         "refunded_orders": len(refunds),
         "failed_orders": len([o for o in orders if o.get("status") in {"failed", "delivery_failed"}]),
         "gross_sales": defaultdict(float),
@@ -101,10 +101,9 @@ async def _load_report(date=None, month=None, start_date=None, end_date=None,
         cur = o.get("currency", "")
         total = float(o.get("total") or 0)
         discount = float(o.get("discount_total") or 0)
+        summary["gross_sales"][cur] += total
         if o.get("status") == "refunded":
             summary["refund_total"][cur] += total
-        else:
-            summary["gross_sales"][cur] += total
         summary["discount_total"][cur] += discount
         if o.get("status") != "refunded":
             summary["items_sold"] += sum(int(i.get("qty") or 0) for i in o.get("items", []))
@@ -148,10 +147,10 @@ async def _load_report(date=None, month=None, start_date=None, end_date=None,
         key = (o.get("created_at") or "")[:10]
         if not key:
             continue
+        daily[key]["gross"][o.get("currency", "")] += float(o.get("total") or 0)
         if o.get("status") == "refunded":
             daily[key]["refunds"][o.get("currency", "")] += float(o.get("total") or 0)
         else:
-            daily[key]["gross"][o.get("currency", "")] += float(o.get("total") or 0)
             daily[key]["orders"] += 1
             daily[key]["items"] += sum(int(i.get("qty") or 0) for i in o.get("items", []))
     for d in approved_deposits:
