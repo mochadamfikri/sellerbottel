@@ -1,10 +1,12 @@
 import { NavLink, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Package, Wallet, Users, Settings, LogOut, Bot, Megaphone, Percent, MessageSquareText } from "lucide-react";
+import { LayoutDashboard, Package, Wallet, Users, Settings, LogOut, Bot, Megaphone, Percent, MessageSquareText, ClipboardList, Boxes } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
 const nav = [
   { to: "/", label: "Ringkasan", icon: LayoutDashboard },
   { to: "/products", label: "Produk", icon: Package },
+  { to: "/inventory", label: "Inventory", icon: Boxes },
+  { to: "/orders", label: "Orders", icon: ClipboardList },
   { to: "/deposits", label: "Deposit", icon: Wallet },
   { to: "/users", label: "Pengguna", icon: Users },
   { to: "/discounts", label: "Discount", icon: Percent },
