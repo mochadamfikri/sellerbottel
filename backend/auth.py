@@ -38,7 +38,6 @@ async def seed_admin():
             "_id": "admin-1", "email": email, "password_hash": hash_password(password),
             "name": "Admin", "role": "admin", "created_at": datetime.now(timezone.utc).isoformat(),
         })
-    await db.login_attempts.create_index("identifier")
 
 
 async def get_current_admin(request: Request) -> dict:
