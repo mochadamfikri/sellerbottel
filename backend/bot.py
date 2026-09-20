@@ -451,7 +451,7 @@ async def _do_checkout(chat_id, user, cart_items):
         product = item["product"]
         qty = item["qty"]
 
-        if product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
+        if product.get("product_kind") == "digital" or product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
             allocation = allocation_by_product.get(product["_id"])
             inventory_items = allocation.get("items", []) if allocation else []
             ok = await deliver_inventory(
