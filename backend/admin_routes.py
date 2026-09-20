@@ -12,7 +12,7 @@ from auth import get_current_admin, verify_password
 from rates import get_rate
 from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso
 from storage import put_object
-from tgapi import download_telegram_file, send_message, send_photo_bytes
+from tgapi import download_telegram_file, send_message, send_photo_bytes, tg
 from inventory import validate_records, add_records, available_count, decrypt_items
 from reporting import router as reports_router
 
@@ -801,12 +801,64 @@ class SettingsBody(BaseModel):
     required_channels: list[dict] = []
 
 
+def _normalize_required_channel(channel: dict) -> dict:
+    channel = dict(channel or {})
+    channel_id = str(channel.get("channel_id") or channel.get("id") or "").strip()
+    title = str(channel.get("title") or channel.get("name") or "").strip()
+    username = str(channel.get("username") or "").strip()
+    invite_link = str(channel.get("invite_link") or channel.get("join_link") or "").strip()
+    return {
+        "channel_id": channel_id,
+        "title": title,
+        "username": username,
+        "invite_link": invite_link,
+        "enabled": channel.get("enabled", True) is not False,
+    }
+
+
 @router.put("/settings")
 async def update_settings(body: SettingsBody):
-    await db.settings.update_one({"_id": "main"}, {"$set": body.model_dump()}, upsert=True)
+    data = body.model_dump()
+    channels = [_normalize_required_channel(ch) for ch in data.get("required_channels", [])]
+    channels = [ch for ch in channels if ch["channel_id"]]
+    if len(channels) > 3:
+        raise HTTPException(400, "Maksimal 3 channel wajib join.")
+    if data.get("join_gate_enabled") and not channels:
+        data["join_gate_enabled"] = False
+    data["required_channels"] = channels
+    await db.settings.update_one({"_id": "main"}, {"$set": data}, upsert=True)
     s = await get_settings()
     s["current_rate"] = await get_rate()
     return s
+
+
+@router.post("/settings/join-gate/test")
+async def test_required_channel(channel_id: str):
+    channel_id = str(channel_id or "").strip()
+    if not channel_id:
+        raise HTTPException(400, "Channel ID wajib diisi.")
+    try:
+        chat = await tg("getChat", chat_id=channel_id)
+        if not chat.get("ok"):
+            raise HTTPException(400, f"Telegram tidak bisa mengakses channel: {chat.get('description', 'unknown error')}")
+        me = await tg("getMe")
+        bot_id = (me.get("result") or {}).get("id")
+        member = await tg("getChatMember", chat_id=channel_id, user_id=bot_id)
+        if not member.get("ok"):
+            raise HTTPException(400, f"Gagal membaca status bot: {member.get('description', 'unknown error')}")
+        status = (member.get("result") or {}).get("status")
+        if status not in {"creator", "administrator"}:
+            raise HTTPException(400, "Bot harus menjadi administrator di channel agar wajib join bisa bekerja.")
+        return {
+            "ok": True,
+            "title": (chat.get("result") or {}).get("title") or "",
+            "username": (chat.get("result") or {}).get("username") or "",
+            "bot_status": status,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, f"Telegram error: {exc}")
 
 
 # ============ ORDERS ============
