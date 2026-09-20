@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from pymongo.errors import DuplicateKeyError
 
-from db import db
+from db import db, get_settings
 from services import credit_deposit, now_iso
 
 
