@@ -1139,10 +1139,16 @@ async def handle_message(message):
 
 
 async def process_update(update: dict):
+    chat_id = None
     try:
         if "callback_query" in update:
+            chat_id = update["callback_query"].get("message", {}).get("chat", {}).get("id")
             await handle_callback(update["callback_query"])
         elif "message" in update:
+            chat_id = update["message"].get("chat", {}).get("id")
             await handle_message(update["message"])
     except Exception:
         logger.exception("Failed processing update")
+    finally:
+        if chat_id is not None:
+            _EDIT_TARGETS.pop(chat_id, None)
