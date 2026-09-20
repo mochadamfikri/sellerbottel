@@ -552,11 +552,16 @@ async def show_deposit_menu(chat_id, user):
     if __import__("os").environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}:
         min_idr = float(s.get("min_deposit_idr", 50000))
         await set_state(user["telegram_id"], "dep_idr_amount")
-        await send_message(
+        prompt = await send_message(
             chat_id,
             t(lang, "dep_idr_gopay_title", min=fmt_amount(min_idr, "IDR")),
             kb=cancel_kb(lang),
         )
+        if prompt.get("message_id"):
+            await db.bot_users.update_one(
+                {"telegram_id": user["telegram_id"]},
+                {"$set": {"state_data.prompt_message_id": prompt["message_id"]}},
+            )
         return
 
     if not s.get("bank_account_number"):
@@ -675,6 +680,12 @@ async def handle_dep_idr_amount(chat_id, user, text):
         return
 
     if __import__("os").environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}:
+        old_prompt_id = (user.get("state_data") or {}).get("prompt_message_id")
+        if old_prompt_id:
+            try:
+                await delete_message(chat_id, old_prompt_id)
+            except Exception:
+                pass
         admin_fee = max(1, int(round(amount * 0.007)))
         platform_code = secrets.randbelow(900) + 100
         total_payment = int(amount + admin_fee + platform_code)
