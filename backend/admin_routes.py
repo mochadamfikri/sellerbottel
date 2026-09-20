@@ -1146,6 +1146,7 @@ class DiscountBody(BaseModel):
     value: float = 0.0
     min_qty: int = 1
     max_qty: Optional[int] = None
+    fixed_currency: Optional[str] = None
     active: bool = True
     starts_at: Optional[str] = None
     ends_at: Optional[str] = None
@@ -1157,16 +1158,26 @@ async def list_discounts():
     return await db.discounts.find().sort([("priority", -1), ("created_at", -1)]).to_list(500)
 
 
-@router.post("/discounts")
-async def create_discount(body: DiscountBody):
+def _validate_discount(body: DiscountBody):
     if body.mode not in {"percent", "fixed"}:
         raise HTTPException(400, "Mode discount harus percent atau fixed")
     if body.value <= 0:
         raise HTTPException(400, "Nilai discount harus lebih dari 0")
     if body.mode == "percent" and body.value > 100:
-        raise HTTPException(400, "Percent discount maksimal 100%")
+        raise HTTPException(400, "Persentase discount maksimal 100%")
     if body.min_qty < 1:
-        raise HTTPException(400, "min_qty minimal 1")
+        raise HTTPException(400, "Quantity minimal 1")
+    if body.max_qty is not None and body.max_qty < body.min_qty:
+        raise HTTPException(400, "Max quantity tidak boleh lebih kecil dari min quantity")
+    if body.mode == "fixed" and body.fixed_currency not in {"IDR", "USD"}:
+        raise HTTPException(400, "Nominal/unit harus memilih mata uang IDR atau USD")
+    if body.mode == "percent":
+        body.fixed_currency = None
+
+
+@router.post("/discounts")
+async def create_discount(body: DiscountBody):
+    _validate_discount(body)
     doc = {
         "_id": str(uuid.uuid4()),
         **body.model_dump(),
@@ -1179,11 +1190,14 @@ async def create_discount(body: DiscountBody):
 
 @router.put("/discounts/{did}")
 async def update_discount(did: str, body: DiscountBody):
-    await db.discounts.update_one({"_id": did}, {"$set": {**body.model_dump(), "updated_at": now_iso()}})
-    doc = await db.discounts.find_one({"_id": did})
-    if not doc:
+    _validate_discount(body)
+    result = await db.discounts.update_one(
+        {"_id": did},
+        {"$set": {**body.model_dump(), "updated_at": now_iso()}},
+    )
+    if result.matched_count != 1:
         raise HTTPException(404, "Discount tidak ditemukan")
-    return doc
+    return await db.discounts.find_one({"_id": did})
 
 
 @router.patch("/discounts/{did}/toggle")
