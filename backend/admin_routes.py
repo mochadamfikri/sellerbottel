@@ -209,11 +209,17 @@ async def _inventory_lines(file: Optional[UploadFile], content: str):
 
 
 @router.post("/products/{pid}/inventory/validate")
-async def validate_inventory(pid: str, body: InventoryBody):
+async def validate_inventory(
+    pid: str,
+    content: str = Form(""),
+    file: Optional[UploadFile] = File(None),
+):
     product = await db.products.find_one({"_id": pid})
     if not product:
         raise HTTPException(404, "Produk tidak ditemukan")
-    check = await validate_items(body.content.splitlines())
+
+    lines = await _inventory_lines(file, content)
+    check = await validate_items(lines)
     return {
         "valid_count": check["valid_count"],
         "duplicate_count": check["duplicate_count"],
