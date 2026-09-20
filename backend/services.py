@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from db import db, get_settings
 from tgapi import send_message
+from i18n import t
 
 CUR_FIELD = {"USD": "balance_usd", "IDR": "balance_idr"}
 
@@ -15,6 +16,11 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+async def user_lang(tid) -> str:
+    u = await db.bot_users.find_one({"telegram_id": tid}, {"lang": 1})
+    return (u or {}).get("lang") or "id"
+
+
 async def credit_deposit(deposit: dict, note: str = ""):
     amount = deposit.get("credited_amount") or deposit["amount"]
     field = CUR_FIELD[deposit["currency"]]
@@ -22,17 +28,17 @@ async def credit_deposit(deposit: dict, note: str = ""):
     await db.deposits.update_one({"_id": deposit["_id"]}, {"$set": {
         "status": "approved", "credited_amount": amount, "decided_at": now_iso(), "note": note,
     }})
-    await send_message(deposit["user_tid"],
-        f"✅ <b>Deposit Disetujui!</b>\n\nSaldo Anda bertambah <b>{fmt_amount(amount, deposit['currency'])}</b>.\nKetik /menu untuk mulai belanja.")
+    lang = await user_lang(deposit["user_tid"])
+    await send_message(deposit["user_tid"], t(lang, "dep_approved", amount=fmt_amount(amount, deposit["currency"])))
 
 
 async def reject_deposit(deposit: dict, note: str = ""):
     await db.deposits.update_one({"_id": deposit["_id"]}, {"$set": {
         "status": "rejected", "decided_at": now_iso(), "note": note,
     }})
-    reason = f"\nAlasan: {note}" if note else ""
-    await send_message(deposit["user_tid"],
-        f"❌ <b>Deposit Ditolak</b>\n\nDeposit {fmt_amount(deposit['amount'], deposit['currency'])} Anda ditolak.{reason}\nHubungi admin jika ada pertanyaan.")
+    lang = await user_lang(deposit["user_tid"])
+    reason = t(lang, "reason_label", r=note) if note else ""
+    await send_message(deposit["user_tid"], t(lang, "dep_rejected", amount=fmt_amount(deposit["amount"], deposit["currency"]), reason=reason))
 
 
 async def cancel_deposit(deposit: dict):
@@ -40,8 +46,8 @@ async def cancel_deposit(deposit: dict):
     field = CUR_FIELD[deposit["currency"]]
     await db.bot_users.update_one({"telegram_id": deposit["user_tid"]}, {"$inc": {field: -amount}})
     await db.deposits.update_one({"_id": deposit["_id"]}, {"$set": {"status": "cancelled", "decided_at": now_iso()}})
-    await send_message(deposit["user_tid"],
-        f"⚠️ <b>Deposit Dibatalkan Admin</b>\n\nDeposit {fmt_amount(amount, deposit['currency'])} dibatalkan dan saldo dikurangi kembali.")
+    lang = await user_lang(deposit["user_tid"])
+    await send_message(deposit["user_tid"], t(lang, "dep_cancelled", amount=fmt_amount(amount, deposit["currency"])))
 
 
 async def notify_admin(text: str, kb=None, photo_file_id=None):

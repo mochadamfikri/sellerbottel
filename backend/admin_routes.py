@@ -1,7 +1,10 @@
+import io
+import csv
 import uuid
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response
 from pydantic import BaseModel
+from i18n import t
 from db import db, get_settings
 from auth import get_current_admin
 from rates import get_rate
@@ -59,7 +62,8 @@ async def _save_file(file: UploadFile):
 async def create_product(
     name: str = Form(...), description: str = Form(""), price_usd: float = Form(...),
     price_idr: Optional[float] = Form(None), delivery_type: str = Form(...),
-    content: str = Form(""), active: bool = Form(True), file: Optional[UploadFile] = File(None),
+    content: str = Form(""), active: bool = Form(True), stock: Optional[int] = Form(None),
+    file: Optional[UploadFile] = File(None),
 ):
     storage_path, original_filename = None, None
     if delivery_type == "file":
@@ -70,7 +74,7 @@ async def create_product(
         "_id": str(uuid.uuid4()), "name": name, "description": description,
         "price_usd": price_usd, "price_idr": price_idr, "delivery_type": delivery_type,
         "content": content, "storage_path": storage_path, "original_filename": original_filename,
-        "active": active, "created_at": now_iso(),
+        "active": active, "stock": stock, "created_at": now_iso(),
     }
     await db.products.insert_one(prod)
     return prod
@@ -80,17 +84,74 @@ async def create_product(
 async def update_product(
     pid: str, name: str = Form(...), description: str = Form(""), price_usd: float = Form(...),
     price_idr: Optional[float] = Form(None), delivery_type: str = Form(...),
-    content: str = Form(""), active: bool = Form(True), file: Optional[UploadFile] = File(None),
+    content: str = Form(""), active: bool = Form(True), stock: Optional[int] = Form(None),
+    file: Optional[UploadFile] = File(None),
 ):
     prod = await db.products.find_one({"_id": pid})
     if not prod:
         raise HTTPException(404, "Produk tidak ditemukan")
     updates = {"name": name, "description": description, "price_usd": price_usd,
-               "price_idr": price_idr, "delivery_type": delivery_type, "content": content, "active": active}
+               "price_idr": price_idr, "delivery_type": delivery_type, "content": content,
+               "active": active, "stock": stock}
     if file:
         updates["storage_path"], updates["original_filename"] = await _save_file(file)
     await db.products.update_one({"_id": pid}, {"$set": updates})
     return await db.products.find_one({"_id": pid})
+
+
+def _parse_num(v, idr: bool):
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().replace("Rp", "").replace("$", "").strip()
+    if idr:
+        s = s.replace(".", "").replace(",", "")
+    else:
+        s = s.replace(",", "")
+    return float(s)
+
+
+@router.post("/products/import")
+async def import_products(currency: str = Form("IDR"), file: UploadFile = File(...)):
+    data = await file.read()
+    fn = (file.filename or "").lower()
+    rows = []
+    if fn.endswith(".csv") or fn.endswith(".txt"):
+        text_data = data.decode("utf-8-sig", errors="ignore")
+        first_line = text_data.splitlines()[0] if text_data.splitlines() else ""
+        delim = "|" if "|" in first_line else ("," if "," in first_line else ";")
+        rows = list(csv.reader(io.StringIO(text_data), delimiter=delim))
+    else:
+        import openpyxl
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+        except Exception:
+            raise HTTPException(400, "File tidak valid. Gunakan .xlsx atau .csv")
+        rows = [list(r) for r in wb.active.iter_rows(values_only=True)]
+    rate = await get_rate()
+    idr = currency == "IDR"
+    docs, skipped = [], 0
+    for row in rows:
+        if not row or row[0] is None or not str(row[0]).strip():
+            skipped += 1
+            continue
+        try:
+            stock = int(_parse_num(row[1], False))
+            price = _parse_num(row[2], idr)
+        except (ValueError, TypeError, IndexError):
+            skipped += 1
+            continue
+        desc = str(row[3]).strip() if len(row) > 3 and row[3] is not None else ""
+        docs.append({
+            "_id": str(uuid.uuid4()), "name": str(row[0]).strip(), "description": desc,
+            "price_usd": round(price / rate, 2) if idr else price,
+            "price_idr": price if idr else None,
+            "delivery_type": "license", "content": "",
+            "storage_path": None, "original_filename": None,
+            "active": True, "stock": stock, "created_at": now_iso(),
+        })
+    if docs:
+        await db.products.insert_many(docs)
+    return {"imported": len(docs), "skipped": skipped}
 
 
 @router.patch("/products/{pid}/toggle")
@@ -195,8 +256,11 @@ async def adjust_balance(tid: int, body: AdjustBody):
         "_id": str(uuid.uuid4()), "user_tid": tid, "currency": body.currency,
         "amount": body.amount, "reason": body.reason, "created_at": now_iso(),
     })
-    sign = "+" if body.amount >= 0 else ""
-    await send_message(tid, f"ℹ️ <b>Penyesuaian Saldo oleh Admin</b>\n\nSaldo Anda disesuaikan: <b>{sign}{fmt_amount(abs(body.amount), body.currency) if body.amount >= 0 else '-' + fmt_amount(abs(body.amount), body.currency)}</b>" + (f"\nAlasan: {body.reason}" if body.reason else ""))
+    lang = user.get("lang") or "id"
+    sign = "+" if body.amount >= 0 else "-"
+    amt_str = f"{sign}{fmt_amount(abs(body.amount), body.currency)}"
+    reason = t(lang, "reason_label", r=body.reason) if body.reason else ""
+    await send_message(tid, t(lang, "adj_notice", amount=amt_str, reason=reason))
     return {"ok": True}
 
 
@@ -211,8 +275,9 @@ async def freeze_user(tid: int, body: FreezeBody):
         raise HTTPException(404, "Pengguna tidak ditemukan")
     await db.bot_users.update_one({"telegram_id": tid}, {"$set": {"frozen": True, "frozen_reason": body.reason}})
     await db.freeze_log.insert_one({"_id": str(uuid.uuid4()), "user_tid": tid, "action": "freeze", "reason": body.reason, "created_at": now_iso()})
-    reason = f"\nAlasan: {body.reason}" if body.reason else ""
-    await send_message(tid, f"🚫 <b>Akun Anda Dibekukan</b>{reason}\n\nSaldo terkunci dan Anda tidak dapat bertransaksi. Hubungi admin untuk info lebih lanjut.")
+    lang = user.get("lang") or "id"
+    reason = t(lang, "reason_label", r=body.reason) if body.reason else ""
+    await send_message(tid, t(lang, "frozen_notice", reason=reason))
     return {"ok": True}
 
 
@@ -223,7 +288,7 @@ async def unfreeze_user(tid: int):
         raise HTTPException(404, "Pengguna tidak ditemukan")
     await db.bot_users.update_one({"telegram_id": tid}, {"$set": {"frozen": False, "frozen_reason": ""}})
     await db.freeze_log.insert_one({"_id": str(uuid.uuid4()), "user_tid": tid, "action": "unfreeze", "reason": "", "created_at": now_iso()})
-    await send_message(tid, "✅ <b>Akun Anda Telah Dibuka Kembali</b>\n\nAnda bisa bertransaksi seperti biasa. Ketik /menu untuk mulai.")
+    await send_message(tid, t(user.get("lang") or "id", "unfrozen_notice"))
     return {"ok": True}
 
 
