@@ -16,6 +16,11 @@ export default function Broadcasts() {
     if (!form.text.trim()) return;
     setBusy(true);
     try {
+      const previewFd = new FormData();
+      previewFd.append("lang", form.lang); previewFd.append("status", form.status); previewFd.append("search", form.search);
+      const { data: preview } = await api.post("/admin/broadcasts/preview", previewFd);
+      if (!window.confirm(`Broadcast akan dikirim ke ${preview.total} pengguna. Lanjutkan?`)) return;
+
       const fd = new FormData();
       Object.entries(form).forEach(([k, v]) => fd.append(k, v));
       if (photo) fd.append("photo", photo);
