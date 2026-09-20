@@ -20,9 +20,9 @@ const ENV_FILE   = path.join(__dirname, '.env');
  * Mendukung format KEY=VALUE, komentar (#), dan nilai berquote.
  */
 function loadEnv() {
-   if (!fs.existsSync(ENV_FILE)) return {};
-   const content = fs.readFileSync(ENV_FILE, 'utf-8');
    const result = { ...process.env };
+   if (!fs.existsSync(ENV_FILE)) return result;
+   const content = fs.readFileSync(ENV_FILE, 'utf-8');
    for (const line of content.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#')) continue;
