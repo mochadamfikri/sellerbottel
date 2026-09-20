@@ -17,6 +17,7 @@ from bot import process_update
 from i18n import load_overrides
 from storage import init_storage
 from tgapi import tg
+from gopay_provider import run_gopay_monitor
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -85,6 +86,10 @@ async def startup():
     except Exception as e:
         logger.error(f"Storage init failed: {e}")
     base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+    if os.environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}:
+        app.state.gopay_stop = asyncio.Event()
+        app.state.gopay_task = asyncio.create_task(run_gopay_monitor(app.state.gopay_stop))
+
     if base and os.environ.get("TELEGRAM_TOKEN"):
         try:
             res = await tg(
@@ -100,4 +105,10 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    stop = getattr(app.state, "gopay_stop", None)
+    task = getattr(app.state, "gopay_task", None)
+    if stop:
+        stop.set()
+    if task:
+        task.cancel()
     client.close()
