@@ -10,7 +10,7 @@ export default function Inventory() {
   const [preview, setPreview] = useState(null);
   const [file, setFile] = useState(null);
 
-  const loadProducts = () => api.get("/admin/products").then(({ data }) => { setProducts(data.filter((p) => p.delivery_type === "inventory")); if (!pid && data.length) setPid((data.find((p) => p.delivery_type === "inventory") || {}). _id || ""); });
+  const loadProducts = () => api.get("/admin/products").then(({ data }) => { setProducts(data.filter((p) => p.delivery_type === "inventory")); if (!pid && data.length) setPid((data.find((p) => p.delivery_type === "inventory") || {})._id || ""); });
   const loadItems = () => pid && api.get("/admin/products/" + pid + "/inventory", { params: { status: "all" } }).then(({ data }) => setItems(data));
   useEffect(() => { loadProducts(); }, []);
   useEffect(() => { loadItems(); }, [pid]);
