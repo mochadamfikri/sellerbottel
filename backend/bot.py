@@ -13,6 +13,7 @@ from checkout import execute_checkout, stock_for
 from inventory import decrypt_items
 from join_gate import check_user_membership, build_gate_keyboard, clear_cache_for_user
 from gopay_provider import create_gopay_payment
+from pricing import price_for_product
 
 logger = logging.getLogger("bot")
 
@@ -61,13 +62,9 @@ async def set_state(tid, state, data=None):
     await db.bot_users.update_one({"telegram_id": tid}, {"$set": {"state": state, "state_data": data or {}}})
 
 
-async def product_price(prod: dict, currency: str) -> float:
-    if currency == "USD":
-        return float(prod["price_usd"])
-    if prod.get("price_idr"):
-        return float(prod["price_idr"])
-    rate = await get_rate()
-    return round(float(prod["price_usd"]) * rate / 100) * 100
+async def product_price(prod: dict, currency: str, quantity: int = 1) -> float:
+    pricing = await price_for_product(prod, currency, quantity)
+    return pricing["unit_price"]
 
 
 async def stock_label(prod, lang):
@@ -206,7 +203,7 @@ async def show_cart(chat_id, user):
         if not p:
             continue
         valid_cart.append(item)
-        price = await product_price(p, user["currency"])
+        price = await product_price(p, user["currency"], item["qty"])
         subtotal = price * item["qty"]
         total += subtotal
         lines.append(f"• {p['name']} ×{item['qty']} — {fmt_amount(subtotal, user['currency'])}")
