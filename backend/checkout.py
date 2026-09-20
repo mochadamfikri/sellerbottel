@@ -50,7 +50,7 @@ async def stock_for(product):
 
 
 
-async def _fail_checkout(order_id, allocations, reservation_id, error, message):
+async def _fail_checkout(order_id, allocations, reservation_id, error, message, user=None, field=None, total=0.0):
     for allocation in allocations:
         if allocation["kind"] == "stock":
             await db.products.update_one(
@@ -58,6 +58,19 @@ async def _fail_checkout(order_id, allocations, reservation_id, error, message):
                 {"$inc": {"stock": allocation["qty"]}},
             )
     await release_items(reservation_id)
+
+    if user is not None and field and total > 0:
+        await db.bot_users.update_one(
+            {
+                "telegram_id": user["telegram_id"],
+                "checkout_refund_ids": {"$ne": order_id},
+            },
+            {
+                "$inc": {field: total},
+                "$addToSet": {"checkout_refund_ids": order_id},
+            },
+        )
+
     await db.purchases.update_one(
         {"_id": order_id},
         {"$set": {"status": "failed", "delivery_error": message}},
@@ -145,6 +158,7 @@ async def execute_checkout(user, cart_items):
     await db.purchases.insert_one(order)
 
     allocations = []
+    balance_debited = False
     try:
         for item in items:
             product = item["product"]
@@ -194,7 +208,12 @@ async def execute_checkout(user, cart_items):
                 reservation_id,
                 "balance",
                 "Saldo tidak cukup atau akun dibekukan.",
+                user=user,
+                field=field,
+                total=0.0,
             )
+
+        balance_debited = True
 
         await db.purchases.update_one(
             {"_id": order_id, "status": "pending"},
@@ -205,12 +224,18 @@ async def execute_checkout(user, cart_items):
             if allocation["kind"] == "inventory":
                 await commit_items(reservation_id, order_id, user["telegram_id"])
 
+        fresh_user = await db.bot_users.find_one(
+            {"telegram_id": user["telegram_id"]},
+            {field: 1},
+        )
+        remaining_balance = float((fresh_user or {}).get(field, 0))
+
         return {
             "ok": True,
             "order": order,
             "items": items,
             "allocations": allocations,
-            "remaining_balance": float(user.get(field, 0)) - total,
+            "remaining_balance": remaining_balance,
         }
 
     except Exception as exc:
@@ -222,6 +247,19 @@ async def execute_checkout(user, cart_items):
                 )
 
         await release_items(reservation_id)
+
+        if balance_debited:
+            await db.bot_users.update_one(
+                {
+                    "telegram_id": user["telegram_id"],
+                    "checkout_refund_ids": {"$ne": order_id},
+                },
+                {
+                    "$inc": {field: total},
+                    "$addToSet": {"checkout_refund_ids": order_id},
+                },
+            )
+
         await db.purchases.update_one(
             {"_id": order_id},
             {"$set": {
