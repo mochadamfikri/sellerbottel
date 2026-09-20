@@ -47,6 +47,22 @@ async def stock_for(product):
     return None if stock is None else int(stock)
 
 
+
+
+async def _fail_checkout(order_id, allocations, reservation_id, error, message):
+    for allocation in allocations:
+        if allocation["kind"] == "stock":
+            await db.products.update_one(
+                {"_id": allocation["product_id"]},
+                {"$inc": {"stock": allocation["qty"]}},
+            )
+    await release_items(reservation_id)
+    await db.purchases.update_one(
+        {"_id": order_id},
+        {"$set": {"status": "failed", "delivery_error": message}},
+    )
+    return {"ok": False, "error": error, "message": message}
+
 async def execute_checkout(user, cart_items):
     currency = user["currency"]
     field = CUR_FIELD[currency]
@@ -160,7 +176,13 @@ async def execute_checkout(user, cart_items):
             },
         )
         if balance_result.modified_count != 1:
-            raise ValueError("Saldo tidak cukup atau akun dibekukan.")
+            return await _fail_checkout(
+                order_id,
+                allocations,
+                reservation_id,
+                "balance",
+                "Saldo tidak cukup atau akun dibekukan.",
+            )
 
         await db.purchases.update_one(
             {"_id": order_id, "status": "pending"},
