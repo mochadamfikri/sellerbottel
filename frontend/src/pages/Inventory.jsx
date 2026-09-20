@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "../lib/api";
 
@@ -10,10 +10,10 @@ export default function Inventory() {
   const [preview, setPreview] = useState(null);
   const [file, setFile] = useState(null);
 
-  const loadProducts = () => api.get("/admin/products").then(({ data }) => { setProducts(data.filter((p) => p.delivery_type === "inventory")); if (!pid && data.length) setPid((data.find((p) => p.delivery_type === "inventory") || {})._id || ""); });
-  const loadItems = () => pid && api.get("/admin/products/" + pid + "/inventory", { params: { status: "all" } }).then(({ data }) => setItems(data));
-  useEffect(() => { loadProducts(); }, []);
-  useEffect(() => { loadItems(); }, [pid]);
+  const loadProducts = useCallback(() => api.get("/admin/products").then(({ data }) => { setProducts(data.filter((p) => p.delivery_type === "inventory")); if (!pid && data.length) setPid((data.find((p) => p.delivery_type === "inventory") || {})._id || ""); }), [pid]);
+  const loadItems = useCallback(() => pid && api.get("/admin/products/" + pid + "/inventory", { params: { status: "all" } }).then(({ data }) => setItems(data)), [pid]);
+  useEffect(() => { loadProducts(); }, [loadProducts]);
+  useEffect(() => { loadItems(); }, [loadItems]);
 
   const validate = async () => {
     try {
