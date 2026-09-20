@@ -25,13 +25,30 @@ def _parse_node_json(stdout):
         return json.loads(text)
     except json.JSONDecodeError as first_error:
         decoder = json.JSONDecoder()
-        candidates = [idx for idx, char in enumerate(text) if char in "[{"]
-        for idx in reversed(candidates):
+        best_value = None
+        best_end = -1
+
+        # Node SDK logs may appear before the JSON payload. Find the
+        # candidate JSON value that consumes the furthest part of stdout.
+        # This avoids accidentally selecting a nested object/array from
+        # inside the real top-level payload.
+        for idx, char in enumerate(text):
+            if char not in "[{":
+                continue
             try:
-                value, _ = decoder.raw_decode(text[idx:])
-                return value
+                value, end = decoder.raw_decode(text[idx:])
             except json.JSONDecodeError:
                 continue
+
+            absolute_end = idx + end
+            if text[absolute_end:].strip():
+                continue
+            if absolute_end > best_end:
+                best_value = value
+                best_end = absolute_end
+
+        if best_value is not None:
+            return best_value
         raise first_error
 
 
