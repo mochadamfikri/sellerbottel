@@ -2,6 +2,7 @@ import uuid
 import logging
 import math
 import re
+import asyncio
 from db import db, get_settings
 from rates import get_rate
 from chain import verify_tx, looks_like_tx_hash
@@ -16,6 +17,17 @@ from gopay_provider import create_gopay_payment
 from pricing import price_for_product
 
 logger = logging.getLogger("bot")
+
+_CHECKOUT_LOCKS = {}
+
+
+def _checkout_lock(tid):
+    lock = _CHECKOUT_LOCKS.get(tid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _CHECKOUT_LOCKS[tid] = lock
+    return lock
+
 
 NET_LABELS = {"SOL": "Solana", "POL": "Polygon", "BNB": "BNB (BEP-20)", "AVAX": "Avalanche"}
 CUR_FIELD = {"USD": "balance_usd", "IDR": "balance_idr"}
@@ -330,7 +342,7 @@ def build_invoice_text(order):
     return "\n".join(lines)
 
 
-async def do_checkout(chat_id, user, cart_items):
+async def _do_checkout(chat_id, user, cart_items):
     lang = user.get("lang", "id")
 
     result = await execute_checkout(user, cart_items)
@@ -452,6 +464,16 @@ async def do_checkout(chat_id, user, cart_items):
         f"Total: <b>{fmt_amount(order['total'], order['currency'])}</b>\n"
         f"Status: <b>{final_status}</b>"
     )
+
+
+async def do_checkout(chat_id, user, cart_items):
+    lock = _checkout_lock(user["telegram_id"])
+    if lock.locked():
+        await send_message(chat_id, t(user.get("lang", "id"), "checkout_in_progress"), kb=back_kb(user.get("lang", "id")))
+        return
+
+    async with lock:
+        return await _do_checkout(chat_id, user, cart_items)
 
 
 # ============ DEPOSIT ============
