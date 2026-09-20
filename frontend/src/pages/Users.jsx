@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Wallet, Snowflake, Sun } from "lucide-react";
 import api, { fmtUSD, fmtIDR, fmtDate, formatApiErrorDetail } from "../lib/api";
@@ -14,9 +14,9 @@ export default function UsersPage() {
   const [filters, setFilters] = useState({ search: "", status: "all", lang: "all", has_deposit: "all", has_order: "all", min_deposit: "", max_deposit: "", min_purchase: "", max_purchase: "", min_balance: "", max_balance: "", product_id: "" });
   const [products, setProducts] = useState([]);
 
-  const load = () => api.get("/admin/users/search", { params: filters }).then(({ data }) => setUsers(data));
+  const load = useCallback(() => api.get("/admin/users/search", { params: filters }).then(({ data }) => setUsers(data)), [filters]);
   useEffect(() => { api.get("/admin/products").then(({ data }) => setProducts(data)); }, []);
-  useEffect(() => { load(); }, [filters]);
+  useEffect(() => { load(); }, [load]);
 
   const doAdjust = async () => {
     setBusy(true);
