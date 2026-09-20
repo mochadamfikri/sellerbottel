@@ -35,7 +35,7 @@ def looks_like_tx_hash(text: str, network: str) -> bool:
     return t.startswith("0x") and len(t) == 66
 
 
-async def verify_evm(network: str, coin: str, address: str, tx_hash: str):
+async def verify_evm(network: str, coin: str, address: str, tx_hash: str, expected_sender: str | None = None):
     chain = EVM_CHAINS[network]
     contracts = {c: d for c, d in chain[coin]}
     try:
@@ -49,19 +49,22 @@ async def verify_evm(network: str, coin: str, address: str, tx_hash: str):
     if receipt.get("status") != "0x1":
         return False, None, "Transaksi gagal (reverted)"
     addr_suffix = address.lower().replace("0x", "").rjust(64, "0")
+    sender_suffix = expected_sender.lower().replace("0x", "").rjust(64, "0") if expected_sender else None
     total = 0.0
     for log in receipt.get("logs", []):
         contract = log.get("address", "").lower()
         topics = log.get("topics", [])
         if contract in contracts and len(topics) >= 3 and topics[0].lower() == TRANSFER_TOPIC:
             if topics[2].lower().replace("0x", "") == addr_suffix:
+                if sender_suffix and topics[1].lower().replace("0x", "") != sender_suffix:
+                    continue
                 total += int(log["data"], 16) / (10 ** contracts[contract])
     if total <= 0:
         return False, None, "Tidak ada transfer token yang cocok ke alamat deposit"
     return True, total, None
 
 
-async def verify_sol(coin: str, address: str, tx_hash: str):
+async def verify_sol(coin: str, address: str, tx_hash: str, expected_sender: str | None = None):
     mints = SOL_MINTS[coin]
     try:
         async with httpx.AsyncClient(timeout=25) as c:
@@ -77,20 +80,37 @@ async def verify_sol(coin: str, address: str, tx_hash: str):
     meta = result.get("meta") or {}
     if meta.get("err") is not None:
         return False, None, "Transaksi gagal di Solana"
-    pre = {(b.get("owner"), b.get("mint")): float(b["uiTokenAmount"].get("uiAmount") or 0) for b in meta.get("preTokenBalances", [])}
-    total = 0.0
+    pre = {}
+    post = {}
+    for b in meta.get("preTokenBalances", []):
+        key = (b.get("owner"), b.get("mint"))
+        pre[key] = pre.get(key, 0.0) + float(b["uiTokenAmount"].get("uiAmount") or 0)
     for b in meta.get("postTokenBalances", []):
-        if b.get("owner") == address and b.get("mint") in mints:
-            before = pre.get((b.get("owner"), b.get("mint")), 0.0)
-            delta = float(b["uiTokenAmount"].get("uiAmount") or 0) - before
+        key = (b.get("owner"), b.get("mint"))
+        post[key] = post.get(key, 0.0) + float(b["uiTokenAmount"].get("uiAmount") or 0)
+
+    total = 0.0
+    for key, after in post.items():
+        owner, mint = key
+        if owner == address and mint in mints:
+            delta = after - pre.get(key, 0.0)
             if delta > 0:
                 total += delta
+
+    if expected_sender:
+        outbound = 0.0
+        for key, before in pre.items():
+            owner, mint = key
+            if owner == expected_sender and mint in mints:
+                outbound += max(0.0, before - post.get(key, 0.0))
+        if outbound <= 0:
+            return False, None, "Wallet pengirim tidak cocok dengan transaksi"
     if total <= 0:
         return False, None, "Tidak ada transfer token yang cocok ke alamat deposit"
     return True, total, None
 
 
-async def verify_tx(network: str, coin: str, address: str, tx_hash: str):
+async def verify_tx(network: str, coin: str, address: str, tx_hash: str, expected_sender: str | None = None):
     if network == "SOL":
-        return await verify_sol(coin, address, tx_hash)
-    return await verify_evm(network, coin, address, tx_hash)
+        return await verify_sol(coin, address, tx_hash, expected_sender)
+    return await verify_evm(network, coin, address, tx_hash, expected_sender)
