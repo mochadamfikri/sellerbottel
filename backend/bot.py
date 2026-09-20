@@ -1025,7 +1025,24 @@ async def handle_callback(cb):
     elif data.startswith("depnet:"):
         _, coin, network = data.split(":")
         await show_deposit_address(chat_id, user, coin, network)
-    elif async def handle_message(message):
+    elif data == "menu:balance":
+        await show_balance(chat_id, user)
+    elif data == "menu:history":
+        await show_history(chat_id, user)
+    elif data == "menu:settings":
+        await show_settings(chat_id, user)
+    elif data == "langmenu":
+        await show_language_menu(chat_id, user)
+    elif data.startswith("setcur:"):
+        await handle_set_currency(chat_id, user, data.split(":")[1])
+    elif data.startswith("conv:"):
+        _, yn, new_cur = data.split(":")
+        await handle_conversion(chat_id, user, yn == "yes", new_cur)
+    elif data == "menu:help":
+        await send_message(chat_id, t(lang, "help"), kb=back_kb(lang))
+
+
+async def handle_message(message):
     if "from" not in message or message["from"].get("is_bot"):
         return
 
@@ -1094,26 +1111,6 @@ async def handle_callback(cb):
             await delete_message(chat_id, message_id)
         except Exception:
             pass
-
-
-== "/stok" or text == "/stock":
-        await show_stock(chat_id, user)
-        return
-    if text == "/help":
-        await send_message(chat_id, t(lang, "help"), kb=back_kb(lang))
-        return
-
-    state = user.get("state")
-    if state == "dep_usd_amount":
-        await handle_dep_usd_amount(chat_id, user, text)
-    elif state == "dep_usd_proof":
-        await handle_usd_proof(chat_id, user, message)
-    elif state == "dep_idr_amount":
-        await handle_dep_idr_amount(chat_id, user, text)
-    elif state == "dep_idr_proof":
-        await handle_idr_proof(chat_id, user, message)
-    else:
-        await show_main_menu(chat_id, user)
 
 
 async def process_update(update: dict):
