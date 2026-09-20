@@ -209,7 +209,7 @@ export default function Products() {
               <input
                 data-testid="import-products-file-input"
                 type="file"
-                accept=".xlsx,.xls,.csv,.txt"
+                accept=".xlsx,.csv,.txt"
                 className={inputCls}
                 onChange={(e) => setImportFile(e.target.files?.[0] || null)}
               />
