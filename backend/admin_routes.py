@@ -403,6 +403,11 @@ class SettingsBody(BaseModel):
     admin_telegram_id: str = ""
     rate_mode: str = "auto"
     manual_rate: float = 16000.0
+    max_deposit_usd: float = 100000.0
+    max_deposit_idr: float = 100000000.0
+    join_gate_enabled: bool = True
+    join_gate_fail_open: bool = True
+    required_channels: list[dict] = []
 
 
 @router.put("/settings")
