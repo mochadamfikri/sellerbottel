@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 from datetime import datetime, timezone
 from typing import Iterable
@@ -18,57 +19,77 @@ def _fernet():
     return Fernet(key.encode())
 
 
-def normalize_lines(lines: Iterable[str]):
-    values = []
+def normalize_schema(schema: Iterable[str]) -> list[str]:
+    result = []
     seen = set()
-    for raw in lines:
-        line = str(raw or "").strip()
-        if not line:
+    for raw in schema or []:
+        field = str(raw or "").strip()
+        if not field or field in seen:
             continue
-        if ":" not in line:
-            continue
-        email, password = line.split(":", 1)
-        email = email.strip()
-        password = password.strip()
-        if not email or not password:
-            continue
-        normalized = f"{email}:{password}"
-        fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-        if fingerprint in seen:
+        seen.add(field)
+        result.append(field)
+    return result
+
+
+def normalize_record(record: dict, schema: list[str] | None = None):
+    schema = normalize_schema(schema or list(record.keys()))
+    clean = {}
+    for field in schema:
+        value = record.get(field, "")
+        if value is None:
+            value = ""
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        clean[field] = str(value).strip()
+    if not clean or not any(value for value in clean.values()):
+        return None, None, schema
+    canonical = json.dumps(clean, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return clean, fingerprint, schema
+
+
+async def validate_records(product_id: str, records: list[dict], schema: list[str]):
+    schema = normalize_schema(schema)
+    normalized = []
+    seen = set()
+    for record in records:
+        clean, fingerprint, _ = normalize_record(record, schema)
+        if not clean or fingerprint in seen:
             continue
         seen.add(fingerprint)
-        values.append((normalized, fingerprint))
-    return values
+        normalized.append((clean, fingerprint))
 
-
-async def validate_items(lines: Iterable[str]):
-    normalized = normalize_lines(lines)
-    fingerprints = [fp for _, fp in normalized]
+    fingerprints = [fingerprint for _, fingerprint in normalized]
     existing = set()
     if fingerprints:
         cursor = db.inventory_items.find(
-            {"fingerprint": {"$in": fingerprints}},
+            {
+                "product_id": product_id,
+                "fingerprint": {"$in": fingerprints},
+            },
             {"fingerprint": 1},
         )
         existing = {doc["fingerprint"] async for doc in cursor}
 
-    valid = [line for line, fp in normalized if fp not in existing]
-    duplicates = [line for line, fp in normalized if fp in existing]
+    valid = [record for record, fingerprint in normalized if fingerprint not in existing]
+    duplicates = [record for record, fingerprint in normalized if fingerprint in existing]
     return {
         "valid": valid,
         "duplicates": duplicates,
         "valid_count": len(valid),
         "duplicate_count": len(duplicates),
+        "schema": schema,
     }
 
 
-async def add_items(product_id: str, lines: Iterable[str]):
-    check = await validate_items(lines)
-    created = []
+async def add_records(product_id: str, records: list[dict], schema: list[str]):
+    check = await validate_records(product_id, records, schema)
+    created = 0
     cipher = _fernet()
 
-    for line in check["valid"]:
-        fingerprint = hashlib.sha256(line.encode("utf-8")).hexdigest()
+    for record in check["valid"]:
+        canonical = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         try:
             await db.inventory_items.insert_one({
                 "_id": hashlib.sha256(
@@ -76,7 +97,7 @@ async def add_items(product_id: str, lines: Iterable[str]):
                 ).hexdigest(),
                 "product_id": product_id,
                 "fingerprint": fingerprint,
-                "secret": cipher.encrypt(line.encode("utf-8")).decode("utf-8"),
+                "secret": cipher.encrypt(canonical.encode("utf-8")).decode("utf-8"),
                 "status": "available",
                 "reservation_id": None,
                 "order_id": None,
@@ -85,7 +106,7 @@ async def add_items(product_id: str, lines: Iterable[str]):
                 "reserved_at": None,
                 "sold_at": None,
             })
-            created.append(line)
+            created += 1
         except Exception:
             continue
 
@@ -95,15 +116,17 @@ async def add_items(product_id: str, lines: Iterable[str]):
             "$set": {
                 "delivery_type": "inventory",
                 "inventory_enabled": True,
+                "inventory_schema": schema,
                 "updated_at": now_iso(),
             }
         },
     )
     return {
-        "created": len(created),
-        "skipped": check["duplicate_count"] + (len(check["valid"]) - len(created)),
+        "created": created,
+        "skipped": check["duplicate_count"] + (len(check["valid"]) - created),
         "valid": check["valid"],
         "duplicates": check["duplicates"],
+        "schema": schema,
     }
 
 
@@ -111,6 +134,23 @@ async def available_count(product_id: str):
     return await db.inventory_items.count_documents(
         {"product_id": product_id, "status": "available"}
     )
+
+
+def _decrypt_secret(item: dict):
+    cipher = _fernet()
+    decoded = cipher.decrypt(item["secret"].encode("utf-8")).decode("utf-8")
+    try:
+        value = json.loads(decoded)
+        if isinstance(value, dict):
+            return value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    # Backward compatibility with the old email:password inventory format.
+    return {"value": decoded}
+
+
+def decrypt_items(items):
+    return [_decrypt_secret(item) for item in items]
 
 
 async def reserve_items(product_id: str, quantity: int, reservation_id: str):
@@ -171,8 +211,3 @@ async def commit_items(
             }
         },
     )
-
-
-def decrypt_items(items):
-    cipher = _fernet()
-    return [cipher.decrypt(i["secret"].encode("utf-8")).decode("utf-8") for i in items]
