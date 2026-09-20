@@ -39,7 +39,11 @@ async def ensure_settings():
 
 async def ensure_indexes():
     await db.bot_users.create_index("telegram_id", unique=True)
-    await db.deposits.create_index("tx_hash", unique=True, sparse=True)
+    await db.deposits.create_index(
+        "tx_hash",
+        unique=True,
+        partialFilterExpression={"tx_hash": {"$type": "string"}},
+    )
     await db.deposits.create_index([("user_tid", 1), ("created_at", -1)])
     await db.purchases.create_index("invoice_id", unique=True, sparse=True)
     await db.purchases.create_index([("user_tid", 1), ("created_at", -1)])
@@ -56,7 +60,11 @@ async def ensure_indexes():
     await db.processed_updates.create_index("update_id", unique=True)
     await db.gopay_payments.create_index("active_payment_amount", unique=True, sparse=True)
     await db.gopay_payments.create_index([("status", 1), ("expires_at", 1)])
-    await db.gopay_payments.create_index("tx_id", unique=True, sparse=True)
+    await db.gopay_payments.create_index(
+        "tx_id",
+        unique=True,
+        partialFilterExpression={"tx_id": {"$type": "string"}},
+    )
 
 
 async def get_settings() -> dict:
