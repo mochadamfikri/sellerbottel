@@ -14,6 +14,7 @@ from db import client, db, ensure_settings, ensure_indexes
 from auth import router as auth_router, seed_admin
 from admin_routes import router as admin_router
 from bot import process_update
+from i18n import load_overrides
 from storage import init_storage
 from tgapi import tg
 
@@ -76,6 +77,7 @@ async def startup():
 
     await ensure_settings()
     await ensure_indexes()
+    await load_overrides(db.bot_messages)
     await seed_admin()
     try:
         await init_storage()
