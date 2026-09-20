@@ -1,5 +1,7 @@
 import uuid
 import logging
+import math
+import re
 from db import db, get_settings
 from rates import get_rate
 from chain import verify_tx, looks_like_tx_hash
@@ -527,10 +529,35 @@ async def handle_dep_usd_amount(chat_id, user, text):
     if amount < min_usd:
         await send_message(chat_id, t(lang, "min_deposit", min=f"${min_usd:,.2f}"), kb=cancel_kb(lang))
         return
+    if not math.isfinite(amount) or amount > float(s.get("max_deposit_usd", 100000)):
+        await send_message(chat_id, t(lang, "invalid_amount"), kb=cancel_kb(lang))
+        return
     data = user.get("state_data", {})
     data["amount"] = amount
+    await set_state(user["telegram_id"], "dep_usd_wallet", data)
+    await send_message(chat_id, t(lang, "wallet_prompt", network=NET_LABELS.get(data.get("network"), data.get("network", ""))), kb=cancel_kb(lang))
+
+
+def valid_sender_wallet(network, wallet):
+    wallet = wallet.strip()
+    if network in {"POL", "BNB", "AVAX"}:
+        return bool(re.fullmatch(r"0x[a-fA-F0-9]{40}", wallet))
+    return 32 <= len(wallet) <= 44 and bool(re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]+", wallet))
+
+
+async def handle_dep_usd_wallet(chat_id, user, text):
+    lang = user.get("lang", "id")
+    data = user.get("state_data", {})
+    network = data.get("network")
+    wallet = text.strip()
+
+    if not valid_sender_wallet(network, wallet):
+        await send_message(chat_id, t(lang, "wallet_invalid"), kb=cancel_kb(lang))
+        return
+
+    data["sender_wallet"] = wallet
     await set_state(user["telegram_id"], "dep_usd_proof", data)
-    await send_message(chat_id, t(lang, "amount_set_usd", amount=amount), kb=cancel_kb(lang))
+    await send_message(chat_id, t(lang, "amount_set_usd", amount=data.get("amount", 0)), kb=cancel_kb(lang))
 
 
 async def handle_dep_idr_amount(chat_id, user, text):
