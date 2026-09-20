@@ -9,6 +9,9 @@ import Products from "./pages/Products";
 import Deposits from "./pages/Deposits";
 import UsersPage from "./pages/Users";
 import SettingsPage from "./pages/SettingsPage";
+import Broadcasts from "./pages/Broadcasts";
+import Discounts from "./pages/Discounts";
+import Messages from "./pages/Messages";
 
 function Protected({ children, title }) {
   const { user } = useAuth();
@@ -28,6 +31,9 @@ function App() {
           <Route path="/deposits" element={<Protected title="Kelola Deposit"><Deposits /></Protected>} />
           <Route path="/users" element={<Protected title="Kelola Pengguna"><UsersPage /></Protected>} />
           <Route path="/settings" element={<Protected title="Pengaturan"><SettingsPage /></Protected>} />
+          <Route path="/broadcasts" element={<Protected title="Broadcast"><Broadcasts /></Protected>} />
+          <Route path="/discounts" element={<Protected title="Discount"><Discounts /></Protected>} />
+          <Route path="/messages" element={<Protected title="Bot Messages"><Messages /></Protected>} />
         </Routes>
       </BrowserRouter>
       <Toaster position="top-right" theme="dark" richColors />
