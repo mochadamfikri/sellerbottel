@@ -14,6 +14,7 @@ from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount,
 from storage import put_object
 from tgapi import download_telegram_file, send_message, send_photo_bytes
 from inventory import validate_items, add_items, available_count
+from reporting import router as reports_router
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(get_current_admin)])
 
@@ -986,3 +987,8 @@ async def upload_test(file: UploadFile = File(...)):
         "content_type": file.content_type,
         "size": len(data),
     }
+
+
+# ============ REPORTS ============
+# Mounted under /api/admin/reports with the same admin authentication dependency.
+router.include_router(reports_router)
