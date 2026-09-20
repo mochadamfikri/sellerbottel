@@ -28,7 +28,7 @@ DEFAULT_SETTINGS = {
     "bank_enabled": True,
     "stats_reset_at": None,
     "join_gate_enabled": True,
-    "join_gate_fail_open": True,
+    "join_gate_fail_open": False,
     "required_channels": [],
     "message_version": 1,
 }
