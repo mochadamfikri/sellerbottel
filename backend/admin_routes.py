@@ -358,6 +358,68 @@ async def list_users():
     return users
 
 
+@router.get("/users/search")
+async def search_users(
+    search: str = "", status: str = "all", lang: str = "all",
+    has_deposit: str = "all", has_order: str = "all",
+    min_deposit: float | None = None, max_deposit: float | None = None,
+    min_purchase: float | None = None, max_purchase: float | None = None,
+    min_balance: float | None = None, max_balance: float | None = None,
+    product_id: str = "", registered_from: str = "", registered_to: str = "",
+):
+    if status not in {"all", "active", "frozen"} or lang not in {"all", "id", "en"}:
+        raise HTTPException(400, "Filter pengguna tidak valid.")
+    if has_deposit not in {"all", "yes", "no"} or has_order not in {"all", "yes", "no"}:
+        raise HTTPException(400, "Filter aktivitas tidak valid.")
+    user_q = {}
+    if status == "active": user_q["frozen"] = {"$ne": True}
+    elif status == "frozen": user_q["frozen"] = True
+    if lang != "all": user_q["lang"] = lang
+    if registered_from or registered_to:
+        user_q["created_at"] = {}
+        if registered_from: user_q["created_at"]["$gte"] = registered_from
+        if registered_to: user_q["created_at"]["$lt"] = registered_to
+    if search.strip():
+        s = re.escape(search.strip())
+        clauses = [{"username": {"$regex": s, "$options": "i"}}, {"first_name": {"$regex": s, "$options": "i"}}]
+        if search.strip().isdigit(): clauses.append({"telegram_id": int(search.strip())})
+        user_q["$or"] = clauses
+    users = await db.bot_users.find(user_q).sort("created_at", -1).limit(2000).to_list(2000)
+    tids = [u["telegram_id"] for u in users]
+    if not tids: return []
+    deposits = await db.deposits.find({"user_tid": {"$in": tids}, "status": "approved"}, {"user_tid": 1, "credited_amount": 1, "amount": 1}).to_list(10000)
+    orders = await db.purchases.find({"user_tid": {"$in": tids}}, {"user_tid": 1, "total": 1, "status": 1, "items": 1}).to_list(20000)
+    dep_by_user = {}
+    for d in deposits: dep_by_user[d["user_tid"]] = dep_by_user.get(d["user_tid"], 0.0) + float(d.get("credited_amount") or d.get("amount") or 0)
+    order_by_user, products_by_user = {}, {}
+    for o in orders:
+        tid = o["user_tid"]; order_by_user.setdefault(tid, {"count": 0, "spending": 0.0})
+        if o.get("status") not in {"pending", "failed", "delivery_failed"}:
+            order_by_user[tid]["count"] += 1; order_by_user[tid]["spending"] += float(o.get("total") or 0)
+        for item in o.get("items", []):
+            if item.get("product_id"): products_by_user.setdefault(tid, set()).add(item["product_id"])
+    result = []
+    for u in users:
+        tid = u["telegram_id"]; dep_total = dep_by_user.get(tid, 0.0); stats = order_by_user.get(tid, {"count": 0, "spending": 0.0})
+        balance = max(float(u.get("balance_usd") or 0), float(u.get("balance_idr") or 0))
+        if has_deposit == "yes" and dep_total <= 0: continue
+        if has_deposit == "no" and dep_total > 0: continue
+        if has_order == "yes" and stats["count"] <= 0: continue
+        if has_order == "no" and stats["count"] > 0: continue
+        if min_deposit is not None and dep_total < min_deposit: continue
+        if max_deposit is not None and dep_total > max_deposit: continue
+        if min_purchase is not None and stats["spending"] < min_purchase: continue
+        if max_purchase is not None and stats["spending"] > max_purchase: continue
+        if min_balance is not None and balance < min_balance: continue
+        if max_balance is not None and balance > max_balance: continue
+        if product_id and product_id not in products_by_user.get(tid, set()): continue
+        u["total_deposit"] = dep_total; u["order_count"] = stats["count"]; u["total_spending"] = stats["spending"]
+        u["purchased_product_ids"] = list(products_by_user.get(tid, set()))
+        u.pop("state", None); u.pop("state_data", None)
+        u.pop("deposit_credit_ids", None); u.pop("checkout_refund_ids", None); u.pop("deposit_debit_ids", None)
+        result.append(u)
+    return result
+
 class AdjustBody(BaseModel):
     currency: str
     amount: float
@@ -918,6 +980,17 @@ async def _broadcast_worker(
     )
 
 
+@router.post("/broadcasts/preview")
+async def broadcast_preview(lang: str = Form("all"), search: str = Form(""), status: str = Form("all")):
+    query = {}
+    if lang in ("id", "en"): query["lang"] = lang
+    if status == "active": query.update({"frozen": {"$ne": True}, "blocked": {"$ne": True}})
+    elif status == "frozen": query["frozen"] = True
+    if search.strip():
+        s = re.escape(search.strip()); query["$or"] = [{"username": {"$regex": s, "$options": "i"}}, {"first_name": {"$regex": s, "$options": "i"}}]
+    return {"total": await db.bot_users.count_documents(query)}
+
+
 @router.post("/broadcasts")
 async def create_broadcast(
     text: str = Form(...),
@@ -945,6 +1018,10 @@ async def create_broadcast(
             {"first_name": {"$regex": s, "$options": "i"}},
         ]
 
+    if button_url and not re.match(r"^(https?://|tg://)", button_url.strip(), re.I):
+        raise HTTPException(400, "URL tombol harus http(s) atau tg://")
+    total = await db.bot_users.count_documents(query)
+
     photo_bytes = None
     filename = None
     if photo:
@@ -959,6 +1036,7 @@ async def create_broadcast(
         "success": 0,
         "failed": 0,
         "blocked": 0,
+        "total": total,
         "created_at": now_iso(),
         "finished_at": None,
     }
