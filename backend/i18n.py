@@ -32,6 +32,7 @@
         "deliver_fail": "⚠️ Gagal mengirim file <b>{name}</b>. Hubungi admin.",
         
         "order_refunded": "💸 <b>Order Refunded</b>\n\nInvoice <code>{invoice}</code> was refunded for <b>{amount}</b> and your balance has been restored.",
+        "checkout_in_progress": "⏳ Checkout Anda sedang diproses. Tunggu proses sebelumnya selesai.",
         "checkout_failed": "⚠️ Checkout gagal diproses. Saldo dan stok tidak berubah. Silakan coba lagi.",
         "delivery_attention": "⚠️ Invoice <code>{invoice}</code> tercatat, tetapi ada produk yang gagal dikirim. Hubungi admin.",
         "deliver_link": "📦 <b>{name}</b>\n\n🔗 Link produk Anda:\n{content}",
@@ -118,6 +119,7 @@
         "delivered_all": "🎉 All products delivered!\nRemaining balance: <b>{balance}</b>",
         "deliver_fail": "⚠️ Failed to send file <b>{name}</b>. Please contact admin.",
         "order_refunded": "💸 <b>Order Refunded</b>\n\nInvoice <code>{invoice}</code> was refunded for <b>{amount}</b> and your balance has been restored.",
+        "checkout_in_progress": "⏳ Your checkout is already being processed. Please wait for the previous checkout to finish.",
         "checkout_failed": "⚠️ Checkout failed. Your balance and stock were not changed. Please try again.",
         "delivery_attention": "⚠️ Invoice <code>{invoice}</code> was created, but one or more products could not be delivered. Contact admin.",
         "deliver_link": "📦 <b>{name}</b>\n\n🔗 Your product link:\n{content}",
