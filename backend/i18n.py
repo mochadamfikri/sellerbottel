@@ -150,7 +150,7 @@ STRINGS = {
 LANG_NAMES = {"id": "🇮🇩 Indonesia", "en": "🇬🇧 English"}
 
 
-def t(lang: str, key: str, **kw) -> str:
-    lang = lang if lang in STRINGS else "id"
-    s = STRINGS[lang].get(key) or STRINGS["id"].get(key, key)
+def t(_lang: str, key: str, **kw) -> str:
+    _lang = _lang if _lang in STRINGS else "id"
+    s = STRINGS[_lang].get(key) or STRINGS["id"].get(key, key)
     return s.format(**kw) if kw else s

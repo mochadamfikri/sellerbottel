@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Plus, Pencil, Trash2, FileText, Link2, KeyRound } from "lucide-react";
+import { Plus, Pencil, Trash2, FileText, Link2, KeyRound, Upload } from "lucide-react";
 import api, { fmtUSD, fmtIDR, formatApiErrorDetail } from "../lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Switch } from "../components/ui/switch";
@@ -16,6 +16,10 @@ export default function Products() {
   const [editId, setEditId] = useState(null);
   const [file, setFile] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [importCurrency, setImportCurrency] = useState("IDR");
+  const [importing, setImporting] = useState(false);
 
   const load = () => api.get("/admin/products").then(({ data }) => setProducts(data));
   useEffect(() => { load(); }, []);
@@ -49,6 +53,66 @@ export default function Products() {
     setSaving(false);
   };
 
+  const importProducts = async () => {
+    console.log("[IMPORT] START");
+
+    if (!importFile) {
+      toast.error("File belum dipilih");
+      return;
+    }
+
+    console.log("[IMPORT] FILE:", {
+      name: importFile.name,
+      size: importFile.size,
+      type: importFile.type,
+    });
+
+    setImporting(true);
+
+    try {
+      const fd = new FormData();
+
+      fd.append("currency", importCurrency);
+      fd.append("file", importFile, importFile.name);
+
+      console.log("[IMPORT] sending FormData");
+
+      const response = await fetch("/api/admin/products/upload-test", {
+        method: "POST",
+        credentials: "include",
+        body: fd,
+      });
+
+      console.log("[IMPORT] STATUS:", response.status);
+
+      const text = await response.text();
+
+      console.log("[IMPORT] RESPONSE:", text);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${text}`);
+      }
+
+      const data = JSON.parse(text);
+
+      toast.success(
+        `Import selesai: ${data.imported ?? 0} masuk, ${data.skipped ?? 0} dilewati`
+      );
+
+      setImportOpen(false);
+      setImportFile(null);
+      setImportCurrency("IDR");
+
+      await load();
+
+    } catch (err) {
+      console.error("[IMPORT] ERROR:", err);
+      toast.error(`Import gagal: ${err.message}`);
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const toggle = async (p) => {
     await api.patch(`/admin/products/${p._id}/toggle`);
     toast.success(p.active ? "Produk dinonaktifkan" : "Produk diaktifkan");
@@ -66,11 +130,30 @@ export default function Products() {
 
   return (
     <>
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center gap-3 flex-wrap">
         <p className="text-sm text-slate-400">{products.length} produk</p>
-        <button data-testid="add-product-button" onClick={openCreate} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg px-4 py-2 transition-colors">
-          <Plus size={16} /> Tambah Produk
-        </button>
+
+        <div className="flex items-center gap-2">
+          <button
+            data-testid="import-products-button"
+            onClick={() => {
+              setImportFile(null);
+              setImportCurrency("IDR");
+              setImportOpen(true);
+            }}
+            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2 transition-colors"
+          >
+            <Upload size={16} /> Import Excel
+          </button>
+
+          <button
+            data-testid="add-product-button"
+            onClick={openCreate}
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg px-4 py-2 transition-colors"
+          >
+            <Plus size={16} /> Tambah Produk
+          </button>
+        </div>
       </div>
 
       <div data-testid="product-list-table" className="bg-slate-900/60 border border-slate-800 rounded-xl overflow-x-auto">
@@ -108,6 +191,74 @@ export default function Products() {
           </tbody>
         </table>
       </div>
+
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="font-heading">Import Produk dari Excel</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <label className="text-xs text-slate-400">Mata Uang Harga</label>
+              <select
+                data-testid="import-currency-select"
+                className={inputCls}
+                value={importCurrency}
+                onChange={(e) => setImportCurrency(e.target.value)}
+              >
+                <option value="IDR">IDR (Rupiah)</option>
+                <option value="USD">USD (Dollar)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs text-slate-400">
+                File Produk
+              </label>
+
+              <input
+                data-testid="import-products-file-input"
+                type="file"
+                accept=".xlsx,.xls,.csv,.txt"
+                className={inputCls}
+                onChange={(e) => setImportFile(e.target.files?.[0] || null)}
+              />
+
+              <p className="text-xs text-slate-500 mt-2">
+                Format Excel: Nama Produk | Stock | Harga | Deskripsi
+              </p>
+
+              {importFile && (
+                <p className="text-xs text-emerald-400 mt-2">
+                  File dipilih: {importFile.name}
+                </p>
+              )}
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-400">
+              Setiap baris pada file akan dibuat menjadi produk.
+              Produk hasil import menggunakan tipe pengiriman
+              <span className="text-slate-200"> Kode Lisensi</span>.
+            </div>
+
+            <button
+              data-testid="import-products-submit-button"
+              onClick={() => {
+                console.log("[IMPORT BUTTON] diklik", {
+                  importFile,
+                  importing,
+                });
+                importProducts();
+              }}
+              disabled={importing}
+              className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg py-2.5 transition-colors"
+            >
+              {importing ? "Mengimport..." : "Import Produk"}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-lg max-h-[90vh] overflow-y-auto">

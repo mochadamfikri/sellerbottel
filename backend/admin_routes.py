@@ -319,3 +319,18 @@ async def update_settings(body: SettingsBody):
     s = await get_settings()
     s["current_rate"] = await get_rate()
     return s
+
+@router.post("/products/import-test")
+async def import_test():
+    return {"ok": True, "message": "POST browser berhasil"}
+
+
+@router.post("/products/upload-test")
+async def upload_test(file: UploadFile = File(...)):
+    data = await file.read()
+    return {
+        "ok": True,
+        "filename": file.filename,
+        "content_type": file.content_type,
+        "size": len(data),
+    }
