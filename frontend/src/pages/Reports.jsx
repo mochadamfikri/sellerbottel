@@ -12,26 +12,27 @@ export default function Reports() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const params = () => ({
-    ...(period === "daily" ? { date } : { month }),
-    currency,
-  });
-
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { data: result } = await api.get("/admin/reports", { params: params() });
+      const { data: result } = await api.get("/admin/reports", {
+        params: {
+          ...(period === "daily" ? { date } : { month }),
+          currency,
+        },
+      });
       setData(result);
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => { load(); }, [period, date, month, currency]);
+  }, [period, date, month, currency]);
 
   const download = async () => {
     const res = await api.get("/admin/reports/export", {
-      params: params(),
+      params: {
+        ...(period === "daily" ? { date } : { month }),
+        currency,
+      },
       responseType: "blob",
     });
     const url = URL.createObjectURL(res.data);
