@@ -368,8 +368,28 @@ async def adjust_balance(tid: int, body: AdjustBody):
     user = await db.bot_users.find_one({"telegram_id": tid})
     if not user:
         raise HTTPException(404, "Pengguna tidak ditemukan")
+    if body.currency not in ("USD", "IDR"):
+        raise HTTPException(400, "Currency harus USD atau IDR")
+    if not __import__("math").isfinite(body.amount) or body.amount == 0:
+        raise HTTPException(400, "Jumlah adjustment tidak valid.")
+
     field = "balance_usd" if body.currency == "USD" else "balance_idr"
-    await db.bot_users.update_one({"telegram_id": tid}, {"$inc": {field: body.amount}})
+    if body.amount < 0:
+        result = await db.bot_users.update_one(
+            {
+                "telegram_id": tid,
+                field: {"$gte": abs(body.amount)},
+            },
+            {"$inc": {field: body.amount}},
+        )
+        if result.modified_count != 1:
+            raise HTTPException(409, "Saldo pengguna tidak cukup untuk adjustment negatif.")
+    else:
+        await db.bot_users.update_one(
+            {"telegram_id": tid},
+            {"$inc": {field: body.amount}},
+        )
+
     await db.balance_adjustments.insert_one({
         "_id": str(uuid.uuid4()), "user_tid": tid, "currency": body.currency,
         "amount": body.amount, "reason": body.reason, "created_at": now_iso(),
