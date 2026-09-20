@@ -50,7 +50,10 @@ async def ensure_indexes():
     await db.login_attempts.create_index("identifier", unique=True)
     await db.products.create_index([("active", 1), ("created_at", -1)])
     await db.inventory_items.create_index([("product_id", 1), ("status", 1)])
-    await db.inventory_items.create_index("fingerprint", unique=True)
+    await db.inventory_items.create_index(
+        [("product_id", 1), ("fingerprint", 1)],
+        unique=True,
+    )
     await db.discounts.create_index([("active", 1), ("priority", -1)])
     await db.coupons.create_index("code", unique=True)
     await db.bot_messages.create_index([("key", 1), ("lang", 1)], unique=True)
