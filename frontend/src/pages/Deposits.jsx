@@ -88,7 +88,7 @@ export default function Deposits() {
                   <p className="text-slate-200">{d.first_name || "-"}</p>
                   <p className="text-xs text-slate-500 font-mono">{d.username ? `@${d.username}` : d.user_tid}</p>
                 </td>
-                <td className="px-4 py-3 text-slate-300">{d.method === "crypto" ? `${d.coin} / ${d.network}` : "Transfer Bank"}
+                <td className="px-4 py-3 text-slate-300">{d.method === "crypto" ? `${d.coin} / ${d.network}` : d.method === "gopay" ? "GoPay QR" : "Transfer Bank"}
                   {d.auto_verified && <span className="block text-[10px] text-emerald-400">auto on-chain ✓</span>}
                 </td>
                 <td className="px-4 py-3 font-mono font-semibold">{fmtAmount(d.credited_amount || d.amount, d.currency)}</td>
