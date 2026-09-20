@@ -5,13 +5,14 @@ import re
 from db import db, get_settings
 from rates import get_rate
 from chain import verify_tx, looks_like_tx_hash
-from tgapi import send_message, answer_callback, send_document, delete_message
+from tgapi import send_message, answer_callback, send_document, delete_message, send_photo_bytes
 from services import credit_deposit, reject_deposit, cancel_deposit, notify_admin, fmt_amount, now_iso
 from storage import get_object
 from i18n import t, LANG_NAMES
 from checkout import execute_checkout, stock_for
 from inventory import decrypt_items
 from join_gate import check_user_membership, build_gate_keyboard, clear_cache_for_user
+from gopay_provider import create_gopay_payment
 
 logger = logging.getLogger("bot")
 
@@ -475,22 +476,47 @@ async def ensure_join_gate(chat_id, user):
 async def show_deposit_menu(chat_id, user):
     lang = user.get("lang", "id")
     s = await get_settings()
+
     if user["currency"] == "USD":
         kb = {"inline_keyboard": [
             [{"text": "💎 USDT", "callback_data": "depcoin:USDT"}, {"text": "🔵 USDC", "callback_data": "depcoin:USDC"}],
             [{"text": t(lang, "btn_main"), "callback_data": "menu:main"}],
         ]}
-        await send_message(chat_id, t(lang, "dep_usd_title", min=float(s.get("min_deposit_usd", 15))), kb=kb)
-    else:
-        if not s.get("bank_account_number"):
-            await send_message(chat_id, t(lang, "dep_no_bank"), kb=back_kb(lang))
-            return
-        min_idr = s.get("min_deposit_idr", 50000)
-        await set_state(user["telegram_id"], "dep_idr_amount")
-        await send_message(chat_id,
-            t(lang, "dep_idr_title", bank=s.get("bank_name", ""), account=s.get("bank_account_number", ""),
-              holder=s.get("bank_account_holder", ""), min=fmt_amount(min_idr, "IDR")), kb=cancel_kb(lang))
+        await send_message(
+            chat_id,
+            t(lang, "dep_usd_title", min=float(s.get("min_deposit_usd", 15))),
+            kb=kb,
+        )
+        return
 
+    if __import__("os").environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}:
+        min_idr = float(s.get("min_deposit_idr", 50000))
+        await set_state(user["telegram_id"], "dep_idr_amount")
+        await send_message(
+            chat_id,
+            t(lang, "dep_idr_gopay_title", min=fmt_amount(min_idr, "IDR")),
+            kb=cancel_kb(lang),
+        )
+        return
+
+    if not s.get("bank_account_number"):
+        await send_message(chat_id, t(lang, "dep_no_bank"), kb=back_kb(lang))
+        return
+
+    min_idr = s.get("min_deposit_idr", 50000)
+    await set_state(user["telegram_id"], "dep_idr_amount")
+    await send_message(
+        chat_id,
+        t(
+            lang,
+            "dep_idr_title",
+            bank=s.get("bank_name", ""),
+            account=s.get("bank_account_number", ""),
+            holder=s.get("bank_account_holder", ""),
+            min=fmt_amount(min_idr, "IDR"),
+        ),
+        kb=cancel_kb(lang),
+    )
 
 async def show_network_selection(chat_id, user, coin):
     lang = user.get("lang", "id")
@@ -565,16 +591,57 @@ async def handle_dep_idr_amount(chat_id, user, text):
     s = await get_settings()
     min_idr = float(s.get("min_deposit_idr", 50000))
     try:
-        amount = float(text.strip().replace("Rp", "").replace(".", "").replace(",", "").replace(" ", ""))
+        amount = float(
+            text.strip()
+            .replace("Rp", "")
+            .replace(".", "")
+            .replace(",", "")
+            .replace(" ", "")
+        )
     except ValueError:
         await send_message(chat_id, t(lang, "invalid_amount"), kb=cancel_kb(lang))
         return
-    if amount < min_idr:
-        await send_message(chat_id, t(lang, "min_deposit", min=fmt_amount(min_idr, "IDR")), kb=cancel_kb(lang))
-        return
-    await set_state(user["telegram_id"], "dep_idr_proof", {"amount": amount})
-    await send_message(chat_id, t(lang, "amount_set_idr", amount=fmt_amount(amount, "IDR")), kb=cancel_kb(lang))
 
+    if not math.isfinite(amount) or amount > float(s.get("max_deposit_idr", 100000000)):
+        await send_message(chat_id, t(lang, "invalid_amount"), kb=cancel_kb(lang))
+        return
+
+    if amount < min_idr:
+        await send_message(
+            chat_id,
+            t(lang, "min_deposit", min=fmt_amount(min_idr, "IDR")),
+            kb=cancel_kb(lang),
+        )
+        return
+
+    if __import__("os").environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}:
+        try:
+            payment = await create_gopay_payment(user, amount)
+            await set_state(user["telegram_id"], None)
+            caption = t(
+                lang,
+                "gopay_qr_created",
+                amount=fmt_amount(amount, "IDR"),
+                payment_amount=fmt_amount(payment["payment_amount"], "IDR"),
+            )
+            await send_photo_bytes(
+                chat_id,
+                payment["image"],
+                "gopay-qris.jpg",
+                caption=caption,
+                kb=back_kb(lang),
+            )
+        except Exception:
+            logger.exception("GoPay QR creation failed")
+            await send_message(chat_id, t(lang, "gopay_unavailable"), kb=back_kb(lang))
+        return
+
+    await set_state(user["telegram_id"], "dep_idr_proof", {"amount": amount})
+    await send_message(
+        chat_id,
+        t(lang, "amount_set_idr", amount=fmt_amount(amount, "IDR")),
+        kb=cancel_kb(lang),
+    )
 
 async def create_pending_deposit(user, data, tx_hash=None, proof_file_id=None, credited_amount=None, auto_verified=False):
     dep = {
