@@ -450,6 +450,7 @@ export default class GoPayMerchant {
       if (this._initialized) return;
 
       const cache = readCache();
+
       if (!this.token && cache.gopay_token) {
          this.token = cache.gopay_token;
          console.log('[GoPayMerchant] Token dimuat dari cache.');
@@ -900,7 +901,7 @@ token dan merchant ID agar tidak perlu login ulang setiap saat.
 ───────────────────────────────────────────────────────────
 1. LOGIN VIA EMAIL + OTP (terminal interaktif)
 
-  import { loginWithEmailOtp } from './gobiz.js';
+  import GoPayMerchant, { loginWithEmailOtp } from './gobiz.js';
 
   const auth = await loginWithEmailOtp('email@merchant.com');
   const merchant = new GoPayMerchant({ token: auth.access_token });
