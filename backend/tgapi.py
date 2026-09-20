@@ -26,6 +26,10 @@ async def edit_message(chat_id, message_id, text, kb=None):
     return await tg("editMessageText", **payload)
 
 
+async def delete_message(chat_id, message_id):
+    return await tg("deleteMessage", chat_id=chat_id, message_id=message_id)
+
+
 async def answer_callback(cb_id, text=None):
     payload = {"callback_query_id": cb_id}
     if text:
