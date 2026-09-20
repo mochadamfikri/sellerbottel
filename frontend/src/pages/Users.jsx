@@ -11,10 +11,12 @@ export default function UsersPage() {
   const [freeze, setFreeze] = useState(null);
   const [freezeReason, setFreezeReason] = useState("");
   const [busy, setBusy] = useState(false);
-  const [filters, setFilters] = useState({ search: "", status: "all", lang: "all", has_deposit: "all", has_order: "all" });
+  const [filters, setFilters] = useState({ search: "", status: "all", lang: "all", has_deposit: "all", has_order: "all", min_deposit: "", max_deposit: "", min_purchase: "", max_purchase: "", min_balance: "", max_balance: "", product_id: "" });
+  const [products, setProducts] = useState([]);
 
   const load = () => api.get("/admin/users/search", { params: filters }).then(({ data }) => setUsers(data));
-  useEffect(() => { load(); }, [filters.search, filters.status, filters.lang, filters.has_deposit, filters.has_order]);
+  useEffect(() => { api.get("/admin/products").then(({ data }) => setProducts(data)); }, []);
+  useEffect(() => { load(); }, [filters]);
 
   const doAdjust = async () => {
     setBusy(true);
@@ -65,6 +67,12 @@ export default function UsersPage() {
         <select className={inputCls} value={filters.has_order} onChange={(e) => setFilters({ ...filters, has_order: e.target.value })}>
           <option value="all">Order: semua</option><option value="yes">Pernah order</option><option value="no">Belum order</option>
         </select>
+        <select className={inputCls} value={filters.product_id} onChange={(e) => setFilters({ ...filters, product_id: e.target.value })}>
+          <option value="">Produk: semua</option>{products.map(p => <option key={p._id} value={p._id}>{p.name}</option>)}
+        </select>
+        {[["min_deposit","Min deposit"],["max_deposit","Max deposit"],["min_purchase","Min belanja"],["max_purchase","Max belanja"],["min_balance","Min saldo"],["max_balance","Max saldo"]].map(([key,label]) => (
+          <input key={key} type="number" className={inputCls} placeholder={label} value={filters[key]} onChange={(e) => setFilters({ ...filters, [key]: e.target.value })} />
+        ))}
       </div>
 
       <div data-testid="user-list-table" className="bg-slate-900/60 border border-slate-800 rounded-xl overflow-x-auto">
