@@ -8,12 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, R
 from pydantic import BaseModel
 from i18n import t, message_catalog, set_override, reset_override, STRINGS
 from db import db, get_settings
-from auth import get_current_admin
+from auth import get_current_admin, verify_password
 from rates import get_rate
 from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso
 from storage import put_object
 from tgapi import download_telegram_file, send_message, send_photo_bytes
-from inventory import validate_items, add_items, available_count
+from inventory import validate_records, add_records, available_count, decrypt_items
 from reporting import router as reports_router
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(get_current_admin)])
@@ -49,13 +49,46 @@ async def stats():
 
 # ============ PRODUCTS ============
 
+def _normalized_product_kind(product: dict) -> str:
+    kind = product.get("product_kind")
+    if kind in {"digital", "service"}:
+        return kind
+    return "digital" if (
+        product.get("delivery_type") == "inventory"
+        or product.get("inventory_enabled")
+        or product.get("delivery_type") in {"license", "file"}
+    ) else "service"
+
+
+def _is_inventory_product(product: dict) -> bool:
+    return _normalized_product_kind(product) == "digital"
+
+
+def _effective_admin_stock(product: dict, inventory_stock: int) -> int | None:
+    if not _is_inventory_product(product):
+        return None
+    mode = product.get("stock_mode", "auto")
+    if mode == "manual" and product.get("manual_stock") is not None:
+        return max(0, int(product.get("manual_stock") or 0))
+    return inventory_stock
+
+
 @router.get("/products")
 async def list_products():
     products = await db.products.find().sort("created_at", -1).to_list(500)
     for product in products:
-        if product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
-            product["inventory_stock"] = await available_count(product["_id"])
-            product["stock"] = product["inventory_stock"]
+        kind = _normalized_product_kind(product)
+        product["product_kind"] = kind
+        if kind == "digital":
+            actual = await available_count(product["_id"])
+            product["inventory_stock"] = actual
+            product["stock_mode"] = product.get("stock_mode", "auto")
+            product["stock"] = _effective_admin_stock(product, actual)
+            product["inventory_enabled"] = True
+        else:
+            product["inventory_stock"] = 0
+            product["stock"] = None
+            product["inventory_enabled"] = False
     return products
 
 
@@ -67,64 +100,136 @@ async def _save_file(file: UploadFile):
     return result["path"], file.filename
 
 
+def _validate_product_kind(value: str) -> str:
+    value = (value or "digital").strip().lower()
+    if value not in {"digital", "service"}:
+        raise HTTPException(400, "Jenis product tidak valid.")
+    return value
+
+
 @router.post("/products")
 async def create_product(
-    name: str = Form(...), description: str = Form(""), price_usd: float = Form(...),
-    price_idr: Optional[float] = Form(None), delivery_type: str = Form(...),
-    content: str = Form(""), active: bool = Form(True), stock: Optional[int] = Form(None),
+    name: str = Form(...),
+    description: str = Form(""),
+    price_usd: float = Form(...),
+    price_idr: Optional[float] = Form(None),
+    delivery_type: str = Form("link"),
+    content: str = Form(""),
+    active: bool = Form(True),
+    stock: Optional[int] = Form(None),
+    product_kind: str = Form("digital"),
+    stock_mode: str = Form("auto"),
     file: Optional[UploadFile] = File(None),
 ):
+    product_kind = _validate_product_kind(product_kind)
+    if stock_mode not in {"auto", "manual"}:
+        raise HTTPException(400, "Mode stok tidak valid.")
+
     storage_path, original_filename = None, None
-    if delivery_type == "file":
-        if not file:
-            raise HTTPException(400, "File wajib diupload untuk produk tipe file")
-        storage_path, original_filename = await _save_file(file)
+    if product_kind == "service":
+        if delivery_type not in {"link", "license", "file"}:
+            raise HTTPException(400, "Tipe pengiriman jasa tidak valid.")
+        if delivery_type == "file":
+            if not file:
+                raise HTTPException(400, "File wajib diupload untuk produk tipe file")
+            storage_path, original_filename = await _save_file(file)
+        manual_stock = None
+        stored_stock = None
+        inventory_enabled = False
+        stored_delivery = delivery_type
+        stored_content = content
+    else:
+        manual_stock = None if stock_mode == "auto" else max(0, int(stock or 0))
+        stored_stock = manual_stock
+        inventory_enabled = True
+        stored_delivery = "inventory"
+        stored_content = ""
+
     prod = {
-        "_id": str(uuid.uuid4()), "name": name, "description": description,
-        "price_usd": price_usd, "price_idr": price_idr, "delivery_type": delivery_type,
-        "content": "" if delivery_type == "inventory" else content,
-        "storage_path": storage_path, "original_filename": original_filename,
-        "active": active, "stock": None if delivery_type == "inventory" else stock,
-        "inventory_enabled": delivery_type == "inventory",
+        "_id": str(uuid.uuid4()),
+        "name": name.strip(),
+        "description": description,
+        "price_usd": price_usd,
+        "price_idr": price_idr,
+        "product_kind": product_kind,
+        "delivery_type": stored_delivery,
+        "content": stored_content,
+        "storage_path": storage_path,
+        "original_filename": original_filename,
+        "active": active,
+        "stock": stored_stock,
+        "stock_mode": stock_mode if product_kind == "digital" else "unlimited",
+        "manual_stock": manual_stock,
+        "inventory_enabled": inventory_enabled,
+        "inventory_schema": [],
         "created_at": now_iso(),
     }
     await db.products.insert_one(prod)
-    if delivery_type == "inventory" and content.strip():
-        await add_items(prod["_id"], content.splitlines())
-        prod["stock"] = await available_count(prod["_id"])
     return prod
 
 
 @router.put("/products/{pid}")
 async def update_product(
-    pid: str, name: str = Form(...), description: str = Form(""), price_usd: float = Form(...),
-    price_idr: Optional[float] = Form(None), delivery_type: str = Form(...),
-    content: str = Form(""), active: bool = Form(True), stock: Optional[int] = Form(None),
+    pid: str,
+    name: str = Form(...),
+    description: str = Form(""),
+    price_usd: float = Form(...),
+    price_idr: Optional[float] = Form(None),
+    delivery_type: str = Form("link"),
+    content: str = Form(""),
+    active: bool = Form(True),
+    stock: Optional[int] = Form(None),
+    product_kind: str = Form("digital"),
+    stock_mode: str = Form("auto"),
     file: Optional[UploadFile] = File(None),
 ):
-    prod = await db.products.find_one({"_id": pid})
-    if not prod:
+    product = await db.products.find_one({"_id": pid})
+    if not product:
         raise HTTPException(404, "Produk tidak ditemukan")
+
+    product_kind = _validate_product_kind(product_kind)
+    if stock_mode not in {"auto", "manual"}:
+        raise HTTPException(400, "Mode stok tidak valid.")
+
     updates = {
-        "name": name,
+        "name": name.strip(),
         "description": description,
         "price_usd": price_usd,
         "price_idr": price_idr,
-        "delivery_type": delivery_type,
-        "content": "" if delivery_type == "inventory" else content,
+        "product_kind": product_kind,
         "active": active,
-        "stock": None if delivery_type == "inventory" else stock,
-        "inventory_enabled": delivery_type == "inventory",
         "updated_at": now_iso(),
     }
-    if file:
-        updates["storage_path"], updates["original_filename"] = await _save_file(file)
+
+    if product_kind == "service":
+        if delivery_type not in {"link", "license", "file"}:
+            raise HTTPException(400, "Tipe pengiriman jasa tidak valid.")
+        updates.update({
+            "delivery_type": delivery_type,
+            "content": content,
+            "stock": None,
+            "stock_mode": "unlimited",
+            "manual_stock": None,
+            "inventory_enabled": False,
+        })
+        if file:
+            updates["storage_path"], updates["original_filename"] = await _save_file(file)
+    else:
+        manual_stock = None if stock_mode == "auto" else max(0, int(stock or 0))
+        updates.update({
+            "delivery_type": "inventory",
+            "content": "",
+            "stock": manual_stock,
+            "stock_mode": stock_mode,
+            "manual_stock": manual_stock,
+            "inventory_enabled": True,
+        })
+
     await db.products.update_one({"_id": pid}, {"$set": updates})
-    if delivery_type == "inventory" and content.strip():
-        await add_items(pid, content.splitlines())
     result = await db.products.find_one({"_id": pid})
-    if result and delivery_type == "inventory":
-        result["stock"] = await available_count(pid)
+    if result and _is_inventory_product(result):
+        result["inventory_stock"] = await available_count(pid)
+        result["stock"] = _effective_admin_stock(result, result["inventory_stock"])
     return result
 
 
@@ -140,26 +245,35 @@ def _parse_num(v, idr: bool):
 
 
 @router.post("/products/import")
-async def import_products(currency: str = Form("IDR"), file: UploadFile = File(...)):
+async def import_products(
+    currency: str = Form("IDR"),
+    product_kind: str = Form("digital"),
+    file: UploadFile = File(...),
+):
+    product_kind = _validate_product_kind(product_kind)
     data = await file.read()
     fn = (file.filename or "").lower()
     rows = []
     if fn.endswith(".csv") or fn.endswith(".txt"):
         text_data = data.decode("utf-8-sig", errors="ignore")
-        first_line = text_data.splitlines()[0] if text_data.splitlines() else ""
+        lines = text_data.splitlines()
+        first_line = lines[0] if lines else ""
         delim = "|" if "|" in first_line else ("," if "," in first_line else ";")
         rows = list(csv.reader(io.StringIO(text_data), delimiter=delim))
     else:
         import openpyxl
         try:
-            wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+            wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
         except Exception:
             raise HTTPException(400, "File tidak valid. Gunakan .xlsx atau .csv")
         rows = [list(r) for r in wb.active.iter_rows(values_only=True)]
+
     rate = await get_rate()
     idr = currency == "IDR"
     docs, skipped = [], 0
-    for row in rows:
+    for row_index, row in enumerate(rows):
+        if row_index == 0 and row and str(row[0] or "").strip().lower() in {"product", "produk", "nama", "nama produk"}:
+            continue
         if not row or row[0] is None or not str(row[0]).strip():
             skipped += 1
             continue
@@ -170,43 +284,117 @@ async def import_products(currency: str = Form("IDR"), file: UploadFile = File(.
             skipped += 1
             continue
         desc = str(row[3]).strip() if len(row) > 3 and row[3] is not None else ""
+        is_digital = product_kind == "digital"
         docs.append({
-            "_id": str(uuid.uuid4()), "name": str(row[0]).strip(), "description": desc,
+            "_id": str(uuid.uuid4()),
+            "name": str(row[0]).strip(),
+            "description": desc,
             "price_usd": round(price / rate, 2) if idr else price,
             "price_idr": price if idr else None,
-            "delivery_type": "license", "content": "",
-            "storage_path": None, "original_filename": None,
-            "active": True, "stock": stock, "created_at": now_iso(),
+            "product_kind": product_kind,
+            "delivery_type": "inventory" if is_digital else "link",
+            "content": "",
+            "storage_path": None,
+            "original_filename": None,
+            "active": True,
+            "stock": stock if is_digital else None,
+            "stock_mode": "manual" if is_digital else "unlimited",
+            "manual_stock": stock if is_digital else None,
+            "inventory_enabled": is_digital,
+            "inventory_schema": [],
+            "created_at": now_iso(),
         })
     if docs:
         await db.products.insert_many(docs)
     return {"imported": len(docs), "skipped": skipped}
 
 
-class InventoryBody(BaseModel):
-    content: str = ""
+def _stringify_cell(value):
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
 
 
-async def _inventory_lines(file: Optional[UploadFile], content: str):
+def _detect_delimiter(line: str):
+    candidates = ["|", ",", ";", "\t"]
+    return max(candidates, key=lambda d: line.count("\t" if d == "\\t" else d))
+
+
+async def _parse_inventory_input(file: Optional[UploadFile], content: str, product: dict):
+    schema = [str(x).strip() for x in (product.get("inventory_schema") or []) if str(x).strip()]
+    records = []
+    source_name = (file.filename or "").lower() if file else ""
+
     if file:
         data = await file.read()
-        fn = (file.filename or "").lower()
-        if fn.endswith(".xlsx"):
+        if source_name.endswith(".xlsx"):
             try:
                 import openpyxl
                 wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
-                lines = []
-                for row in wb.active.iter_rows(values_only=True):
-                    value = row[0] if row else None
-                    if value:
-                        lines.append(str(value))
-                return lines
+                rows = [list(row) for row in wb.active.iter_rows(values_only=True)]
+                rows = [row for row in rows if any(value not in (None, "") for value in row)]
+                if not rows:
+                    raise HTTPException(400, "File inventory kosong.")
+                headers = [_stringify_cell(v) for v in rows[0]]
+                if not all(headers) or len(set(headers)) != len(headers):
+                    raise HTTPException(400, "Header inventory tidak boleh kosong atau duplikat.")
+                schema_from_file = headers
+                for row in rows[1:]:
+                    record = {headers[i]: _stringify_cell(row[i] if i < len(row) else "") for i in range(len(headers))}
+                    if any(record.values()):
+                        records.append(record)
+            except HTTPException:
+                raise
             except Exception as exc:
-                raise HTTPException(400, f"File XLSX tidak valid: {exc}")
-        if fn.endswith(".txt") or fn.endswith(".csv"):
-            return data.decode("utf-8-sig", errors="ignore").splitlines()
-        raise HTTPException(400, "Inventory hanya menerima .txt, .csv atau .xlsx")
-    return content.splitlines()
+                raise HTTPException(400, f"File XLSX inventory tidak valid: {exc}")
+        elif source_name.endswith(".csv"):
+            text_data = data.decode("utf-8-sig", errors="ignore")
+            rows = list(csv.reader(io.StringIO(text_data), delimiter=_detect_delimiter(text_data.splitlines()[0] if text_data.splitlines() else "")))
+            rows = [row for row in rows if any(str(v or "").strip() for v in row)]
+            if not rows:
+                raise HTTPException(400, "File inventory kosong.")
+            headers = [str(v or "").strip() for v in rows[0]]
+            if not all(headers) or len(set(headers)) != len(headers):
+                raise HTTPException(400, "Header inventory tidak boleh kosong atau duplikat.")
+            schema_from_file = headers
+            for row in rows[1:]:
+                record = {headers[i]: str(row[i] if i < len(row) else "").strip() for i in range(len(headers))}
+                if any(record.values()):
+                    records.append(record)
+        elif source_name.endswith(".txt"):
+            text_data = data.decode("utf-8-sig", errors="ignore")
+            lines = [line.strip() for line in text_data.splitlines() if line.strip()]
+            schema_from_file = schema or ["value"]
+            for line in lines:
+                parts = [part.strip() for part in line.split("|")]
+                if len(schema_from_file) == 1:
+                    records.append({schema_from_file[0]: line})
+                elif len(parts) == len(schema_from_file):
+                    records.append({schema_from_file[i]: parts[i] for i in range(len(schema_from_file))})
+                else:
+                    raise HTTPException(400, f"Format TXT tidak cocok dengan schema inventory ({len(schema_from_file)} kolom).")
+        else:
+            raise HTTPException(400, "Inventory hanya menerima .xlsx, .csv atau .txt")
+    else:
+        lines = [line.strip() for line in (content or "").splitlines() if line.strip()]
+        schema_from_file = schema or ["value"]
+        for line in lines:
+            parts = [part.strip() for part in line.split("|")]
+            if len(schema_from_file) == 1:
+                records.append({schema_from_file[0]: line})
+            elif len(parts) == len(schema_from_file):
+                records.append({schema_from_file[i]: parts[i] for i in range(len(schema_from_file))})
+            else:
+                raise HTTPException(400, f"Input manual tidak cocok dengan schema inventory ({len(schema_from_file)} kolom).")
+
+    if schema and schema != schema_from_file:
+        raise HTTPException(
+            400,
+            "Header inventory tidak cocok dengan schema product ini. Gunakan header yang sama seperti upload sebelumnya."
+        )
+    return schema_from_file, records
 
 
 @router.post("/products/{pid}/inventory/validate")
@@ -218,14 +406,17 @@ async def validate_inventory(
     product = await db.products.find_one({"_id": pid})
     if not product:
         raise HTTPException(404, "Produk tidak ditemukan")
+    if not _is_inventory_product(product):
+        raise HTTPException(400, "Produk jasa tidak memiliki inventory.")
 
-    lines = await _inventory_lines(file, content)
-    check = await validate_items(lines)
+    schema, records = await _parse_inventory_input(file, content, product)
+    check = await validate_records(pid, records, schema)
     return {
+        "schema": schema,
         "valid_count": check["valid_count"],
         "duplicate_count": check["duplicate_count"],
-        "preview": check["valid"][:20],
-        "duplicates": check["duplicates"][:20],
+        "preview": check["valid"][:5],
+        "duplicates": check["duplicates"][:5],
     }
 
 
@@ -238,13 +429,40 @@ async def import_inventory(
     product = await db.products.find_one({"_id": pid})
     if not product:
         raise HTTPException(404, "Produk tidak ditemukan")
+    if not _is_inventory_product(product):
+        raise HTTPException(400, "Produk jasa tidak memiliki inventory.")
 
-    lines = await _inventory_lines(file, content)
-    result = await add_items(pid, lines)
+    schema, records = await _parse_inventory_input(file, content, product)
+    result = await add_records(pid, records, schema)
     result.pop("valid", None)
     result.pop("duplicates", None)
     result["stock"] = await available_count(pid)
+    result["schema"] = schema
     return result
+
+
+class InventoryManualBody(BaseModel):
+    data: dict[str, str]
+
+
+@router.post("/products/{pid}/inventory/manual")
+async def add_inventory_manual(pid: str, body: InventoryManualBody):
+    product = await db.products.find_one({"_id": pid})
+    if not product:
+        raise HTTPException(404, "Produk tidak ditemukan")
+    if not _is_inventory_product(product):
+        raise HTTPException(400, "Produk jasa tidak memiliki inventory.")
+    schema = [str(x).strip() for x in (product.get("inventory_schema") or []) if str(x).strip()]
+    if not schema:
+        raise HTTPException(400, "Schema inventory belum tersedia. Upload file XLSX/CSV pertama kali untuk menentukan header.")
+    result = await add_records(pid, [body.data], schema)
+    if result["created"] != 1:
+        raise HTTPException(409, "Data inventory sudah ada atau tidak valid.")
+    return {
+        "ok": True,
+        "schema": schema,
+        "stock": await available_count(pid),
+    }
 
 
 @router.get("/products/{pid}/inventory")
@@ -252,11 +470,13 @@ async def inventory_list(pid: str, status: str = "available"):
     product = await db.products.find_one({"_id": pid})
     if not product:
         raise HTTPException(404, "Produk tidak ditemukan")
+    if not _is_inventory_product(product):
+        raise HTTPException(400, "Produk jasa tidak memiliki inventory.")
+
     q = {"product_id": pid}
     if status != "all":
         q["status"] = status
     cursor = db.inventory_items.find(q).sort("created_at", -1).limit(1000)
-    from inventory import decrypt_items
     rows = []
     for item in await cursor.to_list(1000):
         row = {
@@ -267,10 +487,31 @@ async def inventory_list(pid: str, status: str = "available"):
             "created_at": item.get("created_at"),
             "sold_at": item.get("sold_at"),
         }
-        if status != "sold":
+        if status != "sold" and item.get("secret"):
             row["item"] = decrypt_items([item])[0]
         rows.append(row)
-    return rows
+    return {
+        "schema": product.get("inventory_schema") or ["value"],
+        "items": rows,
+        "available": await db.inventory_items.count_documents({"product_id": pid, "status": "available"}),
+        "reserved": await db.inventory_items.count_documents({"product_id": pid, "status": "reserved"}),
+        "sold": await db.inventory_items.count_documents({"product_id": pid, "status": "sold"}),
+    }
+
+
+@router.delete("/products/{pid}/inventory/{item_id}")
+async def delete_inventory_item(pid: str, item_id: str):
+    product = await db.products.find_one({"_id": pid})
+    if not product:
+        raise HTTPException(404, "Produk tidak ditemukan")
+    result = await db.inventory_items.delete_one({
+        "_id": item_id,
+        "product_id": pid,
+        "status": "available",
+    })
+    if result.deleted_count != 1:
+        raise HTTPException(400, "Item hanya bisa dihapus saat masih tersedia.")
+    return {"ok": True, "stock": await available_count(pid)}
 
 
 @router.patch("/products/{pid}/toggle")
