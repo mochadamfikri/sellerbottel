@@ -1,5 +1,5 @@
 import { NavLink, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Package, Wallet, Users, Settings, LogOut, Bot } from "lucide-react";
+import { LayoutDashboard, Package, Wallet, Users, Settings, LogOut, Bot, Megaphone, Percent, MessageSquareText } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
 const nav = [
@@ -7,6 +7,9 @@ const nav = [
   { to: "/products", label: "Produk", icon: Package },
   { to: "/deposits", label: "Deposit", icon: Wallet },
   { to: "/users", label: "Pengguna", icon: Users },
+  { to: "/discounts", label: "Discount", icon: Percent },
+  { to: "/broadcasts", label: "Broadcast", icon: Megaphone },
+  { to: "/messages", label: "Bot Messages", icon: MessageSquareText },
   { to: "/settings", label: "Pengaturan", icon: Settings },
 ];
 
