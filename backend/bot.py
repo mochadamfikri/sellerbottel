@@ -843,17 +843,35 @@ def frozen_text(user):
 async def handle_callback(cb):
     data = cb.get("data", "")
     chat_id = cb["message"]["chat"]["id"]
+
     if data.startswith("adm:"):
         _, action, dep_id = data.split(":", 2)
         await handle_admin_callback(cb, action, dep_id)
         return
+
     user = await get_user(cb["from"])
     lang = user.get("lang", "id")
     await answer_callback(cb["id"])
 
+    if data == "gate:check":
+        clear_cache_for_user(user["telegram_id"])
+        if not await ensure_join_gate(chat_id, user):
+            return
+        if not user.get("currency"):
+            await show_currency_selection(chat_id, lang)
+        else:
+            await show_main_menu(chat_id, user)
+        return
+
+    if not await ensure_join_gate(chat_id, user):
+        return
+
     if data.startswith("setlang:"):
         new_lang = data.split(":")[1]
-        await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$set": {"lang": new_lang}})
+        await db.bot_users.update_one(
+            {"telegram_id": user["telegram_id"]},
+            {"$set": {"lang": new_lang}},
+        )
         user["lang"] = new_lang
         await send_message(chat_id, t(new_lang, "lang_set"))
         if user.get("currency"):
@@ -864,7 +882,12 @@ async def handle_callback(cb):
 
     if data.startswith("cur:"):
         new_cur = data.split(":")[1]
-        await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$set": {"currency": new_cur}})
+        if new_cur not in CUR_FIELD:
+            return
+        await db.bot_users.update_one(
+            {"telegram_id": user["telegram_id"]},
+            {"$set": {"currency": new_cur}},
+        )
         user["currency"] = new_cur
         await show_main_menu(chat_id, user)
         return
@@ -881,7 +904,9 @@ async def handle_callback(cb):
         await set_state(user["telegram_id"], None)
         await show_main_menu(chat_id, user)
     elif data == "menu:products":
-        await show_products(chat_id, user)
+        await show_products(chat_id, user, 1)
+    elif data.startswith("products:"):
+        await show_products(chat_id, user, int(data.split(":", 1)[1]))
     elif data == "menu:stock":
         await show_stock(chat_id, user)
     elif data.startswith("prod:"):
@@ -897,7 +922,8 @@ async def handle_callback(cb):
     elif data.startswith("qtydec:"):
         await change_qty(chat_id, user, data.split(":", 1)[1], -1)
     elif data.startswith("cartrm:"):
-        cart = [i for i in norm_cart(user.get("cart")) if i["pid"] != data.split(":", 1)[1]]
+        pid = data.split(":", 1)[1]
+        cart = [i for i in norm_cart(user.get("cart")) if i["pid"] != pid]
         await save_cart(user["telegram_id"], cart)
         user["cart"] = cart
         await show_cart(chat_id, user)
@@ -913,32 +939,19 @@ async def handle_callback(cb):
     elif data.startswith("depnet:"):
         _, coin, network = data.split(":")
         await show_deposit_address(chat_id, user, coin, network)
-    elif data == "menu:balance":
-        await show_balance(chat_id, user)
-    elif data == "menu:history":
-        await show_history(chat_id, user)
-    elif data == "menu:settings":
-        await show_settings(chat_id, user)
-    elif data == "langmenu":
-        await show_language_menu(chat_id, user)
-    elif data.startswith("setcur:"):
-        await handle_set_currency(chat_id, user, data.split(":")[1])
-    elif data.startswith("conv:"):
-        _, yn, new_cur = data.split(":")
-        await handle_conversion(chat_id, user, yn == "yes", new_cur)
-    elif data == "menu:help":
-        await send_message(chat_id, t(lang, "help"), kb=back_kb(lang))
-
-
-async def handle_message(message):
+    elif async def handle_message(message):
     if "from" not in message or message["from"].get("is_bot"):
         return
+
     chat_id = message["chat"]["id"]
+    message_id = message.get("message_id")
     user = await get_user(message["from"])
     lang = user.get("lang", "id")
     text = (message.get("text") or "").strip()
 
     if text == "/start":
+        if not await ensure_join_gate(chat_id, user):
+            return
         await set_state(user["telegram_id"], None)
         if not user.get("currency"):
             await show_currency_selection(chat_id, lang)
@@ -946,6 +959,9 @@ async def handle_message(message):
             await send_message(chat_id, frozen_text(user))
         else:
             await show_main_menu(chat_id, user)
+        return
+
+    if not await ensure_join_gate(chat_id, user):
         return
 
     if not user.get("currency"):
@@ -966,7 +982,35 @@ async def handle_message(message):
     if text in ("/riwayat", "/history"):
         await show_history(chat_id, user)
         return
-    if text == "/stok" or text == "/stock":
+    if text in ("/stok", "/stock"):
+        await show_stock(chat_id, user)
+        return
+    if text == "/help":
+        await send_message(chat_id, t(lang, "help"), kb=back_kb(lang))
+        return
+
+    state = user.get("state")
+    if state == "dep_usd_amount":
+        await handle_dep_usd_amount(chat_id, user, text)
+    elif state == "dep_usd_wallet":
+        await handle_dep_usd_wallet(chat_id, user, text)
+    elif state == "dep_usd_proof":
+        await handle_usd_proof(chat_id, user, message)
+    elif state == "dep_idr_amount":
+        await handle_dep_idr_amount(chat_id, user, text)
+    elif state == "dep_idr_proof":
+        await handle_idr_proof(chat_id, user, message)
+    else:
+        await show_main_menu(chat_id, user)
+
+    if message_id and state in {"dep_usd_amount", "dep_usd_wallet", "dep_usd_proof", "dep_idr_amount", "dep_idr_proof"}:
+        try:
+            await delete_message(chat_id, message_id)
+        except Exception:
+            pass
+
+
+== "/stok" or text == "/stock":
         await show_stock(chat_id, user)
         return
     if text == "/help":
