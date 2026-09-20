@@ -309,7 +309,8 @@ async function loginWithOtp(phoneNumber, getOtpFn = null) {
    }
 
    if (!otpCode) {
-      throw new Error('[Auth] Kode OTP tidak boleh kosong.');   }
+      throw new Error('[Auth] Kode OTP tidak boleh kosong.');
+   }
 
    console.log('[Auth] Memvalidasi kode OTP...');
 
@@ -449,7 +450,6 @@ export default class GoPayMerchant {
       if (this._initialized) return;
 
       const cache = readCache();
-
       if (!this.token && cache.gopay_token) {
          this.token = cache.gopay_token;
          console.log('[GoPayMerchant] Token dimuat dari cache.');
@@ -544,7 +544,8 @@ export default class GoPayMerchant {
                   ? moment(tx.transaction_time).tz(global.timezone || "Asia/Jakarta").locale("id").format("DD MMM YYYY - HH:mm:ss")
                   : "";
 
-               histories.push({                  type: "payin",
+               histories.push({
+                  type: "payin",
                   amount: {
                      displayed_text: `Rp ${realAmount}`
                   },
@@ -804,3 +805,204 @@ export class GoPayWatcher extends EventEmitter {
       } finally {
          this._polling = false;
       }
+   }
+
+   /**
+    * Tunggu pembayaran dengan nominal tertentu secara async.
+    * @param {number} amount           - Nominal yang diharapkan (dalam Rupiah)
+    * @param {object} [opts]
+    * @param {number} [opts.timeout]   - Batas waktu (ms), default 5 menit
+    * @param {number} [opts.tolerance] - Toleransi selisih nominal (Rp), default 0
+    * @returns {Promise<{ amount, txId, entry }>}
+    */
+   waitForPayment(amount, { timeout = 5 * 60_000, tolerance = 0 } = {}) {
+      return new Promise((resolve, reject) => {
+         this._listeners++;
+         this._startPoller();
+
+         let timeoutHandle;
+
+         const onPayment = (data) => {
+            if (Math.abs(data.amount - amount) <= tolerance) {
+               cleanup();
+               resolve(data);
+            }
+         };
+
+         const cleanup = () => {
+            clearTimeout(timeoutHandle);
+            this.off('payment', onPayment);
+            this._listeners = Math.max(0, this._listeners - 1);
+            if (this._listeners === 0) this._stopPoller();
+         };
+
+         timeoutHandle = setTimeout(() => {
+            cleanup();
+            reject(new Error(
+               `[GoPayWatcher] Timeout: Pembayaran Rp ${amount.toLocaleString('id-ID')} tidak terdeteksi dalam ${timeout / 1000}s.`
+            ));
+         }, timeout);
+
+         this.on('payment', onPayment);
+      });
+   }
+
+   reset() {
+      this._seenIds.clear();
+      this._seeded = false;
+      console.log('[GoPayWatcher] Seed direset.');
+   }
+}
+
+let _sharedMerchant = null;
+let _sharedWatcher  = null;
+
+/**
+ * Dapatkan instance GoPayWatcher singleton.
+ * Semua plugin yang memanggil fungsi ini berbagi satu poller yang sama.
+ * @param {number} [intervalMs=6000] - Interval polling (ms)
+ * @returns {GoPayWatcher}
+ */
+export function getGoPayWatcher(intervalMs = 6_000) {
+   if (!_sharedMerchant) _sharedMerchant = new GoPayMerchant();
+   if (!_sharedWatcher)  _sharedWatcher  = new GoPayWatcher(_sharedMerchant, intervalMs);
+   return _sharedWatcher;
+}
+
+/*
+═══════════════════════════════════════════════════════════
+CARA PENGGUNAAN — gobiz.js
+═══════════════════════════════════════════════════════════
+
+Buat file .env di direktori yang sama dengan gobiz.js.
+Tersedia tiga metode login:
+
+  [A] Login via Nomor HP + OTP
+  ───────────────────────────
+  GOPAY_PHONE=08123456789
+  GOPAY_LOGIN_METHOD=otp
+
+  [B] Login via Email + OTP
+  ─────────────────────────
+  GOPAY_EMAIL=email@merchant.com
+  GOPAY_LOGIN_METHOD=email_otp
+
+  [C] Login via Email + Password (mode lama)
+  ──────────────────────────────────────────────
+  GOPAY_EMAIL=email@merchant.com
+  GOPAY_PASSWORD=password_kamu
+
+  (Jika GOPAY_LOGIN_METHOD tidak diisi, nomor HP memilih OTP; email memilih email OTP.)
+
+File .gopay_cache.json akan dibuat otomatis untuk menyimpan
+token dan merchant ID agar tidak perlu login ulang setiap saat.
+
+───────────────────────────────────────────────────────────
+1. LOGIN VIA EMAIL + OTP (terminal interaktif)
+
+  import { loginWithEmailOtp } from './gobiz.js';
+
+  const auth = await loginWithEmailOtp('email@merchant.com');
+  const merchant = new GoPayMerchant({ token: auth.access_token });
+  await merchant.init();
+  // → OTP dikirim ke email, lalu token + Merchant ID disimpan ke cache.
+
+───────────────────────────────────────────────────────────
+2. LOGIN VIA NOMOR HP + OTP (terminal interaktif)
+───────────────────────────────────────────────────────────
+
+  # Di file .env:
+  # GOPAY_PHONE=08123456789
+
+  import GoPayMerchant from './gobiz.js';
+
+  const merchant = new GoPayMerchant();
+  await merchant.init();
+  // → GoBiz akan kirim SMS OTP, lalu terminal meminta input kode OTP
+
+───────────────────────────────────────────────────────────
+3. LOGIN OTP DENGAN CALLBACK (untuk bot / headless server)
+───────────────────────────────────────────────────────────
+
+  import GoPayMerchant from './gobiz.js';
+
+  const merchant = new GoPayMerchant({
+    loginMethod: 'otp',
+    phone: '08123456789',
+    otpCallback: async (phoneNumber) => {
+      // Contoh: ambil OTP dari Telegram bot, webhook, dsb.
+      return await myGetOtpFromExternalSource(phoneNumber);
+    }
+  });
+
+  await merchant.init();
+
+───────────────────────────────────────────────────────────
+4. MENUNGGU PEMBAYARAN MASUK
+───────────────────────────────────────────────────────────
+
+  import { getGoPayWatcher } from './gobiz.js';
+
+  const watcher = getGoPayWatcher();
+
+  watcher.waitForPayment(50000, { timeout: 5 * 60_000 })
+    .then(tx => {
+      console.log('Pembayaran diterima!');
+      console.log('Nominal :', tx.amount);
+      console.log('ID Transaksi:', tx.txId);
+    })
+    .catch(err => console.error(err.message));
+
+  // Parameter waitForPayment:
+  //   amount     {number} — nominal yang ditunggu (dalam Rupiah)
+  //   timeout    {number} — batas waktu dalam ms (default: 300000 / 5 menit)
+  //   tolerance  {number} — toleransi selisih nominal dalam Rupiah (default: 0)
+
+───────────────────────────────────────────────────────────
+5. MENGAMBIL RIWAYAT TRANSAKSI
+───────────────────────────────────────────────────────────
+
+  import GoPayMerchant from './gobiz.js';
+
+  const merchant = new GoPayMerchant();
+  const result = await merchant.getHistory({ days: 1, size: 20 });
+
+  if (result.status) {
+    for (const tx of result.data.histories) {
+      console.log(tx.amount.displayed_text, tx.time);
+    }
+  } else {
+    console.error(result.message);
+  }
+
+  // Parameter getHistory:
+  //   days  {number} — rentang hari ke belakang (default: 1)
+  //   size  {number} — jumlah transaksi maks (default: 50)
+
+───────────────────────────────────────────────────────────
+6. INISIALISASI DENGAN TOKEN & MERCHANT ID MANUAL
+───────────────────────────────────────────────────────────
+
+  import GoPayMerchant from './gobiz.js';
+
+  const merchant = new GoPayMerchant({
+    token: 'eyJhbGci...',     // opsional, jika sudah punya access token
+    merchantId: 'M-XXXXXXXX' // opsional, jika sudah tahu merchant ID
+  });
+
+  // Jika tidak diisi, keduanya akan di-resolve otomatis
+  // saat memanggil method apapun (login & deteksi merchant otomatis).
+
+───────────────────────────────────────────────────────────
+7. RESET WATCHER
+───────────────────────────────────────────────────────────
+
+  import { getGoPayWatcher } from './gobiz.js';
+
+  const watcher = getGoPayWatcher();
+  watcher.reset();
+  // Menghapus semua ID transaksi yang diingat dan memulai seed ulang.
+  // Berguna saat testing agar transaksi lama terdeteksi kembali.
+
+═══════════════════════════════════════════════════════════
+*/
