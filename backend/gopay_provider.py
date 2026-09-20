@@ -16,6 +16,25 @@ from services import credit_deposit, now_iso
 NODE_DIR = os.path.join(os.path.dirname(__file__), "gobiz")
 
 
+def _parse_node_json(stdout):
+    text = (stdout or "").strip()
+    if not text:
+        raise ValueError("GoPay provider tidak mengembalikan JSON.")
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as first_error:
+        decoder = json.JSONDecoder()
+        candidates = [idx for idx, char in enumerate(text) if char in "[{"]
+        for idx in reversed(candidates):
+            try:
+                value, _ = decoder.raw_decode(text[idx:])
+                return value
+            except json.JSONDecodeError:
+                continue
+        raise first_error
+
+
 def _run_node(script, args=None, timeout=90):
     cmd = ["node", os.path.join(NODE_DIR, script), *(args or [])]
     env = os.environ.copy()
@@ -31,7 +50,7 @@ def _run_node(script, args=None, timeout=90):
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "GoPay provider gagal.")
-    return json.loads(result.stdout)
+    return _parse_node_json(result.stdout)
 
 
 async def create_gopay_payment(user, amount, platform_code=None):
@@ -114,6 +133,8 @@ async def create_gopay_payment(user, amount, platform_code=None):
         return {
             "deposit": deposit,
             "payment_amount": active_amount,
+            "admin_fee": admin_fee,
+            "platform_code": selected_code,
             "image": image,
             "expires_at": expires,
         }
