@@ -157,8 +157,32 @@ STRINGS = {
 
 LANG_NAMES = {"id": "🇮🇩 Indonesia", "en": "🇬🇧 English"}
 
+OVERRIDES = {}
+
+
+async def load_overrides(collection):
+    OVERRIDES.clear()
+    cursor = collection.find({"active": {"$ne": False}})
+    async for row in cursor:
+        OVERRIDES[(row.get("lang", "id"), row.get("key"))] = row.get("text", "")
+
+
+def set_override(lang, key, value):
+    OVERRIDES[(lang, key)] = value
+
+
+def reset_override(lang, key):
+    OVERRIDES.pop((lang, key), None)
+
+
+def message_catalog():
+    keys = sorted(set(STRINGS["id"]) | set(STRINGS["en"]))
+    return keys
+
 
 def t(_lang: str, key: str, **kw) -> str:
     _lang = _lang if _lang in STRINGS else "id"
-    s = STRINGS[_lang].get(key) or STRINGS["id"].get(key, key)
+    s = OVERRIDES.get((_lang, key))
+    if s is None:
+        s = STRINGS[_lang].get(key) or STRINGS["id"].get(key, key)
     return s.format(**kw) if kw else s
