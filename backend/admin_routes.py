@@ -32,8 +32,10 @@ async def stats():
         return match
 
     async def sum_by(coll, match, field, currency):
-        pipeline = [{"$match": {**after_cutoff(match), "currency": currency}}, {"$group": {"_id": None, "t": {"$sum": "$$"+field}}}]
-        pipeline[1]["$group"]["t"]["$sum"] = "$" + field
+        pipeline = [
+            {"$match": {**after_cutoff(match), "currency": currency}},
+            {"$group": {"_id": None, "t": {"$sum": "$" + field}}},
+        ]
         res = await coll.aggregate(pipeline).to_list(1)
         return res[0]["t"] if res else 0
 
@@ -94,7 +96,6 @@ def _normalized_product_kind(product: dict) -> str:
     return "digital" if (
         product.get("delivery_type") == "inventory"
         or product.get("inventory_enabled")
-        or product.get("delivery_type") in {"license", "file"}
     ) else "service"
 
 
