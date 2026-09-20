@@ -9,6 +9,7 @@ from storage import get_object
 from i18n import t, LANG_NAMES
 from checkout import execute_checkout, stock_for
 from inventory import decrypt_items
+from join_gate import check_user_membership, build_gate_keyboard, clear_cache_for_user
 
 logger = logging.getLogger("bot")
 
@@ -107,27 +108,44 @@ async def show_currency_selection(chat_id, lang="id"):
 
 # ============ PRODUCTS & STOCK ============
 
-async def show_products(chat_id, user):
+async def show_products(chat_id, user, page=1):
     lang = user.get("lang", "id")
-    page = 1
-    products = await db.products.find({"active": True}).sort("created_at", -1).skip(0).limit(8).to_list(8)
+    page = max(1, int(page))
+    page_size = 8
+    query = {"active": True}
+    total_count = await db.products.count_documents(query)
+    products = await db.products.find(query).sort("created_at", -1).skip((page - 1) * page_size).limit(page_size).to_list(page_size)
+
     if not products:
         await send_message(chat_id, t(lang, "no_products"), kb=back_kb(lang))
         return
+
     rows = []
     for p in products:
         price = await product_price(p, user["currency"])
         sl = await stock_label(p, lang)
         prefix = "❌ " if not await has_stock(p) else ""
-        rows.append([{"text": f"{prefix}{p['name']} — {fmt_amount(price, user['currency'])} ({t(lang,'stock_word')} {sl})", "callback_data": f"prod:{p['_id']}"}])
-    total_count = await db.products.count_documents({"active": True})
-    nav = []
-    if total_count > 8:
-        nav.append({"text": "➡️ Berikutnya", "callback_data": "products:2"})
-    nav.append({"text": t(lang, "btn_main"), "callback_data": "menu:main"})
-    rows.append(nav)
-    await send_message(chat_id, t(lang, "products_title"), kb={"inline_keyboard": rows})
+        rows.append([
+            {
+                "text": f"{prefix}{p['name']} — {fmt_amount(price, user['currency'])} ({t(lang,'stock_word')} {sl})",
+                "callback_data": f"prod:{p['_id']}",
+            }
+        ])
 
+    nav = []
+    if page > 1:
+        nav.append({"text": "⬅️ Sebelumnya", "callback_data": f"products:{page - 1}"})
+    if page * page_size < total_count:
+        nav.append({"text": "➡️ Berikutnya", "callback_data": f"products:{page + 1}"})
+    if nav:
+        rows.append(nav)
+    rows.append([{"text": t(lang, "btn_main"), "callback_data": "menu:main"}])
+
+    await send_message(
+        chat_id,
+        t(lang, "products_title") + f"\n\nHalaman {page}/{max(1, (total_count + page_size - 1) // page_size)}",
+        kb={"inline_keyboard": rows},
+    )
 
 async def show_stock(chat_id, user):
     lang = user.get("lang", "id")
@@ -437,6 +455,20 @@ async def do_checkout(chat_id, user, cart_items):
 
 
 # ============ DEPOSIT ============
+
+async def ensure_join_gate(chat_id, user):
+    joined, missing = await check_user_membership(user["telegram_id"])
+    if joined:
+        return True
+    lang = user.get("lang", "id")
+    await send_message(
+        chat_id,
+        "📢 <b>Akses bot membutuhkan join channel terlebih dahulu.</b>\n\n"
+        "Silakan join semua channel di bawah, lalu tekan tombol <b>Saya sudah join</b>.",
+        kb=build_gate_keyboard(missing),
+    )
+    return False
+
 
 async def show_deposit_menu(chat_id, user):
     lang = user.get("lang", "id")
