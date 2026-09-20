@@ -62,6 +62,7 @@ async def ensure_indexes():
     await db.discounts.create_index([("active", 1), ("priority", -1)])
     await db.coupons.create_index("code", unique=True)
     await db.bot_messages.create_index([("key", 1), ("lang", 1)], unique=True)
+    await db.bot_message_history.create_index([("lang", 1), ("key", 1), ("version", -1)])
     await db.required_channels.create_index("channel_id", unique=True)
     await db.broadcasts.create_index([("created_at", -1)])
     await db.counters.create_index("_id", unique=True)
