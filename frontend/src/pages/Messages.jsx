@@ -30,6 +30,15 @@ export default function Messages() {
     load();
   };
 
+  const testRow = async (row) => {
+    try {
+      await api.post("/admin/messages/test", { lang: row.lang, key: row.key, text: row.text });
+      toast.success("Test dikirim ke Telegram admin");
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+
   const cls = "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
   return (
     <>
@@ -48,6 +57,7 @@ export default function Messages() {
                 <td className="px-4 py-3 text-xs">{row.custom ? "Ya" : "Default"}</td>
                 <td className="px-4 py-3 text-xs text-slate-400 max-w-xl">{row.text}</td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <button className="text-emerald-400 text-xs mr-3" onClick={() => testRow(row)}>Test</button>
                   <button className="text-cyan-400 text-xs mr-3" onClick={() => { setEditing(row); setText(row.text); }}>Edit</button>
                   {row.custom && <button className="text-rose-400 text-xs" onClick={() => reset(row)}>Reset</button>}
                 </td>
