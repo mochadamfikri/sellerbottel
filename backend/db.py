@@ -80,4 +80,8 @@ async def ensure_indexes():
 
 async def get_settings() -> dict:
     s = await db.settings.find_one({"_id": "main"})
-    return s or DEFAULT_SETTINGS
+    if not s:
+        return dict(DEFAULT_SETTINGS)
+    merged = dict(DEFAULT_SETTINGS)
+    merged.update(s)
+    return merged
