@@ -1,3 +1,4 @@
+STRINGS = {
     "id": {
         "choose_currency": "🏪 <b>Selamat datang di Toko Produk Digital!</b>\n\nSilakan pilih mata uang yang ingin Anda gunakan:\n\n💵 <b>USD</b> — deposit via crypto (USDT/USDC)\n🇮🇩 <b>IDR</b> — deposit via transfer bank\n\nPilihan ini bisa diubah kapan saja lewat menu Pengaturan.",
         "main_title": "🏪 <b>Toko Produk Digital</b>\n\nHalo, {name}! 👋\nSaldo Anda: <b>{balance}</b>\n\nSilakan pilih menu:",
@@ -31,7 +32,7 @@
         "delivered_all": "🎉 Semua produk telah dikirim!\nSisa saldo: <b>{balance}</b>",
         "deliver_fail": "⚠️ Gagal mengirim file <b>{name}</b>. Hubungi admin.",
         
-        "order_refunded": "💸 <b>Order Refunded</b>\n\nInvoice <code>{invoice}</code> was refunded for <b>{amount}</b> and your balance has been restored.",
+        "order_refunded": "💸 <b>Refund Order</b>\n\nInvoice <code>{invoice}</code> telah direfund sebesar <b>{amount}</b> dan saldo Anda dikembalikan.",
         "checkout_in_progress": "⏳ Checkout Anda sedang diproses. Tunggu proses sebelumnya selesai.",
         "checkout_failed": "⚠️ Checkout gagal diproses. Saldo dan stok tidak berubah. Silakan coba lagi.",
         "delivery_attention": "⚠️ Invoice <code>{invoice}</code> tercatat, tetapi ada produk yang gagal dikirim. Hubungi admin.",
