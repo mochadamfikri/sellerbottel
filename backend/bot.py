@@ -6,7 +6,14 @@ import asyncio
 from db import db, get_settings
 from rates import get_rate
 from chain import verify_tx, looks_like_tx_hash
-from tgapi import send_message, answer_callback, send_document, delete_message, send_photo_bytes
+from tgapi import (
+    send_message as tg_send_message,
+    edit_message as tg_edit_message,
+    answer_callback,
+    send_document,
+    delete_message,
+    send_photo_bytes,
+)
 from services import credit_deposit, reject_deposit, cancel_deposit, notify_admin, fmt_amount, now_iso
 from storage import get_object
 from i18n import t, LANG_NAMES
@@ -17,6 +24,21 @@ from gopay_provider import create_gopay_payment
 from pricing import price_for_product
 
 logger = logging.getLogger("bot")
+
+_EDIT_TARGETS = {}
+
+
+async def send_message(chat_id, text, kb=None):
+    message_id = _EDIT_TARGETS.pop(chat_id, None)
+    if message_id is not None:
+        try:
+            result = await tg_edit_message(chat_id, message_id, text, kb=kb)
+            if result.get("ok"):
+                return result
+        except Exception:
+            logger.exception("Failed to edit callback message; falling back to sendMessage")
+    return await tg_send_message(chat_id, text, kb=kb)
+
 
 _CHECKOUT_LOCKS = {}
 
@@ -937,6 +959,9 @@ async def handle_callback(cb):
 
     user = await get_user(cb["from"])
     lang = user.get("lang", "id")
+    message_id = cb.get("message", {}).get("message_id")
+    if message_id is not None:
+        _EDIT_TARGETS[chat_id] = message_id
     await answer_callback(cb["id"])
 
     if data == "gate:check":
