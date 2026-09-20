@@ -31,6 +31,8 @@ STRINGS = {
         "pay_success": "✅ <b>Pembayaran Berhasil!</b>\n\nTotal: <b>{total}</b>\nProduk sedang dikirim...",
         "delivered_all": "🎉 Semua produk telah dikirim!\nSisa saldo: <b>{balance}</b>",
         "deliver_fail": "⚠️ Gagal mengirim file <b>{name}</b>. Hubungi admin.",
+        "order_refunded": "💸 <b>Refund Order</b>\n\nInvoice <code>{invoice}</code> telah direfund sebesar <b>{amount}</b> dan saldo Anda dikembalikan.",
+        "order_refunded": "💸 <b>Order Refunded</b>\n\nInvoice <code>{invoice}</code> was refunded for <b>{amount}</b> and your balance has been restored.",
         "checkout_failed": "⚠️ Checkout gagal diproses. Saldo dan stok tidak berubah. Silakan coba lagi.",
         "delivery_attention": "⚠️ Invoice <code>{invoice}</code> tercatat, tetapi ada produk yang gagal dikirim. Hubungi admin.",
         "deliver_link": "📦 <b>{name}</b>\n\n🔗 Link produk Anda:\n{content}",
