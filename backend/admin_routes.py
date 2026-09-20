@@ -11,6 +11,7 @@ from rates import get_rate
 from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso
 from storage import put_object
 from tgapi import download_telegram_file, send_message
+from inventory import validate_items, add_items, available_count
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(get_current_admin)])
 
@@ -47,7 +48,12 @@ async def stats():
 
 @router.get("/products")
 async def list_products():
-    return await db.products.find().sort("created_at", -1).to_list(500)
+    products = await db.products.find().sort("created_at", -1).to_list(500)
+    for product in products:
+        if product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
+            product["inventory_stock"] = await available_count(product["_id"])
+            product["stock"] = product["inventory_stock"]
+    return products
 
 
 async def _save_file(file: UploadFile):
@@ -152,6 +158,90 @@ async def import_products(currency: str = Form("IDR"), file: UploadFile = File(.
     if docs:
         await db.products.insert_many(docs)
     return {"imported": len(docs), "skipped": skipped}
+
+
+class InventoryBody(BaseModel):
+    content: str = ""
+
+
+async def _inventory_lines(file: Optional[UploadFile], content: str):
+    if file:
+        data = await file.read()
+        fn = (file.filename or "").lower()
+        if fn.endswith(".xlsx"):
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+                lines = []
+                for row in wb.active.iter_rows(values_only=True):
+                    value = row[0] if row else None
+                    if value:
+                        lines.append(str(value))
+                return lines
+            except Exception as exc:
+                raise HTTPException(400, f"File XLSX tidak valid: {exc}")
+        if fn.endswith(".txt") or fn.endswith(".csv"):
+            return data.decode("utf-8-sig", errors="ignore").splitlines()
+        raise HTTPException(400, "Inventory hanya menerima .txt, .csv atau .xlsx")
+    return content.splitlines()
+
+
+@router.post("/products/{pid}/inventory/validate")
+async def validate_inventory(pid: str, body: InventoryBody):
+    product = await db.products.find_one({"_id": pid})
+    if not product:
+        raise HTTPException(404, "Produk tidak ditemukan")
+    check = await validate_items(body.content.splitlines())
+    return {
+        "valid_count": check["valid_count"],
+        "duplicate_count": check["duplicate_count"],
+        "preview": check["valid"][:20],
+        "duplicates": check["duplicates"][:20],
+    }
+
+
+@router.post("/products/{pid}/inventory/import")
+async def import_inventory(
+    pid: str,
+    content: str = Form(""),
+    file: Optional[UploadFile] = File(None),
+):
+    product = await db.products.find_one({"_id": pid})
+    if not product:
+        raise HTTPException(404, "Produk tidak ditemukan")
+
+    lines = await _inventory_lines(file, content)
+    result = await add_items(pid, lines)
+    result.pop("valid", None)
+    result.pop("duplicates", None)
+    result["stock"] = await available_count(pid)
+    return result
+
+
+@router.get("/products/{pid}/inventory")
+async def inventory_list(pid: str, status: str = "available"):
+    product = await db.products.find_one({"_id": pid})
+    if not product:
+        raise HTTPException(404, "Produk tidak ditemukan")
+    q = {"product_id": pid}
+    if status != "all":
+        q["status"] = status
+    cursor = db.inventory_items.find(q).sort("created_at", -1).limit(1000)
+    from inventory import decrypt_items
+    rows = []
+    for item in await cursor.to_list(1000):
+        row = {
+            "_id": item["_id"],
+            "status": item["status"],
+            "order_id": item.get("order_id"),
+            "user_tid": item.get("user_tid"),
+            "created_at": item.get("created_at"),
+            "sold_at": item.get("sold_at"),
+        }
+        if status != "sold":
+            row["item"] = decrypt_items([item])[0]
+        rows.append(row)
+    return rows
 
 
 @router.patch("/products/{pid}/toggle")
