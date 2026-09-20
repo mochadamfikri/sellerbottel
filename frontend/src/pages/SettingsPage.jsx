@@ -25,6 +25,11 @@ export default function SettingsPage() {
         bank_name: s.bank_name, bank_account_number: s.bank_account_number, bank_account_holder: s.bank_account_holder,
         min_deposit_usd: parseFloat(s.min_deposit_usd), min_deposit_idr: parseFloat(s.min_deposit_idr),
         admin_telegram_id: String(s.admin_telegram_id || ""), rate_mode: s.rate_mode, manual_rate: parseFloat(s.manual_rate),
+        max_deposit_usd: parseFloat(s.max_deposit_usd || 100000),
+        max_deposit_idr: parseFloat(s.max_deposit_idr || 100000000),
+        join_gate_enabled: !!s.join_gate_enabled,
+        join_gate_fail_open: !!s.join_gate_fail_open,
+        required_channels: s.required_channels || [],
       });
       setS(data);
       toast.success("Pengaturan disimpan");
@@ -106,6 +111,69 @@ export default function SettingsPage() {
             )}
           </div>
         </div>
+      </div>
+
+
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="font-heading font-semibold">Wajib Join Channel</h2>
+            <p className="text-xs text-slate-500">Bot akan memeriksa membership saat pengguna melakukan action.</p>
+          </div>
+          <Switch
+            checked={!!s.join_gate_enabled}
+            onCheckedChange={(v) => setS({ ...s, join_gate_enabled: v })}
+          />
+        </div>
+
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-slate-400">Fail-open saat Telegram error</span>
+          <Switch
+            checked={s.join_gate_fail_open !== false}
+            onCheckedChange={(v) => setS({ ...s, join_gate_fail_open: v })}
+          />
+        </div>
+
+        {(s.required_channels || []).map((ch, index) => (
+          <div key={index} className="grid grid-cols-1 md:grid-cols-4 gap-2 p-3 rounded-lg border border-slate-800 bg-slate-950/50">
+            <input className={inputCls} placeholder="Channel ID / @username" value={ch.channel_id || ""}
+              onChange={(e) => {
+                const next = [...(s.required_channels || [])];
+                next[index] = { ...next[index], channel_id: e.target.value };
+                setS({ ...s, required_channels: next });
+              }} />
+            <input className={inputCls} placeholder="Judul" value={ch.title || ""}
+              onChange={(e) => {
+                const next = [...(s.required_channels || [])];
+                next[index] = { ...next[index], title: e.target.value };
+                setS({ ...s, required_channels: next });
+              }} />
+            <input className={inputCls} placeholder="Invite link (private)" value={ch.invite_link || ""}
+              onChange={(e) => {
+                const next = [...(s.required_channels || [])];
+                next[index] = { ...next[index], invite_link: e.target.value, enabled: next[index]?.enabled !== false };
+                setS({ ...s, required_channels: next });
+              }} />
+            <button
+              className="rounded-lg border border-rose-500/20 text-rose-400 hover:bg-rose-500/10 text-sm"
+              onClick={() => setS({ ...s, required_channels: (s.required_channels || []).filter((_, i) => i !== index) })}
+            >
+              Hapus
+            </button>
+          </div>
+        ))}
+
+        {(s.required_channels || []).length < 3 && (
+          <button
+            className="text-sm text-cyan-400 hover:text-cyan-300"
+            onClick={() => setS({
+              ...s,
+              required_channels: [...(s.required_channels || []), { channel_id: "", title: "", invite_link: "", enabled: true }]
+            })}
+          >
+            + Tambah channel
+          </button>
+        )}
       </div>
 
       <button data-testid="save-settings-button" onClick={save} disabled={saving}
