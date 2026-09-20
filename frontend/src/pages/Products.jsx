@@ -20,6 +20,12 @@ export default function Products() {
   const [importFile, setImportFile] = useState(null);
   const [importCurrency, setImportCurrency] = useState("IDR");
   const [importing, setImporting] = useState(false);
+  const [inventoryOpen, setInventoryOpen] = useState(false);
+  const [inventoryProduct, setInventoryProduct] = useState(null);
+  const [inventoryFile, setInventoryFile] = useState(null);
+  const [inventoryText, setInventoryText] = useState("");
+  const [inventoryBusy, setInventoryBusy] = useState(false);
+  const [inventoryResult, setInventoryResult] = useState(null);
 
   const load = () => api.get("/admin/products").then(({ data }) => setProducts(data));
   useEffect(() => { load(); }, []);
@@ -100,6 +106,67 @@ export default function Products() {
     }
   };
 
+  const openInventory = (p) => {
+    setInventoryProduct(p);
+    setInventoryFile(null);
+    setInventoryText("");
+    setInventoryResult(null);
+    setInventoryOpen(true);
+  };
+
+  const validateInventory = async () => {
+    if (!inventoryProduct || (!inventoryFile && !inventoryText.trim())) {
+      toast.error("Pilih file atau isi item inventory terlebih dahulu");
+      return;
+    }
+    setInventoryBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("content", inventoryText);
+      if (inventoryFile) fd.append("file", inventoryFile, inventoryFile.name);
+      const { data } = await api.post(
+        `/admin/products/${inventoryProduct._id}/inventory/validate`,
+        fd,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
+      setInventoryResult(data);
+      toast.success(`Valid: ${data.valid_count ?? 0}, duplikat: ${data.duplicate_count ?? 0}`);
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Validasi inventory gagal");
+    } finally {
+      setInventoryBusy(false);
+    }
+  };
+
+  const importInventory = async () => {
+    if (!inventoryProduct || (!inventoryFile && !inventoryText.trim())) {
+      toast.error("Pilih file atau isi item inventory terlebih dahulu");
+      return;
+    }
+    setInventoryBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("content", inventoryText);
+      if (inventoryFile) fd.append("file", inventoryFile, inventoryFile.name);
+      const { data } = await api.post(
+        `/admin/products/${inventoryProduct._id}/inventory/import`,
+        fd,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
+      toast.success(`Inventory masuk: ${data.created ?? 0} item, dilewati: ${data.skipped ?? 0}`);
+      setInventoryOpen(false);
+      setInventoryProduct(null);
+      setInventoryFile(null);
+      setInventoryText("");
+      setInventoryResult(null);
+      await load();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Import inventory gagal");
+    } finally {
+      setInventoryBusy(false);
+    }
+  };
+
   const toggle = async (p) => {
     await api.patch(`/admin/products/${p._id}/toggle`);
     toast.success(p.active ? "Produk dinonaktifkan" : "Produk diaktifkan");
@@ -170,6 +237,7 @@ export default function Products() {
                     <Switch data-testid={`product-active-switch-${p._id}`} checked={p.active} onCheckedChange={() => toggle(p)} />
                   </td>
                   <td className="px-4 py-3 text-right space-x-1">
+                    {p.delivery_type === "inventory" && <button data-testid={`manage-inventory-btn-${p._id}`} onClick={() => openInventory(p)} className="px-2 py-1 rounded-lg text-xs font-semibold text-emerald-400 hover:text-emerald-300 hover:bg-slate-800">Stok</button>}
                     <button data-testid={`edit-product-btn-${p._id}`} onClick={() => openEdit(p)} className="p-2 rounded-lg text-slate-400 hover:text-cyan-400 hover:bg-slate-800"><Pencil size={15} /></button>
                     <button data-testid={`delete-product-btn-${p._id}`} onClick={() => remove(p)} className="p-2 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800"><Trash2 size={15} /></button>
                   </td>
@@ -249,6 +317,62 @@ export default function Products() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={inventoryOpen} onOpenChange={setInventoryOpen}>
+        <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="font-heading">Kelola Stok — {inventoryProduct?.name || "Inventory"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-sm text-slate-300">
+              Stok tersedia saat ini: <b>{inventoryProduct?.inventory_stock ?? inventoryProduct?.stock ?? 0}</b>
+            </div>
+            <div>
+              <label className="text-xs text-slate-400">Upload Inventory</label>
+              <input
+                type="file"
+                accept=".txt,.csv,.xlsx"
+                className={inputCls}
+                onChange={(e) => {
+                  setInventoryFile(e.target.files?.[0] || null);
+                  setInventoryText("");
+                  setInventoryResult(null);
+                }}
+              />
+              <p className="text-xs text-slate-500 mt-1">Format: satu akun per baris, contoh <code>email@example.com:password</code>. XLSX memakai kolom pertama.</p>
+            </div>
+            <div>
+              <label className="text-xs text-slate-400">Atau paste item</label>
+              <textarea
+                className={inputCls}
+                rows={8}
+                value={inventoryText}
+                onChange={(e) => {
+                  setInventoryText(e.target.value);
+                  setInventoryFile(null);
+                  setInventoryResult(null);
+                }}
+                placeholder={"email1@example.com:password1\\nemail2@example.com:password2"}
+              />
+            </div>
+            {inventoryResult && (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-300 space-y-1">
+                <p>Valid baru: <b>{inventoryResult.valid_count ?? 0}</b></p>
+                <p>Duplikat: <b>{inventoryResult.duplicate_count ?? 0}</b></p>
+                {!!inventoryResult.preview?.length && <p>Preview: <code>{inventoryResult.preview.slice(0, 3).join(" | ")}</code></p>}
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={validateInventory} disabled={inventoryBusy} className="w-full bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg py-2.5">
+                {inventoryBusy ? "Memproses..." : "Validasi"}
+              </button>
+              <button onClick={importInventory} disabled={inventoryBusy} className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg py-2.5">
+                Import Stok
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle className="font-heading">{editId ? "Edit Produk" : "Tambah Produk"}</DialogTitle></DialogHeader>
@@ -281,6 +405,7 @@ export default function Products() {
                 <option value="link">Link</option>
                 <option value="license">Kode Lisensi</option>
                 <option value="file">File</option>
+                <option value="inventory">Inventory (email:pass)</option>
               </select>
             </div>
             {form.delivery_type === "file" ? (
@@ -291,8 +416,9 @@ export default function Products() {
               </div>
             ) : (
               <div>
-                <label className="text-xs text-slate-400">{form.delivery_type === "link" ? "Link Produk" : form.delivery_type === "inventory" ? "Item Inventory (email:pass, satu per baris)" : "Kode Lisensi"}</label>
-                <textarea data-testid="product-content-input" className={inputCls} rows={2} value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} />
+                <label className="text-xs text-slate-400">{form.delivery_type === "link" ? "Link Produk" : form.delivery_type === "inventory" ? "Initial Inventory (email:pass, satu per baris)" : "Kode Lisensi"}</label>
+                <textarea data-testid="product-content-input" className={inputCls} rows={form.delivery_type === "inventory" ? 6 : 2} value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} />
+                {form.delivery_type === "inventory" && <p className="text-xs text-slate-500 mt-1">Untuk stok besar, setelah produk dibuat gunakan tombol <b>Stok</b> untuk upload .txt, .csv, atau .xlsx secara bulk.</p>}
               </div>
             )}
             <div className="flex items-center gap-2">
