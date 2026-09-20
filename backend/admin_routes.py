@@ -549,13 +549,99 @@ async def update_message(lang: str, key: str, body: MessageBody):
     if lang not in ("id", "en") or key not in message_catalog():
         raise HTTPException(404, "Message key tidak ditemukan")
     validate_bot_message(body.text, lang, key)
+
+    current = await db.bot_messages.find_one({"lang": lang, "key": key})
+    next_version = int((current or {}).get("version", 0)) + 1
+    previous_text = (
+        current.get("text") if current
+        else STRINGS[lang].get(key, STRINGS["id"].get(key, key))
+    )
+
+    await db.bot_message_history.insert_one({
+        "_id": str(uuid.uuid4()),
+        "lang": lang,
+        "key": key,
+        "version": next_version,
+        "text": body.text,
+        "previous_text": previous_text,
+        "created_at": now_iso(),
+    })
+
     await db.bot_messages.update_one(
         {"lang": lang, "key": key},
-        {"$set": {"text": body.text, "active": True, "updated_at": now_iso()}},
+        {
+            "$set": {
+                "text": body.text,
+                "active": True,
+                "version": next_version,
+                "updated_at": now_iso(),
+            }
+        },
         upsert=True,
     )
     set_override(lang, key, body.text)
-    return {"lang": lang, "key": key, "text": body.text, "custom": True}
+    return {
+        "lang": lang,
+        "key": key,
+        "text": body.text,
+        "version": next_version,
+        "custom": True,
+    }
+
+
+@router.get("/messages/{lang}/{key}/history")
+async def message_history(lang: str, key: str):
+    if lang not in ("id", "en") or key not in message_catalog():
+        raise HTTPException(404, "Message key tidak ditemukan")
+    return await db.bot_message_history.find(
+        {"lang": lang, "key": key}
+    ).sort("version", -1).limit(50).to_list(50)
+
+
+class RollbackMessageBody(BaseModel):
+    version: int
+
+
+@router.post("/messages/{lang}/{key}/rollback")
+async def rollback_message(lang: str, key: str, body: RollbackMessageBody):
+    if lang not in ("id", "en") or key not in message_catalog():
+        raise HTTPException(404, "Message key tidak ditemukan")
+
+    source = await db.bot_message_history.find_one({
+        "lang": lang,
+        "key": key,
+        "version": body.version,
+    })
+    if not source:
+        raise HTTPException(404, "Version tidak ditemukan")
+
+    validate_bot_message(source["text"], lang, key)
+    current = await db.bot_messages.find_one({"lang": lang, "key": key})
+    next_version = int((current or {}).get("version", 0)) + 1
+
+    await db.bot_message_history.insert_one({
+        "_id": str(uuid.uuid4()),
+        "lang": lang,
+        "key": key,
+        "version": next_version,
+        "text": source["text"],
+        "previous_text": current.get("text") if current else None,
+        "rollback_from": body.version,
+        "created_at": now_iso(),
+    })
+
+    await db.bot_messages.update_one(
+        {"lang": lang, "key": key},
+        {"$set": {
+            "text": source["text"],
+            "active": True,
+            "version": next_version,
+            "updated_at": now_iso(),
+        }},
+        upsert=True,
+    )
+    set_override(lang, key, source["text"])
+    return {"ok": True, "version": next_version, "rollback_from": body.version}
 
 
 class MessageTestBody(BaseModel):
