@@ -505,13 +505,15 @@ ALLOWED_PLACEHOLDERS = {
 ALLOWED_HTML_TAGS = {"b", "strong", "i", "em", "u", "s", "code", "pre", "br", "a", "blockquote"}
 
 
-def validate_bot_message(text: str):
+def validate_bot_message(text: str, lang: str, key: str):
     placeholders = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", text))
-    unknown = sorted(placeholders - ALLOWED_PLACEHOLDERS)
+    default_text = STRINGS.get(lang, {}).get(key) or STRINGS["id"].get(key, "")
+    allowed = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", default_text))
+    unknown = sorted(placeholders - allowed)
     tags = re.findall(r"</?([a-zA-Z][a-zA-Z0-9]*)", text)
     invalid_tags = sorted(set(tag.lower() for tag in tags) - ALLOWED_HTML_TAGS)
     if unknown:
-        raise HTTPException(400, f"Placeholder tidak diizinkan: {', '.join(unknown)}")
+        raise HTTPException(400, f"Placeholder tidak diizinkan untuk {lang}/{key}: {', '.join(unknown)}")
     if invalid_tags:
         raise HTTPException(400, f"HTML tag tidak diizinkan: {', '.join(invalid_tags)}")
 
@@ -540,7 +542,7 @@ class MessageBody(BaseModel):
 async def update_message(lang: str, key: str, body: MessageBody):
     if lang not in ("id", "en") or key not in message_catalog():
         raise HTTPException(404, "Message key tidak ditemukan")
-    validate_bot_message(body.text)
+    validate_bot_message(body.text, lang, key)
     await db.bot_messages.update_one(
         {"lang": lang, "key": key},
         {"$set": {"text": body.text, "active": True, "updated_at": now_iso()}},
@@ -549,6 +551,61 @@ async def update_message(lang: str, key: str, body: MessageBody):
     set_override(lang, key, body.text)
     return {"lang": lang, "key": key, "text": body.text, "custom": True}
 
+
+class MessageTestBody(BaseModel):
+    lang: str = "id"
+    key: str
+    text: str
+
+
+@router.post("/messages/test")
+async def test_message(body: MessageTestBody):
+    if body.lang not in ("id", "en") or body.key not in message_catalog():
+        raise HTTPException(404, "Message key tidak ditemukan")
+    validate_bot_message(body.text, body.lang, body.key)
+    settings = await get_settings()
+    admin_id = str(settings.get("admin_telegram_id") or "")
+    if not admin_id:
+        raise HTTPException(400, "Telegram ID admin belum dikonfigurasi")
+
+    sample = {
+        "name": "Admin Preview",
+        "user_name": "Admin Preview",
+        "username": "@preview",
+        "product_name": "Produk Contoh",
+        "quantity": "2",
+        "price": "Rp 20.000",
+        "balance": "Rp 100.000",
+        "invoice_id": "INV-20260921-0001",
+        "order_id": "ORDER-PREVIEW",
+        "total": "Rp 40.000",
+        "currency": "IDR",
+        "amount": "Rp 40.000",
+        "payment_amount": "Rp 40.123",
+        "network": "Polygon",
+        "coin": "USDT",
+        "reason": "Preview",
+        "lang": "Indonesia",
+        "cur": "IDR",
+        "stock": "10",
+        "short": "Rp 10.000",
+        "type": "Inventory",
+        "desc": "Preview",
+        "bank": "BCA",
+        "account": "123456",
+        "holder": "Admin",
+        "min": "Rp 50.000",
+        "r": "Preview",
+        "invoice": "INV-20260921-0001",
+    }
+    try:
+        rendered = body.text.format(**sample)
+    except KeyError as exc:
+        raise HTTPException(400, f"Placeholder tidak bisa dirender: {exc}")
+    result = await send_message(int(admin_id), rendered)
+    if not result.get("ok"):
+        raise HTTPException(502, result.get("description", "Telegram gagal mengirim test"))
+    return {"ok": True}
 
 @router.delete("/messages/{lang}/{key}")
 async def reset_message(lang: str, key: str):
