@@ -576,16 +576,17 @@ async def handle_dep_idr_amount(chat_id, user, text):
     await send_message(chat_id, t(lang, "amount_set_idr", amount=fmt_amount(amount, "IDR")), kb=cancel_kb(lang))
 
 
-async def create_pending_deposit(user, data, tx_hash=None, proof_file_id=None):
+async def create_pending_deposit(user, data, tx_hash=None, proof_file_id=None, credited_amount=None, auto_verified=False):
     dep = {
         "_id": str(uuid.uuid4()), "user_tid": user["telegram_id"], "username": user.get("username", ""),
         "first_name": user.get("first_name", ""),
         "method": "crypto" if data.get("coin") else "bank",
         "coin": data.get("coin"), "network": data.get("network"),
         "currency": "USD" if data.get("coin") else "IDR",
-        "amount": data["amount"], "credited_amount": None,
+        "amount": data["amount"], "credited_amount": credited_amount,
+        "sender_wallet": data.get("sender_wallet"),
         "tx_hash": tx_hash, "proof_file_id": proof_file_id,
-        "status": "pending", "auto_verified": False, "note": "",
+        "status": "pending", "auto_verified": auto_verified, "note": "",
         "created_at": now_iso(), "decided_at": None,
     }
     await db.deposits.insert_one(dep)
@@ -603,6 +604,7 @@ async def handle_usd_proof(chat_id, user, message):
     lang = user.get("lang", "id")
     data = user.get("state_data", {})
     coin, network, amount = data.get("coin"), data.get("network"), data.get("amount")
+    sender_wallet = data.get("sender_wallet")
     s = await get_settings()
     address = (s.get("crypto_addresses") or {}).get(f"{coin}_{network}", "")
     text = message.get("text", "")
@@ -615,57 +617,77 @@ async def handle_usd_proof(chat_id, user, message):
         await send_message(chat_id, t(lang, "proof_received"), kb=back_kb(lang))
         await notify_admin(
             f"💰 <b>Deposit Baru — Perlu Verifikasi</b>\n\nDari: {user_label(user)}\n"
-            f"Metode: {coin} / {NET_LABELS[network]}\nJumlah klaim: <b>${amount:,.2f}</b>\nBukti: screenshot 👆",
+            f"Metode: {coin} / {NET_LABELS[network]}\nJumlah klaim: {amount:,.2f}\nBukti: screenshot 👆",
             kb=admin_decision_kb(dep["_id"]), photo_file_id=file_id)
         return
 
     tx_hash = text.strip()
+    if not sender_wallet or not valid_sender_wallet(network, sender_wallet):
+        await send_message(chat_id, t(lang, "wallet_invalid"), kb=cancel_kb(lang))
+        return
     if not looks_like_tx_hash(tx_hash, network):
         await send_message(chat_id, t(lang, "invalid_txhash"), kb=cancel_kb(lang))
         return
 
-    existing = await db.deposits.find_one({"tx_hash": tx_hash, "status": {"$in": ["pending", "approved"]}})
+    existing = await db.deposits.find_one({"tx_hash": tx_hash})
     if existing:
         await send_message(chat_id, t(lang, "tx_used"), kb=back_kb(lang))
         await set_state(user["telegram_id"], None)
         return
 
     await send_message(chat_id, t(lang, "checking"))
-    verified, onchain_amount, reason = await verify_tx(network, coin, address, tx_hash)
+    verified, onchain_amount, reason = await verify_tx(
+        network,
+        coin,
+        address,
+        tx_hash,
+        expected_sender=sender_wallet,
+    )
     min_usd = float(s.get("min_deposit_usd", 15))
 
     if verified and onchain_amount >= min_usd:
-        dep = {
-            "_id": str(uuid.uuid4()), "user_tid": user["telegram_id"], "username": user.get("username", ""),
-            "first_name": user.get("first_name", ""),
-            "method": "crypto", "coin": coin, "network": network, "currency": "USD",
-            "amount": amount, "credited_amount": onchain_amount, "tx_hash": tx_hash, "proof_file_id": None,
-            "status": "approved", "auto_verified": True, "note": "Verifikasi on-chain otomatis",
-            "created_at": now_iso(), "decided_at": now_iso(),
-        }
-        await db.deposits.insert_one(dep)
-        await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$inc": {"balance_usd": onchain_amount}})
+        dep = await create_pending_deposit(
+            user,
+            data,
+            tx_hash=tx_hash,
+            credited_amount=onchain_amount,
+            auto_verified=True,
+        )
+        await credit_deposit(dep, note="Verifikasi on-chain otomatis")
+        fresh = await db.bot_users.find_one({"telegram_id": user["telegram_id"]})
+        new_bal = float((fresh or {}).get("balance_usd", 0))
         await set_state(user["telegram_id"], None)
-        new_bal = float(user.get("balance_usd", 0)) + onchain_amount
-        await send_message(chat_id, t(lang, "auto_ok", coin=coin, network=NET_LABELS[network], amount=onchain_amount, balance=new_bal), kb=back_kb(lang))
+        await send_message(
+            chat_id,
+            t(
+                lang,
+                "auto_ok",
+                coin=coin,
+                network=NET_LABELS[network],
+                amount=onchain_amount,
+                balance=new_bal,
+            ),
+            kb=back_kb(lang),
+        )
         await notify_admin(
             f"✅ <b>Deposit Otomatis Terverifikasi</b>\n\nDari: {user_label(user)}\n"
-            f"Koin: {coin} / {NET_LABELS[network]}\nJumlah on-chain: <b>${onchain_amount:,.2f}</b>\n"
-            f"TX: <code>{tx_hash}</code>",
+            f"Koin: {coin} / {NET_LABELS[network]}\nWallet: <code>{sender_wallet}</code>\n"
+            f"Jumlah on-chain: {onchain_amount:,.2f}\nTX: <code>{tx_hash}</code>",
             kb={"inline_keyboard": [[{"text": "🚫 Batalkan Deposit Ini", "callback_data": f"adm:cxl:{dep['_id']}"}]]})
     else:
         dep = await create_pending_deposit(user, data, tx_hash=tx_hash)
         await set_state(user["telegram_id"], None)
         if verified:
-            why = f"Jumlah on-chain (${onchain_amount:,.2f}) di bawah minimum"
+            why = f"Jumlah on-chain ({onchain_amount:,.2f}) di bawah minimum"
         else:
             why = reason or "Tidak dapat diverifikasi"
         await send_message(chat_id, t(lang, "pending_manual", reason=why), kb=back_kb(lang))
         await notify_admin(
             f"💰 <b>Deposit Baru — Perlu Verifikasi Manual</b>\n\nDari: {user_label(user)}\n"
-            f"Koin: {coin} / {NET_LABELS[network]}\nJumlah klaim: <b>${amount:,.2f}</b>\n"
-            f"TX: <code>{tx_hash}</code>\n⚠️ Auto-verify gagal: {why}",
+            f"Koin: {coin} / {NET_LABELS[network]}\nWallet: <code>{sender_wallet}</code>\n"
+            f"Jumlah klaim: {amount:,.2f}\nTX: <code>{tx_hash}</code>\n⚠️ Auto-verify gagal: {why}",
             kb=admin_decision_kb(dep["_id"]))
+
 
 
 async def handle_idr_proof(chat_id, user, message):
