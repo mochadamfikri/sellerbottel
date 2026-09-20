@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Wallet, Snowflake, Sun, Search } from "lucide-react";
 import { toast } from "sonner";
 import api, { fmtUSD, fmtIDR, fmtDate, formatApiErrorDetail } from "../lib/api";
@@ -15,7 +15,7 @@ export default function UsersPage() {
   const [freezeReason, setFreezeReason] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const load = async (term = search) => {
+  const load = useCallback(async (term = "") => {
     try {
       const { data } = await api.get("/admin/users/search", { params: { search: term } });
       setUsers(data);
