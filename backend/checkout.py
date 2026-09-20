@@ -173,7 +173,7 @@ async def execute_checkout(user, cart_items):
             product = item["product"]
             qty = item["qty"]
 
-            if product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
+            if product.get("product_kind") == "digital" or product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
                 reserved = await reserve_items(product["_id"], qty, reservation_id)
                 if len(reserved) != qty:
                     raise ValueError(f"Stok {product['name']} tidak cukup.")
