@@ -23,28 +23,66 @@ router = APIRouter(prefix="/api/admin", dependencies=[Depends(get_current_admin)
 
 @router.get("/stats")
 async def stats():
+    s = await get_settings()
+    cutoff = s.get("stats_reset_at")
+
+    def after_cutoff(match):
+        if cutoff:
+            return {**match, "created_at": {"$gte": cutoff}}
+        return match
+
     async def sum_by(coll, match, field, currency):
-        pipeline = [{"$match": {**match, "currency": currency}}, {"$group": {"_id": None, "t": {"$sum": f"${field}"}}}]
+        pipeline = [{"$match": {**after_cutoff(match), "currency": currency}}, {"$group": {"_id": None, "t": {"$sum": "$$"+field}}}]
+        pipeline[1]["$group"]["t"]["$sum"] = "$" + field
         res = await coll.aggregate(pipeline).to_list(1)
         return res[0]["t"] if res else 0
+
     dep_usd = await sum_by(db.deposits, {"status": "approved"}, "credited_amount", "USD")
     dep_idr = await sum_by(db.deposits, {"status": "approved"}, "credited_amount", "IDR")
     sales_usd = await sum_by(db.purchases, {}, "total", "USD")
     sales_idr = await sum_by(db.purchases, {}, "total", "IDR")
-    circ = await db.bot_users.aggregate([{"$group": {"_id": None, "usd": {"$sum": "$balance_usd"}, "idr": {"$sum": "$balance_idr"}}}]).to_list(1)
-    pending = await db.deposits.count_documents({"status": "pending"})
-    recent = await db.deposits.find().sort("created_at", -1).to_list(8)
+    circ = await db.bot_users.aggregate([
+        {"$group": {"_id": None, "usd": {"$sum": "$balance_usd"}, "idr": {"$sum": "$balance_idr"}}}
+    ]).to_list(1)
+    pending = await db.deposits.count_documents(after_cutoff({"status": "pending"}))
+    recent = await db.deposits.find(after_cutoff({})).sort("created_at", -1).to_list(8)
     rate = await get_rate()
-    s = await get_settings()
     return {
-        "total_deposit_usd": dep_usd, "total_deposit_idr": dep_idr,
-        "total_sales_usd": sales_usd, "total_sales_idr": sales_idr,
-        "circulating_usd": circ[0]["usd"] if circ else 0, "circulating_idr": circ[0]["idr"] if circ else 0,
-        "pending_deposits": pending, "recent_deposits": recent,
-        "rate": rate, "rate_mode": s.get("rate_mode"),
+        "total_deposit_usd": dep_usd,
+        "total_deposit_idr": dep_idr,
+        "total_sales_usd": sales_usd,
+        "total_sales_idr": sales_idr,
+        "circulating_usd": circ[0]["usd"] if circ else 0,
+        "circulating_idr": circ[0]["idr"] if circ else 0,
+        "pending_deposits": pending,
+        "recent_deposits": recent,
+        "rate": rate,
+        "rate_mode": s.get("rate_mode"),
         "users_count": await db.bot_users.count_documents({}),
         "products_count": await db.products.count_documents({}),
+        "stats_reset_at": cutoff,
     }
+
+
+class ResetStatsBody(BaseModel):
+    password: str
+
+
+@router.post("/stats/reset")
+async def reset_stats(body: ResetStatsBody, admin: dict = Depends(get_current_admin)):
+    if not body.password:
+        raise HTTPException(400, "Password wajib diisi.")
+    stored = await db.admins.find_one({"_id": admin["_id"]}, {"password_hash": 1})
+    if not stored or not verify_password(body.password, stored.get("password_hash", "")):
+        raise HTTPException(401, "Password admin salah.")
+
+    reset_at = now_iso()
+    await db.settings.update_one(
+        {"_id": "main"},
+        {"$set": {"stats_reset_at": reset_at}},
+        upsert=True,
+    )
+    return {"ok": True, "stats_reset_at": reset_at}
 
 
 # ============ PRODUCTS ============
