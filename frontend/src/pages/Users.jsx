@@ -22,12 +22,12 @@ export default function UsersPage() {
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal memuat pengguna.");
     }
-  };
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => load(search), 250);
     return () => clearTimeout(timer);
-  }, [search]);
+  }, [search, load]);
 
   const doAdjust = async () => {
     setBusy(true);
