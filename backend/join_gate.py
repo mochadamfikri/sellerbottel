@@ -1,5 +1,6 @@
 import logging
 import time
+import asyncio
 
 from db import get_settings
 from tgapi import tg
@@ -19,7 +20,7 @@ def _join_url(channel):
     return f"https://t.me/{raw}" if raw else None
 
 
-async def check_user_membership(user_tid: int):
+async def check_user_membership(user_tid: int, force_refresh: bool = False):
     settings = await get_settings()
     if not settings.get("join_gate_enabled", False):
         return True, []
@@ -33,23 +34,44 @@ async def check_user_membership(user_tid: int):
     for channel in channels[:3]:
         key = f"{channel['channel_id']}:{user_tid}"
         cached = _CACHE.get(key)
-        if cached and time.time() - cached[0] < _CACHE_TTL:
+        if not force_refresh and cached and time.time() - cached[0] < _CACHE_TTL:
             joined = cached[1]
         else:
             try:
-                result = await tg(
-                    "getChatMember",
-                    chat_id=channel["channel_id"],
-                    user_id=user_tid,
-                )
-                member = result.get("result") or {}
-                status = member.get("status")
-                joined = status in {"creator", "administrator", "member"} or (
-                    status == "restricted" and member.get("is_member", False)
-                )
+                # Telegram can take a short moment to reflect a fresh channel join.
+                # On an explicit "Saya sudah join" check, retry and bypass the cache.
+                attempts = 3 if force_refresh else 1
+                joined = False
+                last_error = None
+                for attempt in range(attempts):
+                    try:
+                        result = await tg(
+                            "getChatMember",
+                            chat_id=channel["channel_id"],
+                            user_id=user_tid,
+                        )
+                        if not result.get("ok"):
+                            raise RuntimeError(result.get("description", "Telegram getChatMember failed"))
+                        member = result.get("result") or {}
+                        status = member.get("status")
+                        joined = status in {"creator", "administrator", "member"} or (
+                            status == "restricted" and member.get("is_member", False)
+                        )
+                        if joined or attempt == attempts - 1:
+                            logger.info(
+                                "Join-gate check user=%s channel=%s status=%s joined=%s",
+                                user_tid, channel["channel_id"], status, joined,
+                            )
+                            break
+                        await asyncio.sleep(0.8)
+                    except Exception as exc:
+                        last_error = exc
+                        if attempt == attempts - 1:
+                            raise
+                        await asyncio.sleep(0.8)
                 _CACHE[key] = (time.time(), joined)
             except Exception as exc:
-                logger.warning("Join-gate Telegram error for %s: %s", channel["channel_id"], exc)
+                logger.warning("Join-gate Telegram error for %s: %s", channel["channel_id"], last_error or exc)
                 if settings.get("join_gate_fail_open", True):
                     continue
                 joined = False

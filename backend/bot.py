@@ -547,8 +547,8 @@ async def do_checkout(chat_id, user, cart_items):
 
 # ============ DEPOSIT ============
 
-async def ensure_join_gate(chat_id, user):
-    joined, missing = await check_user_membership(user["telegram_id"])
+async def ensure_join_gate(chat_id, user, force_refresh=False):
+    joined, missing = await check_user_membership(user["telegram_id"], force_refresh=force_refresh)
     if joined:
         return True
     lang = user.get("lang", "id")
@@ -1246,7 +1246,7 @@ async def handle_callback(cb):
 
     if data == "gate:check":
         clear_cache_for_user(user["telegram_id"])
-        if not await ensure_join_gate(chat_id, user):
+        if not await ensure_join_gate(chat_id, user, force_refresh=True):
             return
         if not user.get("currency"):
             await show_currency_selection(chat_id, lang)
