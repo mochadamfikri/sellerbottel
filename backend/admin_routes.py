@@ -81,10 +81,16 @@ async def create_product(
     prod = {
         "_id": str(uuid.uuid4()), "name": name, "description": description,
         "price_usd": price_usd, "price_idr": price_idr, "delivery_type": delivery_type,
-        "content": content, "storage_path": storage_path, "original_filename": original_filename,
-        "active": active, "stock": stock, "created_at": now_iso(),
+        "content": "" if delivery_type == "inventory" else content,
+        "storage_path": storage_path, "original_filename": original_filename,
+        "active": active, "stock": None if delivery_type == "inventory" else stock,
+        "inventory_enabled": delivery_type == "inventory",
+        "created_at": now_iso(),
     }
     await db.products.insert_one(prod)
+    if delivery_type == "inventory" and content.strip():
+        await add_items(prod["_id"], content.splitlines())
+        prod["stock"] = await available_count(prod["_id"])
     return prod
 
 
@@ -98,13 +104,27 @@ async def update_product(
     prod = await db.products.find_one({"_id": pid})
     if not prod:
         raise HTTPException(404, "Produk tidak ditemukan")
-    updates = {"name": name, "description": description, "price_usd": price_usd,
-               "price_idr": price_idr, "delivery_type": delivery_type, "content": content,
-               "active": active, "stock": stock}
+    updates = {
+        "name": name,
+        "description": description,
+        "price_usd": price_usd,
+        "price_idr": price_idr,
+        "delivery_type": delivery_type,
+        "content": "" if delivery_type == "inventory" else content,
+        "active": active,
+        "stock": None if delivery_type == "inventory" else stock,
+        "inventory_enabled": delivery_type == "inventory",
+        "updated_at": now_iso(),
+    }
     if file:
         updates["storage_path"], updates["original_filename"] = await _save_file(file)
     await db.products.update_one({"_id": pid}, {"$set": updates})
-    return await db.products.find_one({"_id": pid})
+    if delivery_type == "inventory" and content.strip():
+        await add_items(pid, content.splitlines())
+    result = await db.products.find_one({"_id": pid})
+    if result and delivery_type == "inventory":
+        result["stock"] = await available_count(pid)
+    return result
 
 
 def _parse_num(v, idr: bool):
