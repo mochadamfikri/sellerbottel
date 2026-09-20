@@ -36,6 +36,7 @@ async def price_for_product(product, currency, quantity=1):
     )
 
     best = None
+    best_priority = None
     async for discount in cursor:
         if not _active_date(discount):
             continue
@@ -68,8 +69,10 @@ async def price_for_product(product, currency, quantity=1):
 
         if best is None:
             best = candidate
-        elif discount.get("priority", 0) > discount.get("priority", 0):
-            best = candidate
+            best_priority = (
+                int(discount.get("priority", 0)),
+                int(discount.get("min_qty", 1)),
+            )
 
     discount_per_unit = best["discount_per_unit"] if best else 0.0
     if currency == "USD":
