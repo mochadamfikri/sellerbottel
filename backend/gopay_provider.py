@@ -34,19 +34,27 @@ def _run_node(script, args=None, timeout=90):
     return json.loads(result.stdout)
 
 
-async def create_gopay_payment(user, amount):
+async def create_gopay_payment(user, amount, platform_code=None):
     amount = int(round(amount))
     if amount < 1:
         raise ValueError("Nominal IDR tidak valid.")
+
+    admin_fee = int(round(amount * 0.007))
+    if admin_fee < 1:
+        admin_fee = 1
+    deposit_total = amount + admin_fee
 
     deposit_id = str(uuid.uuid4())
     payment_id = str(uuid.uuid4())
     expires = datetime.now(timezone.utc) + timedelta(minutes=15)
 
     active_amount = None
+    selected_code = None
     for _ in range(200):
-        suffix = secrets.randbelow(9000) + 1000
-        candidate = amount + suffix
+        suffix = int(platform_code) if platform_code is not None else (secrets.randbelow(900) + 100)
+        if not 100 <= suffix <= 999:
+            suffix = secrets.randbelow(900) + 100
+        candidate = deposit_total + suffix
         try:
             await db.gopay_payments.insert_one({
                 "_id": payment_id,
@@ -62,6 +70,7 @@ async def create_gopay_payment(user, amount):
                 "confirmed_at": None,
             })
             active_amount = candidate
+            selected_code = suffix
             break
         except DuplicateKeyError:
             continue
@@ -79,6 +88,8 @@ async def create_gopay_payment(user, amount):
         "network": None,
         "currency": "IDR",
         "amount": amount,
+        "admin_fee": admin_fee,
+        "platform_code": selected_code,
         "payment_amount": active_amount,
         "credited_amount": amount,
         "tx_hash": None,
