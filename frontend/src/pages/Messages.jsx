@@ -85,7 +85,8 @@ export default function Messages() {
                   <button className="text-emerald-400 text-xs mr-3" onClick={() => testRow(row)}>Test</button>
                   <button className="text-cyan-400 text-xs mr-3" onClick={() => { setEditing(row); setText(row.text); }}>Edit</button>
                   <button className="text-violet-400 text-xs mr-3" onClick={() => openHistory(row)}>History</button>
-                  {row.custom && <button className="text-rose-400 text-xs" onClick={() => reset(row)}>Reset</button>
+                  {row.custom && <button className="text-rose-400 text-xs" onClick={() => reset(row)}>Reset</button>}
+
                 </td>
               </tr>
             ))}
