@@ -158,42 +158,109 @@ export default function SettingsPage() {
       </div>
 
       <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <div><h2 className="font-heading font-semibold">Wajib Join Channel</h2><p className="text-xs text-slate-500">Bot akan memeriksa membership saat pengguna melakukan action.</p></div>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="font-heading font-semibold">Wajib Join Channel</h2>
+            <p className="text-xs text-slate-500 mt-1">Pengguna harus menjadi member semua channel aktif sebelum bisa memakai bot. Maksimal 3 channel.</p>
+          </div>
           <Switch checked={!!s.join_gate_enabled} onCheckedChange={(v) => setS({ ...s, join_gate_enabled: v })} />
         </div>
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-slate-400">Fail-open saat Telegram error</span>
-          <Switch checked={s.join_gate_fail_open !== false} onCheckedChange={(v) => setS({ ...s, join_gate_fail_open: v })} />
+
+        <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-300">
+          <b>Penting:</b> bot wajib menjadi <b>Administrator</b> di setiap channel. Gunakan tombol <b>Test</b> setelah mengisi Channel ID untuk memastikan bot bisa membaca membership.
         </div>
 
-        {(s.required_channels || []).map((ch, index) => (
-          <div key={index} className="grid grid-cols-1 md:grid-cols-4 gap-2 p-3 rounded-lg border border-slate-800 bg-slate-950/50">
-            <input className={cls} placeholder="Channel ID / @username" value={ch.channel_id || ""} onChange={(e) => {
-              const next = [...(s.required_channels || [])];
-              next[index] = { ...next[index], channel_id: e.target.value };
-              setS({ ...s, required_channels: next });
-            }} />
-            <input className={cls} placeholder="Judul" value={ch.title || ""} onChange={(e) => {
-              const next = [...(s.required_channels || [])];
-              next[index] = { ...next[index], title: e.target.value };
-              setS({ ...s, required_channels: next });
-            }} />
-            <input className={cls} placeholder="Invite link (private)" value={ch.invite_link || ""} onChange={(e) => {
-              const next = [...(s.required_channels || [])];
-              next[index] = { ...next[index], invite_link: e.target.value, enabled: next[index]?.enabled !== false };
-              setS({ ...s, required_channels: next });
-            }} />
-            <button className="rounded-lg border border-rose-500/20 text-rose-400 hover:bg-rose-500/10 text-sm" onClick={() => setS({ ...s, required_channels: (s.required_channels || []).filter((_, i) => i !== index) })}>Hapus</button>
-          </div>
-        ))}
+        <div className="overflow-x-auto rounded-lg border border-slate-800">
+          <table className="w-full min-w-[900px] text-sm">
+            <thead className="bg-slate-950/80">
+              <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500">
+                <th className="px-3 py-3 w-12">No.</th>
+                <th className="px-3 py-3">Channel ID *</th>
+                <th className="px-3 py-3">Nama Channel</th>
+                <th className="px-3 py-3">Username / @username</th>
+                <th className="px-3 py-3">Link Join</th>
+                <th className="px-3 py-3">Status</th>
+                <th className="px-3 py-3 text-right">Aksi</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(s.required_channels || []).map((ch, index) => (
+                <tr key={index} className="border-t border-slate-800/70 align-top">
+                  <td className="px-3 py-3 text-slate-500">{index + 1}</td>
+                  <td className="px-3 py-3">
+                    <input className={cls} placeholder="-1001234567890" value={ch.channel_id || ""} onChange={(e) => {
+                      const next = [...(s.required_channels || [])];
+                      next[index] = { ...next[index], channel_id: e.target.value };
+                      setS({ ...s, required_channels: next });
+                    }} />
+                    <p className="text-[10px] text-slate-600 mt-1">Public/private: gunakan ID -100...</p>
+                  </td>
+                  <td className="px-3 py-3">
+                    <input className={cls} placeholder="IDSE Network" value={ch.title || ""} onChange={(e) => {
+                      const next = [...(s.required_channels || [])];
+                      next[index] = { ...next[index], title: e.target.value };
+                      setS({ ...s, required_channels: next });
+                    }} />
+                  </td>
+                  <td className="px-3 py-3">
+                    <input className={cls} placeholder="@channelku" value={ch.username || ""} onChange={(e) => {
+                      const next = [...(s.required_channels || [])];
+                      next[index] = { ...next[index], username: e.target.value };
+                      setS({ ...s, required_channels: next });
+                    }} />
+                  </td>
+                  <td className="px-3 py-3">
+                    <input className={cls} placeholder="https://t.me/..." value={ch.invite_link || ""} onChange={(e) => {
+                      const next = [...(s.required_channels || [])];
+                      next[index] = { ...next[index], invite_link: e.target.value };
+                      setS({ ...s, required_channels: next });
+                    }} />
+                  </td>
+                  <td className="px-3 py-3">
+                    <button onClick={async () => {
+                      if (!ch.channel_id) { toast.error("Isi Channel ID dulu."); return; }
+                      try {
+                        const { data } = await api.post("/admin/settings/join-gate/test", null, { params: { channel_id: ch.channel_id } });
+                        const next = [...(s.required_channels || [])];
+                        next[index] = { ...next[index], title: data.title || ch.title, username: data.username || ch.username, enabled: true, test_status: "ok" };
+                        setS({ ...s, required_channels: next });
+                        toast.success("Channel terhubung. Bot berstatus " + data.bot_status + ".");
+                      } catch (err) {
+                        toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Channel tidak bisa diverifikasi.");
+                      }
+                    }} className="rounded-lg border border-cyan-500/20 text-cyan-400 hover:bg-cyan-500/10 px-3 py-2 text-xs">
+                      Test
+                    </button>
+                    <div className="mt-2 text-[10px]">
+                      {ch.test_status === "ok" ? <span className="text-emerald-400">✓ Terverifikasi</span> : <span className="text-slate-600">Belum dites</span>}
+                    </div>
+                  </td>
+                  <td className="px-3 py-3 text-right">
+                    <button onClick={() => setS({ ...s, required_channels: (s.required_channels || []).filter((_, i) => i !== index) })} className="rounded-lg border border-rose-500/20 text-rose-400 hover:bg-rose-500/10 px-3 py-2 text-xs">Hapus</button>
+                  </td>
+                </tr>
+              ))}
+              {!(s.required_channels || []).length && (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-500">Belum ada channel. Klik “+ Tambah Channel” untuk membuat rule wajib join.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
 
         {(s.required_channels || []).length < 3 && (
           <button className="text-sm text-cyan-400 hover:text-cyan-300" onClick={() => setS({
             ...s,
-            required_channels: [...(s.required_channels || []), { channel_id: "", title: "", invite_link: "", enabled: true }]
-          })}>+ Tambah channel</button>
+            required_channels: [...(s.required_channels || []), { channel_id: "", title: "", username: "", invite_link: "", enabled: true }]
+          })}>+ Tambah Channel</button>
         )}
+
+        <div className="flex items-center justify-between border-t border-slate-800 pt-4">
+          <div>
+            <p className="text-sm font-medium">Jika Telegram gagal diperiksa</p>
+            <p className="text-xs text-slate-500 mt-1">OFF = akses ditolak sampai membership berhasil diverifikasi. Ini lebih aman untuk mode wajib join.</p>
+          </div>
+          <Switch checked={!!s.join_gate_fail_open} onCheckedChange={(v) => setS({ ...s, join_gate_fail_open: v })} />
+        </div>
       </div>
 
       <button onClick={save} disabled={saving} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg px-6 py-2.5">
