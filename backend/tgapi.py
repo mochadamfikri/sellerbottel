@@ -1,4 +1,5 @@
 import os
+import json
 import httpx
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -52,7 +53,7 @@ async def send_photo_bytes(chat_id, data: bytes, filename: str = "photo.jpg", ca
         payload["caption"] = caption
         payload["parse_mode"] = "HTML"
     if kb:
-        payload["reply_markup"] = kb
+        payload["reply_markup"] = json.dumps(kb, ensure_ascii=False, separators=(",", ":"))
     async with httpx.AsyncClient(timeout=120) as c:
         r = await c.post(
             f"{API}/sendPhoto",
