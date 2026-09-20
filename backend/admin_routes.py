@@ -786,6 +786,8 @@ class SettingsBody(BaseModel):
     bank_name: str = ""
     bank_account_number: str = ""
     bank_account_holder: str = ""
+    qris_enabled: bool = False
+    bank_enabled: bool = True
     min_deposit_usd: float = 15.0
     min_deposit_idr: float = 50000.0
     admin_telegram_id: str = ""
