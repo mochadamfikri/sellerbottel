@@ -24,12 +24,34 @@ async def user_lang(tid) -> str:
 async def credit_deposit(deposit: dict, note: str = ""):
     amount = deposit.get("credited_amount") or deposit["amount"]
     field = CUR_FIELD[deposit["currency"]]
-    await db.bot_users.update_one({"telegram_id": deposit["user_tid"]}, {"$inc": {field: amount}})
-    await db.deposits.update_one({"_id": deposit["_id"]}, {"$set": {
-        "status": "approved", "credited_amount": amount, "decided_at": now_iso(), "note": note,
-    }})
+    deposit_id = deposit["_id"]
+
+    user_result = await db.bot_users.update_one(
+        {"telegram_id": deposit["user_tid"], "deposit_credit_ids": {"$ne": deposit_id}},
+        {"$inc": {field: amount}, "$addToSet": {"deposit_credit_ids": deposit_id}},
+    )
+
+    if user_result.modified_count == 0:
+        user = await db.bot_users.find_one({"telegram_id": deposit["user_tid"]}, {"deposit_credit_ids": 1})
+        if not user or deposit_id not in user.get("deposit_credit_ids", []):
+            return False
+
+    await db.deposits.update_one(
+        {"_id": deposit_id, "status": "pending"},
+        {"$set": {
+            "status": "approved",
+            "credited_amount": amount,
+            "decided_at": now_iso(),
+            "note": note,
+        }},
+    )
+
     lang = await user_lang(deposit["user_tid"])
-    await send_message(deposit["user_tid"], t(lang, "dep_approved", amount=fmt_amount(amount, deposit["currency"])))
+    await send_message(
+        deposit["user_tid"],
+        t(lang, "dep_approved", amount=fmt_amount(amount, deposit["currency"])),
+    )
+    return True
 
 
 async def reject_deposit(deposit: dict, note: str = ""):
@@ -44,10 +66,33 @@ async def reject_deposit(deposit: dict, note: str = ""):
 async def cancel_deposit(deposit: dict):
     amount = deposit.get("credited_amount") or deposit["amount"]
     field = CUR_FIELD[deposit["currency"]]
-    await db.bot_users.update_one({"telegram_id": deposit["user_tid"]}, {"$inc": {field: -amount}})
-    await db.deposits.update_one({"_id": deposit["_id"]}, {"$set": {"status": "cancelled", "decided_at": now_iso()}})
+    deposit_id = deposit["_id"]
+
+    result = await db.bot_users.update_one(
+        {
+            "telegram_id": deposit["user_tid"],
+            field: {"$gte": amount},
+            "deposit_debit_ids": {"$ne": deposit_id},
+        },
+        {"$inc": {field: -amount}, "$addToSet": {"deposit_debit_ids": deposit_id}},
+    )
+
+    if result.modified_count == 0:
+        user = await db.bot_users.find_one({"telegram_id": deposit["user_tid"]}, {"deposit_debit_ids": 1})
+        if not user or deposit_id not in user.get("deposit_debit_ids", []):
+            raise ValueError("Saldo pengguna tidak cukup atau deposit sudah dibatalkan.")
+
+    await db.deposits.update_one(
+        {"_id": deposit_id, "status": "approved"},
+        {"$set": {"status": "cancelled", "decided_at": now_iso()}},
+    )
+
     lang = await user_lang(deposit["user_tid"])
-    await send_message(deposit["user_tid"], t(lang, "dep_cancelled", amount=fmt_amount(amount, deposit["currency"])))
+    await send_message(
+        deposit["user_tid"],
+        t(lang, "dep_cancelled", amount=fmt_amount(amount, deposit["currency"])),
+    )
+    return True
 
 
 async def notify_admin(text: str, kb=None, photo_file_id=None):

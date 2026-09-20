@@ -5,9 +5,9 @@ import api, { fmtUSD, fmtIDR, formatApiErrorDetail } from "../lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Switch } from "../components/ui/switch";
 
-const typeIcons = { file: FileText, link: Link2, license: KeyRound };
-const typeLabels = { file: "File", link: "Link", license: "Kode Lisensi" };
-const empty = { name: "", description: "", price_usd: "", price_idr: "", delivery_type: "link", content: "", active: true };
+const typeIcons = { file: FileText, link: Link2, license: KeyRound, inventory: KeyRound };
+const typeLabels = { file: "File", link: "Link", license: "Kode Lisensi", inventory: "Inventory" };
+const empty = { name: "", description: "", price_usd: "", price_idr: "", delivery_type: "link", content: "", stock: "", active: true };
 
 export default function Products() {
   const [products, setProducts] = useState([]);
@@ -26,7 +26,7 @@ export default function Products() {
 
   const openCreate = () => { setForm(empty); setEditId(null); setFile(null); setOpen(true); };
   const openEdit = (p) => {
-    setForm({ name: p.name, description: p.description || "", price_usd: p.price_usd, price_idr: p.price_idr || "", delivery_type: p.delivery_type, content: p.content || "", active: p.active });
+    setForm({ name: p.name, description: p.description || "", price_usd: p.price_usd, price_idr: p.price_idr || "", delivery_type: p.delivery_type, content: p.content || "", stock: p.stock ?? "", active: p.active });
     setEditId(p._id); setFile(null); setOpen(true);
   };
 
@@ -39,6 +39,7 @@ export default function Products() {
     if (form.price_idr) fd.append("price_idr", form.price_idr);
     fd.append("delivery_type", form.delivery_type);
     fd.append("content", form.content);
+    if (form.stock !== "") fd.append("stock", form.stock);
     fd.append("active", form.active);
     if (file) fd.append("file", file);
     try {
@@ -77,23 +78,9 @@ export default function Products() {
 
       console.log("[IMPORT] sending FormData");
 
-      const response = await fetch("/api/admin/products/upload-test", {
-        method: "POST",
-        credentials: "include",
-        body: fd,
+      const { data } = await api.post("/admin/products/import", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
       });
-
-      console.log("[IMPORT] STATUS:", response.status);
-
-      const text = await response.text();
-
-      console.log("[IMPORT] RESPONSE:", text);
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${text}`);
-      }
-
-      const data = JSON.parse(text);
 
       toast.success(
         `Import selesai: ${data.imported ?? 0} masuk, ${data.skipped ?? 0} dilewati`
@@ -162,6 +149,7 @@ export default function Products() {
             <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wide">
               <th className="px-4 py-3">Produk</th><th className="px-4 py-3">Tipe</th>
               <th className="px-4 py-3">Harga USD</th><th className="px-4 py-3">Harga IDR</th>
+              <th className="px-4 py-3">Stok</th>
               <th className="px-4 py-3">Aktif</th><th className="px-4 py-3 text-right">Aksi</th>
             </tr>
           </thead>
@@ -177,6 +165,7 @@ export default function Products() {
                   <td className="px-4 py-3"><span className="flex items-center gap-1.5 text-slate-300"><Icon size={14} className="text-cyan-400" />{typeLabels[p.delivery_type]}</span></td>
                   <td className="px-4 py-3 font-mono">{fmtUSD(p.price_usd)}</td>
                   <td className="px-4 py-3 font-mono text-slate-400">{p.price_idr ? fmtIDR(p.price_idr) : <span className="text-slate-600 text-xs">auto kurs</span>}</td>
+                  <td className="px-4 py-3 font-mono">{p.delivery_type === "inventory" ? (p.inventory_stock ?? p.stock ?? 0) : (p.stock == null ? "∞" : p.stock)}</td>
                   <td className="px-4 py-3">
                     <Switch data-testid={`product-active-switch-${p._id}`} checked={p.active} onCheckedChange={() => toggle(p)} />
                   </td>
@@ -220,7 +209,7 @@ export default function Products() {
               <input
                 data-testid="import-products-file-input"
                 type="file"
-                accept=".xlsx,.xls,.csv,.txt"
+                accept=".xlsx,.csv,.txt"
                 className={inputCls}
                 onChange={(e) => setImportFile(e.target.files?.[0] || null)}
               />
@@ -278,6 +267,10 @@ export default function Products() {
                 <input data-testid="product-price-usd-input" type="number" step="0.01" className={inputCls} value={form.price_usd} onChange={(e) => setForm({ ...form, price_usd: e.target.value })} />
               </div>
               <div>
+                <label className="text-xs text-slate-400">Stok</label>
+                <input data-testid="product-stock-input" type="number" min="0" className={inputCls} placeholder="kosong = unlimited untuk link/license" value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} />
+              </div>
+              <div>
                 <label className="text-xs text-slate-400">Harga IDR (opsional)</label>
                 <input data-testid="product-price-idr-input" type="number" className={inputCls} placeholder="auto dari kurs" value={form.price_idr} onChange={(e) => setForm({ ...form, price_idr: e.target.value })} />
               </div>
@@ -298,7 +291,7 @@ export default function Products() {
               </div>
             ) : (
               <div>
-                <label className="text-xs text-slate-400">{form.delivery_type === "link" ? "Link Produk" : "Kode Lisensi"}</label>
+                <label className="text-xs text-slate-400">{form.delivery_type === "link" ? "Link Produk" : form.delivery_type === "inventory" ? "Item Inventory (email:pass, satu per baris)" : "Kode Lisensi"}</label>
                 <textarea data-testid="product-content-input" className={inputCls} rows={2} value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} />
               </div>
             )}

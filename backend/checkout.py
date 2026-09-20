@@ -1,0 +1,274 @@
+import uuid
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+from db import db
+from inventory import commit_items, release_items, reserve_items
+from rates import get_rate
+from pricing import price_for_product
+
+
+CUR_FIELD = {"USD": "balance_usd", "IDR": "balance_idr"}
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def jakarta_date():
+    return datetime.now(ZoneInfo("Asia/Jakarta")).strftime("%Y%m%d")
+
+
+async def next_invoice_id():
+    counter = await db.counters.find_one_and_update(
+        {"_id": f"invoice:{jakarta_date()}"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=__import__("pymongo").ReturnDocument.AFTER,
+    )
+    return f"INV-{jakarta_date()}-{counter['seq']:04d}"
+
+
+async def product_price(product, currency):
+    if currency == "USD":
+        return round(float(product.get("price_usd") or 0), 2)
+    if product.get("price_idr") is not None:
+        return round(float(product["price_idr"]))
+    rate = await get_rate()
+    return round(float(product.get("price_usd") or 0) * rate / 100) * 100
+
+
+async def stock_for(product):
+    if product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
+        return await db.inventory_items.count_documents({
+            "product_id": product["_id"],
+            "status": "available",
+        })
+    stock = product.get("stock")
+    return None if stock is None else int(stock)
+
+
+
+
+async def _fail_checkout(order_id, allocations, reservation_id, error, message, user=None, field=None, total=0.0):
+    for allocation in allocations:
+        if allocation["kind"] == "stock":
+            await db.products.update_one(
+                {"_id": allocation["product_id"]},
+                {"$inc": {"stock": allocation["qty"]}},
+            )
+    await release_items(reservation_id)
+
+    if user is not None and field and total > 0:
+        await db.bot_users.update_one(
+            {
+                "telegram_id": user["telegram_id"],
+                "checkout_refund_ids": {"$ne": order_id},
+            },
+            {
+                "$inc": {field: total},
+                "$addToSet": {"checkout_refund_ids": order_id},
+            },
+        )
+
+    await db.purchases.update_one(
+        {"_id": order_id},
+        {"$set": {"status": "failed", "delivery_error": message}},
+    )
+    return {"ok": False, "error": error, "message": message}
+
+async def execute_checkout(user, cart_items):
+    currency = user["currency"]
+    field = CUR_FIELD[currency]
+    order_id = str(uuid.uuid4())
+    reservation_id = f"order:{order_id}"
+
+    items = []
+    total = 0.0
+
+    for raw in cart_items:
+        product = await db.products.find_one({
+            "_id": raw["pid"],
+            "active": True,
+        })
+        if not product:
+            continue
+
+        qty = max(1, int(raw.get("qty", 1)))
+        stock = await stock_for(product)
+        if stock is not None and stock < qty:
+            return {
+                "ok": False,
+                "error": "stock",
+                "product": product,
+                "stock": stock,
+            }
+
+        pricing = await price_for_product(product, currency, qty)
+        price = pricing["unit_price"]
+        items.append({
+            "product": product,
+            "qty": qty,
+            "unit_price": price,
+            "base_unit_price": pricing["base_unit_price"],
+            "discount_per_unit": pricing["discount_per_unit"],
+            "discount_total": pricing["discount_total"],
+            "discount_id": pricing["discount_id"],
+            "discount_name": pricing["discount_name"],
+            "subtotal": price * qty,
+        })
+        total += price * qty
+
+    if not items:
+        return {"ok": False, "error": "empty"}
+
+    invoice_id = await next_invoice_id()
+    order = {
+        "_id": order_id,
+        "invoice_id": invoice_id,
+        "user_tid": user["telegram_id"],
+        "username": user.get("username", ""),
+        "items": [
+            {
+                "product_id": item["product"]["_id"],
+                "name": item["product"]["name"],
+                "qty": item["qty"],
+                "unit_price": item["unit_price"],
+                "base_unit_price": item["base_unit_price"],
+                "discount_per_unit": item["discount_per_unit"],
+                "discount_total": item["discount_total"],
+                "discount_id": item["discount_id"],
+                "discount_name": item["discount_name"],
+                "subtotal": item["subtotal"],
+                "delivery_type": item["product"].get("delivery_type"),
+            }
+            for item in items
+        ],
+        "total": total,
+        "currency": currency,
+        "payment_method": "balance",
+        "status": "pending",
+        "created_at": now_iso(),
+        "paid_at": None,
+        "delivered_at": None,
+        "delivery_error": None,
+        "discount_total": sum(item["discount_total"] for item in items),
+        "coupon_code": None,
+    }
+    await db.purchases.insert_one(order)
+
+    allocations = []
+    balance_debited = False
+    try:
+        for item in items:
+            product = item["product"]
+            qty = item["qty"]
+
+            if product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
+                reserved = await reserve_items(product["_id"], qty, reservation_id)
+                if len(reserved) != qty:
+                    raise ValueError(f"Stok {product['name']} tidak cukup.")
+                allocations.append({
+                    "kind": "inventory",
+                    "product_id": product["_id"],
+                    "items": reserved,
+                })
+            elif product.get("stock") is not None:
+                result = await db.products.update_one(
+                    {
+                        "_id": product["_id"],
+                        "active": True,
+                        "stock": {"$gte": qty},
+                    },
+                    {"$inc": {"stock": -qty}},
+                )
+                if result.modified_count != 1:
+                    raise ValueError(f"Stok {product['name']} tidak cukup.")
+                allocations.append({
+                    "kind": "stock",
+                    "product_id": product["_id"],
+                    "qty": qty,
+                })
+
+        balance_result = await db.bot_users.update_one(
+            {
+                "telegram_id": user["telegram_id"],
+                field: {"$gte": total},
+                "frozen": {"$ne": True},
+            },
+            {
+                "$inc": {field: -total},
+                "$set": {"cart": []},
+            },
+        )
+        if balance_result.modified_count != 1:
+            return await _fail_checkout(
+                order_id,
+                allocations,
+                reservation_id,
+                "balance",
+                "Saldo tidak cukup atau akun dibekukan.",
+                user=user,
+                field=field,
+                total=0.0,
+            )
+
+        balance_debited = True
+
+        await db.purchases.update_one(
+            {"_id": order_id, "status": "pending"},
+            {"$set": {"status": "paid", "paid_at": now_iso()}},
+        )
+
+        for allocation in allocations:
+            if allocation["kind"] == "inventory":
+                await commit_items(reservation_id, order_id, user["telegram_id"])
+
+        fresh_user = await db.bot_users.find_one(
+            {"telegram_id": user["telegram_id"]},
+            {field: 1},
+        )
+        remaining_balance = float((fresh_user or {}).get(field, 0))
+
+        return {
+            "ok": True,
+            "order": order,
+            "items": items,
+            "allocations": allocations,
+            "remaining_balance": remaining_balance,
+        }
+
+    except Exception as exc:
+        for allocation in allocations:
+            if allocation["kind"] == "stock":
+                await db.products.update_one(
+                    {"_id": allocation["product_id"]},
+                    {"$inc": {"stock": allocation["qty"]}},
+                )
+
+        await release_items(reservation_id)
+
+        if balance_debited:
+            await db.bot_users.update_one(
+                {
+                    "telegram_id": user["telegram_id"],
+                    "checkout_refund_ids": {"$ne": order_id},
+                },
+                {
+                    "$inc": {field: total},
+                    "$addToSet": {"checkout_refund_ids": order_id},
+                },
+            )
+
+        await db.purchases.update_one(
+            {"_id": order_id},
+            {"$set": {
+                "status": "failed",
+                "delivery_error": str(exc),
+            }},
+        )
+        return {
+            "ok": False,
+            "error": "checkout",
+            "message": str(exc),
+        }

@@ -26,6 +26,10 @@ async def edit_message(chat_id, message_id, text, kb=None):
     return await tg("editMessageText", **payload)
 
 
+async def delete_message(chat_id, message_id):
+    return await tg("deleteMessage", chat_id=chat_id, message_id=message_id)
+
+
 async def answer_callback(cb_id, text=None):
     payload = {"callback_query_id": cb_id}
     if text:
@@ -40,6 +44,22 @@ async def send_photo_by_id(chat_id, file_id, caption=None, kb=None):
     if kb:
         payload["reply_markup"] = kb
     return await tg("sendPhoto", **payload)
+
+
+async def send_photo_bytes(chat_id, data: bytes, filename: str = "photo.jpg", caption=None, kb=None):
+    payload = {"chat_id": str(chat_id)}
+    if caption:
+        payload["caption"] = caption
+        payload["parse_mode"] = "HTML"
+    if kb:
+        payload["reply_markup"] = kb
+    async with httpx.AsyncClient(timeout=120) as c:
+        r = await c.post(
+            f"{API}/sendPhoto",
+            data=payload,
+            files={"photo": (filename, data, "image/jpeg")},
+        )
+        return r.json()
 
 
 async def send_document(chat_id, data: bytes, filename: str, caption=None):

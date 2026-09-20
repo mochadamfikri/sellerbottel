@@ -89,3 +89,6 @@ android-sdk/
 credentials.json
 *.key
 .credentials
+
+backend/gobiz/.gopay_cache.json
+backend/gobiz/.env

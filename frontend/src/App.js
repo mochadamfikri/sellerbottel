@@ -9,6 +9,12 @@ import Products from "./pages/Products";
 import Deposits from "./pages/Deposits";
 import UsersPage from "./pages/Users";
 import SettingsPage from "./pages/SettingsPage";
+import Broadcasts from "./pages/Broadcasts";
+import Discounts from "./pages/Discounts";
+import Messages from "./pages/Messages";
+import Orders from "./pages/Orders";
+import Inventory from "./pages/Inventory";
+import Reports from "./pages/Reports";
 
 function Protected({ children, title }) {
   const { user } = useAuth();
@@ -25,9 +31,15 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<Protected title="Ringkasan"><Overview /></Protected>} />
           <Route path="/products" element={<Protected title="Kelola Produk"><Products /></Protected>} />
+          <Route path="/orders" element={<Protected title="Orders"><Orders /></Protected>} />
+          <Route path="/reports" element={<Protected title="Rekap & Laporan"><Reports /></Protected>} />
+          <Route path="/inventory" element={<Protected title="Inventory"><Inventory /></Protected>} />
           <Route path="/deposits" element={<Protected title="Kelola Deposit"><Deposits /></Protected>} />
           <Route path="/users" element={<Protected title="Kelola Pengguna"><UsersPage /></Protected>} />
           <Route path="/settings" element={<Protected title="Pengaturan"><SettingsPage /></Protected>} />
+          <Route path="/broadcasts" element={<Protected title="Broadcast"><Broadcasts /></Protected>} />
+          <Route path="/discounts" element={<Protected title="Discount"><Discounts /></Protected>} />
+          <Route path="/messages" element={<Protected title="Bot Messages"><Messages /></Protected>} />
         </Routes>
       </BrowserRouter>
       <Toaster position="top-right" theme="dark" richColors />

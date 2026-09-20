@@ -15,7 +15,7 @@ STRINGS = {
         "no_products": "🛍 <b>Produk</b>\n\nBelum ada produk tersedia saat ini.",
         "product_not_found": "Produk tidak ditemukan.",
         "prod_detail": "📦 <b>{name}</b>\n\n{desc}\n\nJenis: {type}\nHarga: <b>{price}</b>\nStok tersedia: <b>{stock}</b>",
-        "type_file": "📁 File", "type_link": "🔗 Link", "type_license": "🔑 Kode Lisensi",
+        "type_file": "📁 File", "type_link": "🔗 Link", "type_license": "🔑 Kode Lisensi", "type_inventory": "👤 Akun / Inventory",
         "stock_word": "stok", "out_of_stock": "❌ <b>Stok habis</b> — produk ini sedang tidak tersedia.",
         "stock_title": "📦 <b>Stok Produk Tersedia</b>\n",
         "stock_empty": "Belum ada produk.",
@@ -31,16 +31,39 @@ STRINGS = {
         "pay_success": "✅ <b>Pembayaran Berhasil!</b>\n\nTotal: <b>{total}</b>\nProduk sedang dikirim...",
         "delivered_all": "🎉 Semua produk telah dikirim!\nSisa saldo: <b>{balance}</b>",
         "deliver_fail": "⚠️ Gagal mengirim file <b>{name}</b>. Hubungi admin.",
+        
+        "order_refunded": "💸 <b>Refund Order</b>\n\nInvoice <code>{invoice}</code> telah direfund sebesar <b>{amount}</b> dan saldo Anda dikembalikan.",
+        "checkout_in_progress": "⏳ Checkout Anda sedang diproses. Tunggu proses sebelumnya selesai.",
+        "checkout_failed": "⚠️ Checkout gagal diproses. Saldo dan stok tidak berubah. Silakan coba lagi.",
+        "delivery_attention": "⚠️ Invoice <code>{invoice}</code> tercatat, tetapi ada produk yang gagal dikirim. Hubungi admin.",
         "deliver_link": "📦 <b>{name}</b>\n\n🔗 Link produk Anda:\n{content}",
         "deliver_license": "📦 <b>{name}</b>\n\n🔑 Kode lisensi Anda:\n<code>{content}</code>",
         "dep_usd_title": "💰 <b>Deposit USD</b>\n\nMinimum deposit: <b>${min:,.2f}</b>\n\nPilih koin:",
         "choose_network": "💰 <b>Deposit {coin}</b>\n\nPilih jaringan:",
         "dep_no_bank": "💰 <b>Deposit IDR</b>\n\n⚠️ Rekening bank belum dikonfigurasi. Hubungi admin.",
+        "dep_idr_gopay_title": "💳 <b>Deposit IDR — GoPay QR</b>\n\nMinimum deposit: <b>{min}</b>\n\nKetik jumlah deposit yang Anda inginkan. Sistem akan membuat QR dengan nominal unik untuk pembayaran Anda.",
+        "gopay_qr_created": "💳 <b>QR GoPay siap</b>\n\nDeposit: <b>{amount}</b>\nAdmin fee 0.7%: <b>{fee}</b>\nAdmin platform: <b>{platform_code}</b>\nTotal yang dibayarkan: <b>{payment_amount}</b>\n\nScan QR di atas. Setelah pembayaran terdeteksi, saldo deposit akan masuk otomatis. QR berlaku sekitar 15 menit.",
+        "gopay_deposit_confirm": "💳 <b>Konfirmasi Deposit</b>\n\nDeposit: <b>{amount}</b>\nAdmin fee 0.7% = deposit × 0.7%: <b>{fee}</b>\nAdmin platform: <b>{platform_code}</b>\nTotal yang dibayarkan: <b>{total}</b>\n\n⚠️ Sebelum melanjutkan, pastikan Anda memahami bahwa total pembayaran sudah termasuk admin fee 0.7% dan admin platform.\n\nLanjut generate QR?",
+        "btn_deposit_agree": "✅ Setuju & Buat QR",
+        "btn_deposit_cancel": "❌ Tidak, Batalkan",
+        "gopay_confirm_button": "Pilih tombol <b>Setuju & Buat QR</b> atau <b>Tidak, Batalkan</b> untuk melanjutkan.",
+        "gopay_unavailable": "⚠️ Sistem pembayaran GoPay sedang tidak tersedia. Silakan coba lagi nanti atau hubungi admin.",
+        "dep_idr_gopay_title": "💳 <b>IDR Deposit — GoPay QR</b>\n\nMinimum deposit: <b>{min}</b>\n\nType the amount you want to deposit. The system will create a unique QR amount for your payment.",
+        "gopay_qr_created": "💳 <b>GoPay QR Ready</b>\n\nDeposit: <b>{amount}</b>\nAdmin fee 0.7%: <b>{fee}</b>\nPlatform code: <b>{platform_code}</b>\nTotal payment: <b>{payment_amount}</b>\n\nScan the QR above. Your deposit balance will be credited automatically after payment is detected. QR expires in about 15 minutes.",
+        "gopay_deposit_confirm": "💳 <b>Deposit Confirmation</b>\n\nDeposit: <b>{amount}</b>\nAdmin fee 0.7% = deposit × 0.7%: <b>{fee}</b>\nPlatform code: <b>{platform_code}</b>\nTotal payment: <b>{total}</b>\n\n⚠️ The total payment already includes the 0.7% admin fee and platform code.\n\nContinue and generate the QR?",
+        "btn_deposit_agree": "✅ Agree & Create QR",
+        "btn_deposit_cancel": "❌ No, Cancel",
+        "gopay_confirm_button": "Choose <b>Agree & Create QR</b> or <b>No, Cancel</b> to continue.",
+        "gopay_unavailable": "⚠️ GoPay payment is temporarily unavailable. Please try again later or contact admin.",
         "dep_idr_title": "💰 <b>Deposit IDR — Transfer Bank</b>\n\n🏦 Bank: <b>{bank}</b>\n💳 No. Rekening: <code>{account}</code>\n👤 Atas Nama: <b>{holder}</b>\n\nMinimum deposit: <b>{min}</b>\n\nKetik <b>jumlah</b> yang akan Anda transfer (contoh: 100000):",
         "dep_no_address": "⚠️ Alamat deposit {coin} di jaringan {network} belum tersedia.\nSilakan pilih jaringan lain atau hubungi admin.",
         "dep_address": "💰 <b>Deposit {coin} — {network}</b>\n\nKirim {coin} Anda ke alamat berikut:\n\n<code>{address}</code>\n\n⚠️ <b>PENTING:</b>\n• Hanya kirim <b>{coin}</b> di jaringan <b>{network}</b>\n• Minimum deposit: <b>${min:,.2f}</b>\n\nSetelah transfer, ketik <b>jumlah deposit</b> Anda (contoh: 20):",
         "invalid_amount": "⚠️ Format jumlah tidak valid. Ketik angka saja:",
         "min_deposit": "⚠️ Jumlah minimum deposit adalah <b>{min}</b>. Ketik ulang jumlah:",
+        "wallet_prompt": "👛 <b>Wallet pengirim</b>\n\nKirim alamat wallet yang Anda gunakan untuk mengirim transaksi ini di jaringan <b>{network}</b>. Wallet ini akan dicocokkan dengan TX hash untuk mencegah klaim transaksi milik orang lain.",
+        "wallet_invalid": "⚠️ Format wallet tidak valid untuk jaringan ini. Kirim alamat wallet pengirim yang benar.",
+        "wallet_prompt": "👛 <b>Sender wallet</b>\n\nSend the wallet address you used to send this transaction on <b>{network}</b>. It will be matched against the TX hash to prevent claiming someone else’s transaction.",
+        "wallet_invalid": "⚠️ Invalid wallet format for this network. Send the correct sender wallet address.",
         "amount_set_usd": "👍 Jumlah deposit: <b>${amount:,.2f}</b>\n\nSekarang kirim <b>bukti transfer</b> Anda:\n\n🔗 <b>TX Hash</b> (disarankan) — saldo terverifikasi & masuk <b>otomatis</b>\n📷 <b>Screenshot</b> — diverifikasi manual oleh admin",
         "amount_set_idr": "👍 Jumlah deposit: <b>{amount}</b>\n\nSekarang kirim <b>foto bukti transfer</b> Anda di chat ini:",
         "proof_received": "⏳ <b>Deposit Menunggu Verifikasi</b>\n\nBukti Anda telah diterima. Admin akan memverifikasi secepatnya dan saldo akan masuk otomatis setelah disetujui.",
@@ -53,6 +76,7 @@ STRINGS = {
         "balance_view": "💳 <b>Saldo Anda</b>\n\n💵 USD: <b>${usd:,.2f}</b>\n🇮🇩 IDR: <b>{idr}</b>\n\nMata uang aktif: <b>{cur}</b>\nKurs saat ini: $1 = {rate}",
         "hist_header": "📜 <b>Riwayat Anda</b>\n", "hist_deposits": "<b>Deposit terakhir:</b>",
         "hist_purchases": "\n<b>Pembelian terakhir:</b>", "hist_none_dep": "Belum ada deposit.", "hist_none_pur": "Belum ada pembelian.",
+        "hist_orders_title": "📦 <b>Detail Transaksi</b>", "hist_deposit_detail": "💰 <b>Detail Deposit</b>", "hist_order_detail": "🧾 <b>Detail Invoice</b>", "hist_open": "🔎 Lihat Detail", "hist_back": "◀️ Kembali ke Riwayat",
         "st_pending": "⏳ Menunggu", "st_approved": "✅ Disetujui", "st_rejected": "❌ Ditolak", "st_cancelled": "🚫 Dibatalkan",
         "settings_title": "⚙️ <b>Pengaturan</b>\n\nMata uang aktif: <b>{cur}</b>\nBahasa: <b>{lang}</b>",
         "choose_language": "🌐 <b>Pilih Bahasa / Choose Language</b>",
@@ -88,7 +112,7 @@ STRINGS = {
         "no_products": "🛍 <b>Products</b>\n\nNo products available at the moment.",
         "product_not_found": "Product not found.",
         "prod_detail": "📦 <b>{name}</b>\n\n{desc}\n\nType: {type}\nPrice: <b>{price}</b>\nStock available: <b>{stock}</b>",
-        "type_file": "📁 File", "type_link": "🔗 Link", "type_license": "🔑 License Key",
+        "type_file": "📁 File", "type_link": "🔗 Link", "type_license": "🔑 License Key", "type_inventory": "👤 Account / Inventory",
         "stock_word": "stock", "out_of_stock": "❌ <b>Out of stock</b> — this product is currently unavailable.",
         "stock_title": "📦 <b>Available Product Stock</b>\n",
         "stock_empty": "No products yet.",
@@ -104,6 +128,10 @@ STRINGS = {
         "pay_success": "✅ <b>Payment Successful!</b>\n\nTotal: <b>{total}</b>\nDelivering your products...",
         "delivered_all": "🎉 All products delivered!\nRemaining balance: <b>{balance}</b>",
         "deliver_fail": "⚠️ Failed to send file <b>{name}</b>. Please contact admin.",
+        "order_refunded": "💸 <b>Order Refunded</b>\n\nInvoice <code>{invoice}</code> was refunded for <b>{amount}</b> and your balance has been restored.",
+        "checkout_in_progress": "⏳ Your checkout is already being processed. Please wait for the previous checkout to finish.",
+        "checkout_failed": "⚠️ Checkout failed. Your balance and stock were not changed. Please try again.",
+        "delivery_attention": "⚠️ Invoice <code>{invoice}</code> was created, but one or more products could not be delivered. Contact admin.",
         "deliver_link": "📦 <b>{name}</b>\n\n🔗 Your product link:\n{content}",
         "deliver_license": "📦 <b>{name}</b>\n\n🔑 Your license key:\n<code>{content}</code>",
         "dep_usd_title": "💰 <b>USD Deposit</b>\n\nMinimum deposit: <b>${min:,.2f}</b>\n\nChoose a coin:",
@@ -126,6 +154,7 @@ STRINGS = {
         "balance_view": "💳 <b>Your Balance</b>\n\n💵 USD: <b>${usd:,.2f}</b>\n🇮🇩 IDR: <b>{idr}</b>\n\nActive currency: <b>{cur}</b>\nCurrent rate: $1 = {rate}",
         "hist_header": "📜 <b>Your History</b>\n", "hist_deposits": "<b>Recent deposits:</b>",
         "hist_purchases": "\n<b>Recent purchases:</b>", "hist_none_dep": "No deposits yet.", "hist_none_pur": "No purchases yet.",
+        "hist_orders_title": "📦 <b>Transaction Details</b>", "hist_deposit_detail": "💰 <b>Deposit Details</b>", "hist_order_detail": "🧾 <b>Invoice Details</b>", "hist_open": "🔎 View Details", "hist_back": "◀️ Back to History",
         "st_pending": "⏳ Pending", "st_approved": "✅ Approved", "st_rejected": "❌ Rejected", "st_cancelled": "🚫 Cancelled",
         "settings_title": "⚙️ <b>Settings</b>\n\nActive currency: <b>{cur}</b>\nLanguage: <b>{lang}</b>",
         "choose_language": "🌐 <b>Pilih Bahasa / Choose Language</b>",
@@ -149,8 +178,32 @@ STRINGS = {
 
 LANG_NAMES = {"id": "🇮🇩 Indonesia", "en": "🇬🇧 English"}
 
+OVERRIDES = {}
+
+
+async def load_overrides(collection):
+    OVERRIDES.clear()
+    cursor = collection.find({"active": {"$ne": False}})
+    async for row in cursor:
+        OVERRIDES[(row.get("lang", "id"), row.get("key"))] = row.get("text", "")
+
+
+def set_override(lang, key, value):
+    OVERRIDES[(lang, key)] = value
+
+
+def reset_override(lang, key):
+    OVERRIDES.pop((lang, key), None)
+
+
+def message_catalog():
+    keys = sorted(set(STRINGS["id"]) | set(STRINGS["en"]))
+    return keys
+
 
 def t(_lang: str, key: str, **kw) -> str:
     _lang = _lang if _lang in STRINGS else "id"
-    s = STRINGS[_lang].get(key) or STRINGS["id"].get(key, key)
+    s = OVERRIDES.get((_lang, key))
+    if s is None:
+        s = STRINGS[_lang].get(key) or STRINGS["id"].get(key, key)
     return s.format(**kw) if kw else s

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Wallet, Snowflake, Sun } from "lucide-react";
 import api, { fmtUSD, fmtIDR, fmtDate, formatApiErrorDetail } from "../lib/api";
@@ -11,9 +11,12 @@ export default function UsersPage() {
   const [freeze, setFreeze] = useState(null);
   const [freezeReason, setFreezeReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const [filters, setFilters] = useState({ search: "", status: "all", lang: "all", has_deposit: "all", has_order: "all", min_deposit: "", max_deposit: "", min_purchase: "", max_purchase: "", min_balance: "", max_balance: "", product_id: "" });
+  const [products, setProducts] = useState([]);
 
-  const load = () => api.get("/admin/users").then(({ data }) => setUsers(data));
-  useEffect(() => { load(); }, []);
+  const load = useCallback(() => api.get("/admin/users/search", { params: filters }).then(({ data }) => setUsers(data)), [filters]);
+  useEffect(() => { api.get("/admin/products").then(({ data }) => setProducts(data)); }, []);
+  useEffect(() => { load(); }, [load]);
 
   const doAdjust = async () => {
     setBusy(true);
@@ -49,13 +52,36 @@ export default function UsersPage() {
 
   return (
     <>
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+        <input className={inputCls} placeholder="Cari nama / username / Telegram ID"
+          value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} />
+        <select className={inputCls} value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
+          <option value="all">Semua status</option><option value="active">Aktif</option><option value="frozen">Dibekukan</option>
+        </select>
+        <select className={inputCls} value={filters.lang} onChange={(e) => setFilters({ ...filters, lang: e.target.value })}>
+          <option value="all">Semua bahasa</option><option value="id">Indonesia</option><option value="en">English</option>
+        </select>
+        <select className={inputCls} value={filters.has_deposit} onChange={(e) => setFilters({ ...filters, has_deposit: e.target.value })}>
+          <option value="all">Deposit: semua</option><option value="yes">Pernah deposit</option><option value="no">Belum deposit</option>
+        </select>
+        <select className={inputCls} value={filters.has_order} onChange={(e) => setFilters({ ...filters, has_order: e.target.value })}>
+          <option value="all">Order: semua</option><option value="yes">Pernah order</option><option value="no">Belum order</option>
+        </select>
+        <select className={inputCls} value={filters.product_id} onChange={(e) => setFilters({ ...filters, product_id: e.target.value })}>
+          <option value="">Produk: semua</option>{products.map(p => <option key={p._id} value={p._id}>{p.name}</option>)}
+        </select>
+        {[["min_deposit","Min deposit"],["max_deposit","Max deposit"],["min_purchase","Min belanja"],["max_purchase","Max belanja"],["min_balance","Min saldo"],["max_balance","Max saldo"]].map(([key,label]) => (
+          <input key={key} type="number" className={inputCls} placeholder={label} value={filters[key]} onChange={(e) => setFilters({ ...filters, [key]: e.target.value })} />
+        ))}
+      </div>
+
       <div data-testid="user-list-table" className="bg-slate-900/60 border border-slate-800 rounded-xl overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wide">
               <th className="px-4 py-3">Pengguna</th><th className="px-4 py-3">Mata Uang</th>
               <th className="px-4 py-3">Saldo USD</th><th className="px-4 py-3">Saldo IDR</th>
-              <th className="px-4 py-3">Order</th><th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Order</th><th className="px-4 py-3">Belanja</th><th className="px-4 py-3">Deposit</th><th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Bergabung</th><th className="px-4 py-3 text-right">Aksi</th>
             </tr>
           </thead>
@@ -69,7 +95,9 @@ export default function UsersPage() {
                 <td className="px-4 py-3 font-mono text-slate-300">{u.currency || "-"}</td>
                 <td className="px-4 py-3 font-mono">{fmtUSD(u.balance_usd)}</td>
                 <td className="px-4 py-3 font-mono">{fmtIDR(u.balance_idr)}</td>
-                <td className="px-4 py-3 font-mono text-slate-400">{u.purchase_count}</td>
+                <td className="px-4 py-3 font-mono text-slate-400">{u.purchase_count || u.order_count || 0}</td>
+                <td className="px-4 py-3 font-mono text-slate-400">{u.total_spending || 0}</td>
+                <td className="px-4 py-3 font-mono text-slate-400">{u.total_deposit || 0}</td>
                 <td className="px-4 py-3">
                   {u.frozen ? (
                     <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded border bg-red-500/15 text-red-400 border-red-500/30">Dibekukan</span>
@@ -94,7 +122,7 @@ export default function UsersPage() {
                 </td>
               </tr>
             ))}
-            {users.length === 0 && <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-500">Belum ada pengguna bot.</td></tr>}
+            {users.length === 0 && <tr><td colSpan={10} className="px-4 py-10 text-center text-slate-500">Belum ada pengguna bot.</td></tr>}
           </tbody>
         </table>
       </div>

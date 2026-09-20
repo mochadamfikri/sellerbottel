@@ -1,14 +1,57 @@
 import uuid
 import logging
+import math
+import re
+import asyncio
+import secrets
+from html import escape
 from db import db, get_settings
 from rates import get_rate
 from chain import verify_tx, looks_like_tx_hash
-from tgapi import send_message, answer_callback, send_document
+from tgapi import (
+    send_message as tg_send_message,
+    edit_message as tg_edit_message,
+    answer_callback,
+    send_document,
+    delete_message,
+    send_photo_bytes,
+)
 from services import credit_deposit, reject_deposit, cancel_deposit, notify_admin, fmt_amount, now_iso
 from storage import get_object
 from i18n import t, LANG_NAMES
+from checkout import execute_checkout, stock_for
+from inventory import decrypt_items
+from join_gate import check_user_membership, build_gate_keyboard, clear_cache_for_user
+from gopay_provider import create_gopay_payment
+from pricing import price_for_product
 
 logger = logging.getLogger("bot")
+
+_EDIT_TARGETS = {}
+
+
+async def send_message(chat_id, text, kb=None):
+    message_id = _EDIT_TARGETS.pop(chat_id, None)
+    if message_id is not None:
+        try:
+            result = await tg_edit_message(chat_id, message_id, text, kb=kb)
+            if result.get("ok"):
+                return result
+        except Exception:
+            logger.exception("Failed to edit callback message; falling back to sendMessage")
+    return await tg_send_message(chat_id, text, kb=kb)
+
+
+_CHECKOUT_LOCKS = {}
+
+
+def _checkout_lock(tid):
+    lock = _CHECKOUT_LOCKS.get(tid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _CHECKOUT_LOCKS[tid] = lock
+    return lock
+
 
 NET_LABELS = {"SOL": "Solana", "POL": "Polygon", "BNB": "BNB (BEP-20)", "AVAX": "Avalanche"}
 CUR_FIELD = {"USD": "balance_usd", "IDR": "balance_idr"}
@@ -55,23 +98,19 @@ async def set_state(tid, state, data=None):
     await db.bot_users.update_one({"telegram_id": tid}, {"$set": {"state": state, "state_data": data or {}}})
 
 
-async def product_price(prod: dict, currency: str) -> float:
-    if currency == "USD":
-        return float(prod["price_usd"])
-    if prod.get("price_idr"):
-        return float(prod["price_idr"])
-    rate = await get_rate()
-    return round(float(prod["price_usd"]) * rate / 100) * 100
+async def product_price(prod: dict, currency: str, quantity: int = 1) -> float:
+    pricing = await price_for_product(prod, currency, quantity)
+    return pricing["unit_price"]
 
 
-def stock_label(prod, lang):
-    s = prod.get("stock")
-    return "∞" if s is None else str(int(s))
+async def stock_label(prod, lang):
+    stock = await stock_for(prod)
+    return "∞" if stock is None else str(int(stock))
 
 
-def has_stock(prod, qty=1):
-    s = prod.get("stock")
-    return True if s is None else s >= qty
+async def has_stock(prod, qty=1):
+    stock = await stock_for(prod)
+    return True if stock is None else stock >= qty
 
 
 def norm_cart(cart):
@@ -105,21 +144,44 @@ async def show_currency_selection(chat_id, lang="id"):
 
 # ============ PRODUCTS & STOCK ============
 
-async def show_products(chat_id, user):
+async def show_products(chat_id, user, page=1):
     lang = user.get("lang", "id")
-    products = await db.products.find({"active": True}).to_list(100)
+    page = max(1, int(page))
+    page_size = 8
+    query = {"active": True}
+    total_count = await db.products.count_documents(query)
+    products = await db.products.find(query).sort("created_at", -1).skip((page - 1) * page_size).limit(page_size).to_list(page_size)
+
     if not products:
         await send_message(chat_id, t(lang, "no_products"), kb=back_kb(lang))
         return
+
     rows = []
     for p in products:
         price = await product_price(p, user["currency"])
-        sl = stock_label(p, lang)
-        prefix = "❌ " if not has_stock(p) else ""
-        rows.append([{"text": f"{prefix}{p['name']} — {fmt_amount(price, user['currency'])} ({t(lang,'stock_word')} {sl})", "callback_data": f"prod:{p['_id']}"}])
-    rows.append([{"text": t(lang, "btn_main"), "callback_data": "menu:main"}])
-    await send_message(chat_id, t(lang, "products_title"), kb={"inline_keyboard": rows})
+        sl = await stock_label(p, lang)
+        prefix = "❌ " if not await has_stock(p) else ""
+        rows.append([
+            {
+                "text": f"{prefix}{p['name']} — {fmt_amount(price, user['currency'])} ({t(lang,'stock_word')} {sl})",
+                "callback_data": f"prod:{p['_id']}",
+            }
+        ])
 
+    nav = []
+    if page > 1:
+        nav.append({"text": "⬅️ Sebelumnya", "callback_data": f"products:{page - 1}"})
+    if page * page_size < total_count:
+        nav.append({"text": "➡️ Berikutnya", "callback_data": f"products:{page + 1}"})
+    if nav:
+        rows.append(nav)
+    rows.append([{"text": t(lang, "btn_main"), "callback_data": "menu:main"}])
+
+    await send_message(
+        chat_id,
+        t(lang, "products_title") + f"\n\nHalaman {page}/{max(1, (total_count + page_size - 1) // page_size)}",
+        kb={"inline_keyboard": rows},
+    )
 
 async def show_stock(chat_id, user):
     lang = user.get("lang", "id")
@@ -130,8 +192,8 @@ async def show_stock(chat_id, user):
     lines = [t(lang, "stock_title")]
     for p in products:
         price = await product_price(p, user["currency"])
-        sl = stock_label(p, lang)
-        mark = "❌" if not has_stock(p) else "✅"
+        sl = await stock_label(p, lang)
+        mark = "❌" if not await has_stock(p) else "✅"
         lines.append(f"{mark} {p['name']} — {fmt_amount(price, user['currency'])} → {t(lang,'stock_word')} <b>{sl}</b>")
     await send_message(chat_id, "\n".join(lines), kb=back_kb(lang))
 
@@ -143,11 +205,11 @@ async def show_product_detail(chat_id, user, pid):
         await send_message(chat_id, t(lang, "product_not_found"), kb=back_kb(lang))
         return
     price = await product_price(p, user["currency"])
-    type_label = t(lang, {"file": "type_file", "link": "type_link", "license": "type_license"}.get(p["delivery_type"], "type_file"))
+    type_label = t(lang, {"file": "type_file", "link": "type_link", "license": "type_license", "inventory": "type_inventory"}.get(p["delivery_type"], "type_file"))
     text = t(lang, "prod_detail", name=p["name"], desc=p.get("description", ""), type=type_label,
-             price=fmt_amount(price, user["currency"]), stock=stock_label(p, lang))
+             price=fmt_amount(price, user["currency"]), stock=await stock_label(p, lang))
     rows = []
-    if has_stock(p):
+    if await has_stock(p):
         rows.append([{"text": t(lang, "btn_buy", price=fmt_amount(price, user["currency"])), "callback_data": f"buy:{pid}"}])
         rows.append([{"text": t(lang, "btn_add_cart"), "callback_data": f"cartadd:{pid}"}])
     else:
@@ -177,7 +239,7 @@ async def show_cart(chat_id, user):
         if not p:
             continue
         valid_cart.append(item)
-        price = await product_price(p, user["currency"])
+        price = await product_price(p, user["currency"], item["qty"])
         subtotal = price * item["qty"]
         total += subtotal
         lines.append(f"• {p['name']} ×{item['qty']} — {fmt_amount(subtotal, user['currency'])}")
@@ -204,8 +266,8 @@ async def change_qty(chat_id, user, pid, delta):
             new_qty = item["qty"] + delta
             if new_qty < 1:
                 cart = [i for i in cart if i["pid"] != pid]
-            elif p and not has_stock(p, new_qty):
-                await send_message(chat_id, t(lang, "qty_max", stock=stock_label(p, lang)))
+            elif p and not await has_stock(p, new_qty):
+                await send_message(chat_id, t(lang, "qty_max", stock=await stock_label(p, lang)))
                 return
             else:
                 item["qty"] = new_qty
@@ -224,8 +286,8 @@ async def add_to_cart(chat_id, user, pid):
     cart = norm_cart(user.get("cart"))
     existing = next((i for i in cart if i["pid"] == pid), None)
     new_qty = (existing["qty"] + 1) if existing else 1
-    if not has_stock(p, new_qty):
-        await send_message(chat_id, t(lang, "qty_max", stock=stock_label(p, lang)), kb=back_kb(lang))
+    if not await has_stock(p, new_qty):
+        await send_message(chat_id, t(lang, "qty_max", stock=await stock_label(p, lang)), kb=back_kb(lang))
         return
     if existing:
         existing["qty"] = new_qty
@@ -240,83 +302,286 @@ async def add_to_cart(chat_id, user, pid):
 # ============ CHECKOUT & DELIVERY ============
 
 async def deliver_product(chat_id, p, lang):
-    if p["delivery_type"] == "file" and p.get("storage_path"):
-        try:
+    try:
+        if p["delivery_type"] == "file" and p.get("storage_path"):
             data, _ = await get_object(p["storage_path"])
-            await send_document(chat_id, data, p.get("original_filename", "produk.bin"), caption=f"📦 {p['name']}")
-        except Exception:
-            logger.exception("file delivery failed")
-            await send_message(chat_id, t(lang, "deliver_fail", name=p["name"]))
-    elif p["delivery_type"] == "link":
-        await send_message(chat_id, t(lang, "deliver_link", name=p["name"], content=p.get("content", "")))
+            result = await send_document(
+                chat_id,
+                data,
+                p.get("original_filename", "produk.bin"),
+                caption=f"📦 {p['name']}",
+            )
+            return bool(result.get("ok"))
+        if p["delivery_type"] == "link":
+            result = await send_message(
+                chat_id,
+                t(lang, "deliver_link", name=p["name"], content=p.get("content", "")),
+            )
+            return bool(result.get("ok"))
+        result = await send_message(
+            chat_id,
+            t(lang, "deliver_license", name=p["name"], content=p.get("content", "")),
+        )
+        return bool(result.get("ok"))
+    except Exception:
+        logger.exception("product delivery failed")
+        await send_message(chat_id, t(lang, "deliver_fail", name=p["name"]))
+        return False
+
+
+async def deliver_inventory(chat_id, product, lines):
+    if not lines:
+        return False
+    if len(lines) > 20:
+        payload = "\n".join(lines).encode("utf-8")
+        result = await send_document(
+            chat_id,
+            payload,
+            f"{product['name']}-inventory.txt",
+            caption=f"📦 {product['name']} — {len(lines)} akun",
+        )
+        return bool(result.get("ok"))
+
+    result = await send_message(
+        chat_id,
+        "<b>📦 " + product["name"] + "</b>\n\n" + "\n".join(
+            f"<code>{line}</code>" for line in lines
+        ),
+    )
+    return bool(result.get("ok"))
+
+
+def build_invoice_text(order):
+    currency = order.get("currency", "IDR")
+    lines = [
+        f"<b>Invoice {escape(str(order.get('invoice_id', '-')))}</b>",
+        f"tanggal transaksi: {escape(str(order.get('created_at', '-')))}",
+        f"status: <b>{escape(str(order.get('status', 'pending')))}</b>",
+        f"metode pembayaran: <b>{escape(str(order.get('payment_method', 'balance')))}</b>",
+        "",
+        "<b>Detail pembelian:</b>",
+    ]
+    for item in order.get("items", []):
+        name = escape(str(item.get("name", "Produk")))
+        qty = int(item.get("qty") or 0)
+        unit = fmt_amount(item.get("unit_price", 0), currency)
+        subtotal = fmt_amount(item.get("subtotal", 0), currency)
+        lines.append(f"• <b>{name}</b>")
+        lines.append(f"  quantity: {qty} akun/item")
+        lines.append(f"  harga/unit: {unit}")
+        lines.append(f"  subtotal: {subtotal}")
+        if float(item.get("discount_total") or 0) > 0:
+            lines.append(f"  diskon: {fmt_amount(item.get('discount_total'), currency)}")
+
+    lines.extend([
+        "",
+        f"total diskon: <b>{fmt_amount(order.get('discount_total', 0), currency)}</b>",
+        f"total transaksi: <b>{fmt_amount(order.get('total', 0), currency)}</b>",
+        "",
+        "terimakasih telah membeli.",
+    ])
+    return "\n".join(lines)
+
+
+async def _do_checkout(chat_id, user, cart_items):
+    lang = user.get("lang", "id")
+
+    result = await execute_checkout(user, cart_items)
+    if not result["ok"]:
+        if result["error"] == "stock":
+            p = result["product"]
+            await send_message(
+                chat_id,
+                t(
+                    lang,
+                    "stock_insufficient",
+                    name=p["name"],
+                    stock=result["stock"],
+                ),
+                kb=back_kb(lang),
+            )
+            return
+
+        if result["error"] == "empty":
+            await send_message(chat_id, t(lang, "no_valid_products"), kb=back_kb(lang))
+            return
+
+        if result["error"] == "checkout" and "Saldo" in result.get("message", ""):
+            ptotal = 0.0
+            for item in cart_items:
+                p = await db.products.find_one({"_id": item["pid"], "active": True})
+                if p:
+                    ptotal += await product_price(p, user["currency"]) * max(1, int(item.get("qty", 1)))
+            balance = float(user.get(CUR_FIELD[user["currency"]], 0))
+            await send_message(
+                chat_id,
+                t(
+                    lang,
+                    "insufficient",
+                    total=fmt_amount(ptotal, user["currency"]),
+                    balance=fmt_amount(balance, user["currency"]),
+                    short=fmt_amount(max(0, ptotal - balance), user["currency"]),
+                ),
+                kb={
+                    "inline_keyboard": [
+                        [{"text": t(lang, "btn_deposit_now"), "callback_data": "menu:deposit"}],
+                        [{"text": t(lang, "btn_main"), "callback_data": "menu:main"}],
+                    ]
+                },
+            )
+            return
+
+        await send_message(chat_id, t(lang, "checkout_failed"), kb=back_kb(lang))
+        return
+
+    order = result["order"]
+    await send_message(chat_id, build_invoice_text(order))
+    await send_message(
+        chat_id,
+        t(lang, "pay_success", total=fmt_amount(order["total"], order["currency"])),
+    )
+
+    all_delivered = True
+    allocation_by_product = {
+        item["product_id"]: item
+        for item in result.get("allocations", [])
+    }
+
+    for item in result["items"]:
+        product = item["product"]
+        qty = item["qty"]
+
+        if product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
+            allocation = allocation_by_product.get(product["_id"])
+            inventory_items = allocation.get("items", []) if allocation else []
+            ok = await deliver_inventory(
+                chat_id,
+                product,
+                decrypt_items(inventory_items),
+            )
+        else:
+            ok = True
+            for _ in range(qty):
+                one = await deliver_product(chat_id, product, lang)
+                ok = ok and one
+
+        all_delivered = all_delivered and ok
+
+    final_status = "delivered" if all_delivered else "delivery_failed"
+    await db.purchases.update_one(
+        {"_id": order["_id"]},
+        {
+            "$set": {
+                "status": final_status,
+                "delivered_at": now_iso() if all_delivered else None,
+                "delivery_error": None if all_delivered else "Satu atau lebih produk gagal dikirim.",
+            }
+        },
+    )
+
+    if all_delivered:
+        await send_message(
+            chat_id,
+            t(
+                lang,
+                "delivered_all",
+                balance=fmt_amount(result["remaining_balance"], order["currency"]),
+            ),
+            kb=back_kb(lang),
+        )
     else:
-        await send_message(chat_id, t(lang, "deliver_license", name=p["name"], content=p.get("content", "")))
+        await send_message(
+            chat_id,
+            t(lang, "delivery_attention", invoice=order["invoice_id"]),
+            kb=back_kb(lang),
+        )
+
+    names = ", ".join(f"{item['product']['name']} ×{item['qty']}" for item in result["items"])
+    await notify_admin(
+        f"🛒 <b>Penjualan Baru!</b>\n\n"
+        f"Invoice: <code>{order['invoice_id']}</code>\n"
+        f"Pembeli: {user_label(user)}\n"
+        f"Produk: {names}\n"
+        f"Total: <b>{fmt_amount(order['total'], order['currency'])}</b>\n"
+        f"Status: <b>{final_status}</b>"
+    )
 
 
 async def do_checkout(chat_id, user, cart_items):
-    lang = user.get("lang", "id")
-    currency = user["currency"]
-    items, total = [], 0.0
-    for item in cart_items:
-        p = await db.products.find_one({"_id": item["pid"], "active": True})
-        if not p:
-            continue
-        if not has_stock(p, item["qty"]):
-            await send_message(chat_id, t(lang, "stock_insufficient", name=p["name"], stock=stock_label(p, lang)), kb=back_kb(lang))
-            return
-        price = await product_price(p, currency)
-        items.append((p, item["qty"], price))
-        total += price * item["qty"]
-    if not items:
-        await send_message(chat_id, t(lang, "no_valid_products"), kb=back_kb(lang))
+    lock = _checkout_lock(user["telegram_id"])
+    if lock.locked():
+        await send_message(chat_id, t(user.get("lang", "id"), "checkout_in_progress"), kb=back_kb(user.get("lang", "id")))
         return
-    balance = float(user.get(CUR_FIELD[currency], 0))
-    if balance < total:
-        await send_message(chat_id,
-            t(lang, "insufficient", total=fmt_amount(total, currency), balance=fmt_amount(balance, currency), short=fmt_amount(total - balance, currency)),
-            kb={"inline_keyboard": [
-                [{"text": t(lang, "btn_deposit_now"), "callback_data": "menu:deposit"}],
-                [{"text": t(lang, "btn_main"), "callback_data": "menu:main"}]]})
-        return
-    await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$inc": {CUR_FIELD[currency]: -total}, "$set": {"cart": []}})
-    for p, qty, _ in items:
-        if p.get("stock") is not None:
-            await db.products.update_one({"_id": p["_id"]}, {"$inc": {"stock": -qty}})
-    purchase = {
-        "_id": str(uuid.uuid4()), "user_tid": user["telegram_id"], "username": user.get("username", ""),
-        "items": [{"product_id": p["_id"], "name": p["name"], "qty": qty, "price": price} for p, qty, price in items],
-        "total": total, "currency": currency, "created_at": now_iso(),
-    }
-    await db.purchases.insert_one(purchase)
-    await send_message(chat_id, t(lang, "pay_success", total=fmt_amount(total, currency)))
-    for p, qty, _ in items:
-        await deliver_product(chat_id, p, lang)
-    await send_message(chat_id, t(lang, "delivered_all", balance=fmt_amount(balance - total, currency)), kb=back_kb(lang))
-    names = ", ".join(f"{p['name']} ×{qty}" for p, qty, _ in items)
-    await notify_admin(f"🛒 <b>Penjualan Baru!</b>\n\nPembeli: {user_label(user)}\nProduk: {names}\nTotal: <b>{fmt_amount(total, currency)}</b>")
+
+    async with lock:
+        return await _do_checkout(chat_id, user, cart_items)
 
 
 # ============ DEPOSIT ============
 
+async def ensure_join_gate(chat_id, user):
+    joined, missing = await check_user_membership(user["telegram_id"])
+    if joined:
+        return True
+    lang = user.get("lang", "id")
+    await send_message(
+        chat_id,
+        "📢 <b>Akses bot membutuhkan join channel terlebih dahulu.</b>\n\n"
+        "Silakan join semua channel di bawah, lalu tekan tombol <b>Saya sudah join</b>.",
+        kb=build_gate_keyboard(missing),
+    )
+    return False
+
+
 async def show_deposit_menu(chat_id, user):
     lang = user.get("lang", "id")
     s = await get_settings()
+
     if user["currency"] == "USD":
         kb = {"inline_keyboard": [
             [{"text": "💎 USDT", "callback_data": "depcoin:USDT"}, {"text": "🔵 USDC", "callback_data": "depcoin:USDC"}],
             [{"text": t(lang, "btn_main"), "callback_data": "menu:main"}],
         ]}
-        await send_message(chat_id, t(lang, "dep_usd_title", min=float(s.get("min_deposit_usd", 15))), kb=kb)
-    else:
-        if not s.get("bank_account_number"):
-            await send_message(chat_id, t(lang, "dep_no_bank"), kb=back_kb(lang))
-            return
-        min_idr = s.get("min_deposit_idr", 50000)
-        await set_state(user["telegram_id"], "dep_idr_amount")
-        await send_message(chat_id,
-            t(lang, "dep_idr_title", bank=s.get("bank_name", ""), account=s.get("bank_account_number", ""),
-              holder=s.get("bank_account_holder", ""), min=fmt_amount(min_idr, "IDR")), kb=cancel_kb(lang))
+        await send_message(
+            chat_id,
+            t(lang, "dep_usd_title", min=float(s.get("min_deposit_usd", 15))),
+            kb=kb,
+        )
+        return
 
+    if __import__("os").environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}:
+        min_idr = float(s.get("min_deposit_idr", 50000))
+        await set_state(user["telegram_id"], "dep_idr_amount")
+        prompt = await send_message(
+            chat_id,
+            t(lang, "dep_idr_gopay_title", min=fmt_amount(min_idr, "IDR")),
+            kb=cancel_kb(lang),
+        )
+        if prompt.get("message_id"):
+            await db.bot_users.update_one(
+                {"telegram_id": user["telegram_id"]},
+                {"$set": {"state_data.prompt_message_id": prompt["message_id"]}},
+            )
+        return
+
+    if not s.get("bank_account_number"):
+        await send_message(chat_id, t(lang, "dep_no_bank"), kb=back_kb(lang))
+        return
+
+    min_idr = s.get("min_deposit_idr", 50000)
+    await set_state(user["telegram_id"], "dep_idr_amount")
+    await send_message(
+        chat_id,
+        t(
+            lang,
+            "dep_idr_title",
+            bank=s.get("bank_name", ""),
+            account=s.get("bank_account_number", ""),
+            holder=s.get("bank_account_holder", ""),
+            min=fmt_amount(min_idr, "IDR"),
+        ),
+        kb=cancel_kb(lang),
+    )
 
 async def show_network_selection(chat_id, user, coin):
     lang = user.get("lang", "id")
@@ -355,10 +620,35 @@ async def handle_dep_usd_amount(chat_id, user, text):
     if amount < min_usd:
         await send_message(chat_id, t(lang, "min_deposit", min=f"${min_usd:,.2f}"), kb=cancel_kb(lang))
         return
+    if not math.isfinite(amount) or amount > float(s.get("max_deposit_usd", 100000)):
+        await send_message(chat_id, t(lang, "invalid_amount"), kb=cancel_kb(lang))
+        return
     data = user.get("state_data", {})
     data["amount"] = amount
+    await set_state(user["telegram_id"], "dep_usd_wallet", data)
+    await send_message(chat_id, t(lang, "wallet_prompt", network=NET_LABELS.get(data.get("network"), data.get("network", ""))), kb=cancel_kb(lang))
+
+
+def valid_sender_wallet(network, wallet):
+    wallet = wallet.strip()
+    if network in {"POL", "BNB", "AVAX"}:
+        return bool(re.fullmatch(r"0x[a-fA-F0-9]{40}", wallet))
+    return 32 <= len(wallet) <= 44 and bool(re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]+", wallet))
+
+
+async def handle_dep_usd_wallet(chat_id, user, text):
+    lang = user.get("lang", "id")
+    data = user.get("state_data", {})
+    network = data.get("network")
+    wallet = text.strip()
+
+    if not valid_sender_wallet(network, wallet):
+        await send_message(chat_id, t(lang, "wallet_invalid"), kb=cancel_kb(lang))
+        return
+
+    data["sender_wallet"] = wallet
     await set_state(user["telegram_id"], "dep_usd_proof", data)
-    await send_message(chat_id, t(lang, "amount_set_usd", amount=amount), kb=cancel_kb(lang))
+    await send_message(chat_id, t(lang, "amount_set_usd", amount=data.get("amount", 0)), kb=cancel_kb(lang))
 
 
 async def handle_dep_idr_amount(chat_id, user, text):
@@ -366,27 +656,120 @@ async def handle_dep_idr_amount(chat_id, user, text):
     s = await get_settings()
     min_idr = float(s.get("min_deposit_idr", 50000))
     try:
-        amount = float(text.strip().replace("Rp", "").replace(".", "").replace(",", "").replace(" ", ""))
+        amount = float(
+            text.strip()
+            .replace("Rp", "")
+            .replace(".", "")
+            .replace(",", "")
+            .replace(" ", "")
+        )
     except ValueError:
         await send_message(chat_id, t(lang, "invalid_amount"), kb=cancel_kb(lang))
         return
-    if amount < min_idr:
-        await send_message(chat_id, t(lang, "min_deposit", min=fmt_amount(min_idr, "IDR")), kb=cancel_kb(lang))
+
+    if not math.isfinite(amount) or amount > float(s.get("max_deposit_idr", 100000000)):
+        await send_message(chat_id, t(lang, "invalid_amount"), kb=cancel_kb(lang))
         return
+
+    if amount < min_idr:
+        await send_message(
+            chat_id,
+            t(lang, "min_deposit", min=fmt_amount(min_idr, "IDR")),
+            kb=cancel_kb(lang),
+        )
+        return
+
+    if __import__("os").environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}:
+        old_prompt_id = (user.get("state_data") or {}).get("prompt_message_id")
+        if old_prompt_id:
+            try:
+                await delete_message(chat_id, old_prompt_id)
+            except Exception:
+                pass
+        admin_fee = max(1, int(round(amount * 0.007)))
+        platform_code = secrets.randbelow(900) + 100
+        total_payment = int(amount + admin_fee + platform_code)
+        await set_state(
+            user["telegram_id"],
+            "dep_idr_confirm",
+            {
+                "amount": int(amount),
+                "admin_fee": admin_fee,
+                "platform_code": platform_code,
+                "total_payment": total_payment,
+            },
+        )
+        await send_message(
+            chat_id,
+            t(
+                lang,
+                "gopay_deposit_confirm",
+                amount=fmt_amount(amount, "IDR"),
+                fee=fmt_amount(admin_fee, "IDR"),
+                platform_code=platform_code,
+                total=fmt_amount(total_payment, "IDR"),
+            ),
+            kb={
+                "inline_keyboard": [
+                    [{"text": t(lang, "btn_deposit_agree"), "callback_data": "gopay:yes"}],
+                    [{"text": t(lang, "btn_deposit_cancel"), "callback_data": "gopay:no"}],
+                ]
+            },
+        )
+        return
+
     await set_state(user["telegram_id"], "dep_idr_proof", {"amount": amount})
-    await send_message(chat_id, t(lang, "amount_set_idr", amount=fmt_amount(amount, "IDR")), kb=cancel_kb(lang))
+    await send_message(
+        chat_id,
+        t(lang, "amount_set_idr", amount=fmt_amount(amount, "IDR")),
+        kb=cancel_kb(lang),
+    )
 
+async def confirm_gopay_deposit(chat_id, user):
+    lang = user.get("lang", "id")
+    data = user.get("state_data", {})
+    amount = int(data.get("amount") or 0)
+    admin_fee = int(data.get("admin_fee") or 0)
+    platform_code = int(data.get("platform_code") or 0)
+    if amount < 1 or admin_fee < 1 or not 100 <= platform_code <= 999:
+        await set_state(user["telegram_id"], None)
+        await send_message(chat_id, t(lang, "gopay_unavailable"), kb=back_kb(lang))
+        return
 
-async def create_pending_deposit(user, data, tx_hash=None, proof_file_id=None):
+    try:
+        payment = await create_gopay_payment(user, amount, platform_code=platform_code)
+        await set_state(user["telegram_id"], None)
+        caption = t(
+            lang,
+            "gopay_qr_created",
+            amount=fmt_amount(amount, "IDR"),
+            fee=fmt_amount(payment["admin_fee"], "IDR"),
+            platform_code=payment["platform_code"],
+            payment_amount=fmt_amount(payment["payment_amount"], "IDR"),
+        )
+        await send_photo_bytes(
+            chat_id,
+            payment["image"],
+            "gopay-qris.jpg",
+            caption=caption,
+            kb=back_kb(lang),
+        )
+    except Exception:
+        logger.exception("GoPay QR creation failed")
+        await set_state(user["telegram_id"], None)
+        await send_message(chat_id, t(lang, "gopay_unavailable"), kb=back_kb(lang))
+
+async def create_pending_deposit(user, data, tx_hash=None, proof_file_id=None, credited_amount=None, auto_verified=False):
     dep = {
         "_id": str(uuid.uuid4()), "user_tid": user["telegram_id"], "username": user.get("username", ""),
         "first_name": user.get("first_name", ""),
         "method": "crypto" if data.get("coin") else "bank",
         "coin": data.get("coin"), "network": data.get("network"),
         "currency": "USD" if data.get("coin") else "IDR",
-        "amount": data["amount"], "credited_amount": None,
+        "amount": data["amount"], "credited_amount": credited_amount,
+        "sender_wallet": data.get("sender_wallet"),
         "tx_hash": tx_hash, "proof_file_id": proof_file_id,
-        "status": "pending", "auto_verified": False, "note": "",
+        "status": "pending", "auto_verified": auto_verified, "note": "",
         "created_at": now_iso(), "decided_at": None,
     }
     await db.deposits.insert_one(dep)
@@ -404,6 +787,7 @@ async def handle_usd_proof(chat_id, user, message):
     lang = user.get("lang", "id")
     data = user.get("state_data", {})
     coin, network, amount = data.get("coin"), data.get("network"), data.get("amount")
+    sender_wallet = data.get("sender_wallet")
     s = await get_settings()
     address = (s.get("crypto_addresses") or {}).get(f"{coin}_{network}", "")
     text = message.get("text", "")
@@ -416,57 +800,77 @@ async def handle_usd_proof(chat_id, user, message):
         await send_message(chat_id, t(lang, "proof_received"), kb=back_kb(lang))
         await notify_admin(
             f"💰 <b>Deposit Baru — Perlu Verifikasi</b>\n\nDari: {user_label(user)}\n"
-            f"Metode: {coin} / {NET_LABELS[network]}\nJumlah klaim: <b>${amount:,.2f}</b>\nBukti: screenshot 👆",
+            f"Metode: {coin} / {NET_LABELS[network]}\nJumlah klaim: {amount:,.2f}\nBukti: screenshot 👆",
             kb=admin_decision_kb(dep["_id"]), photo_file_id=file_id)
         return
 
     tx_hash = text.strip()
+    if not sender_wallet or not valid_sender_wallet(network, sender_wallet):
+        await send_message(chat_id, t(lang, "wallet_invalid"), kb=cancel_kb(lang))
+        return
     if not looks_like_tx_hash(tx_hash, network):
         await send_message(chat_id, t(lang, "invalid_txhash"), kb=cancel_kb(lang))
         return
 
-    existing = await db.deposits.find_one({"tx_hash": tx_hash, "status": {"$in": ["pending", "approved"]}})
+    existing = await db.deposits.find_one({"tx_hash": tx_hash})
     if existing:
         await send_message(chat_id, t(lang, "tx_used"), kb=back_kb(lang))
         await set_state(user["telegram_id"], None)
         return
 
     await send_message(chat_id, t(lang, "checking"))
-    verified, onchain_amount, reason = await verify_tx(network, coin, address, tx_hash)
+    verified, onchain_amount, reason = await verify_tx(
+        network,
+        coin,
+        address,
+        tx_hash,
+        expected_sender=sender_wallet,
+    )
     min_usd = float(s.get("min_deposit_usd", 15))
 
     if verified and onchain_amount >= min_usd:
-        dep = {
-            "_id": str(uuid.uuid4()), "user_tid": user["telegram_id"], "username": user.get("username", ""),
-            "first_name": user.get("first_name", ""),
-            "method": "crypto", "coin": coin, "network": network, "currency": "USD",
-            "amount": amount, "credited_amount": onchain_amount, "tx_hash": tx_hash, "proof_file_id": None,
-            "status": "approved", "auto_verified": True, "note": "Verifikasi on-chain otomatis",
-            "created_at": now_iso(), "decided_at": now_iso(),
-        }
-        await db.deposits.insert_one(dep)
-        await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$inc": {"balance_usd": onchain_amount}})
+        dep = await create_pending_deposit(
+            user,
+            data,
+            tx_hash=tx_hash,
+            credited_amount=onchain_amount,
+            auto_verified=True,
+        )
+        await credit_deposit(dep, note="Verifikasi on-chain otomatis")
+        fresh = await db.bot_users.find_one({"telegram_id": user["telegram_id"]})
+        new_bal = float((fresh or {}).get("balance_usd", 0))
         await set_state(user["telegram_id"], None)
-        new_bal = float(user.get("balance_usd", 0)) + onchain_amount
-        await send_message(chat_id, t(lang, "auto_ok", coin=coin, network=NET_LABELS[network], amount=onchain_amount, balance=new_bal), kb=back_kb(lang))
+        await send_message(
+            chat_id,
+            t(
+                lang,
+                "auto_ok",
+                coin=coin,
+                network=NET_LABELS[network],
+                amount=onchain_amount,
+                balance=new_bal,
+            ),
+            kb=back_kb(lang),
+        )
         await notify_admin(
             f"✅ <b>Deposit Otomatis Terverifikasi</b>\n\nDari: {user_label(user)}\n"
-            f"Koin: {coin} / {NET_LABELS[network]}\nJumlah on-chain: <b>${onchain_amount:,.2f}</b>\n"
-            f"TX: <code>{tx_hash}</code>",
+            f"Koin: {coin} / {NET_LABELS[network]}\nWallet: <code>{sender_wallet}</code>\n"
+            f"Jumlah on-chain: {onchain_amount:,.2f}\nTX: <code>{tx_hash}</code>",
             kb={"inline_keyboard": [[{"text": "🚫 Batalkan Deposit Ini", "callback_data": f"adm:cxl:{dep['_id']}"}]]})
     else:
         dep = await create_pending_deposit(user, data, tx_hash=tx_hash)
         await set_state(user["telegram_id"], None)
         if verified:
-            why = f"Jumlah on-chain (${onchain_amount:,.2f}) di bawah minimum"
+            why = f"Jumlah on-chain ({onchain_amount:,.2f}) di bawah minimum"
         else:
             why = reason or "Tidak dapat diverifikasi"
         await send_message(chat_id, t(lang, "pending_manual", reason=why), kb=back_kb(lang))
         await notify_admin(
             f"💰 <b>Deposit Baru — Perlu Verifikasi Manual</b>\n\nDari: {user_label(user)}\n"
-            f"Koin: {coin} / {NET_LABELS[network]}\nJumlah klaim: <b>${amount:,.2f}</b>\n"
-            f"TX: <code>{tx_hash}</code>\n⚠️ Auto-verify gagal: {why}",
+            f"Koin: {coin} / {NET_LABELS[network]}\nWallet: <code>{sender_wallet}</code>\n"
+            f"Jumlah klaim: {amount:,.2f}\nTX: <code>{tx_hash}</code>\n⚠️ Auto-verify gagal: {why}",
             kb=admin_decision_kb(dep["_id"]))
+
 
 
 async def handle_idr_proof(chat_id, user, message):
@@ -499,24 +903,137 @@ async def show_balance(chat_id, user):
 
 async def show_history(chat_id, user):
     lang = user.get("lang", "id")
-    deps = await db.deposits.find({"user_tid": user["telegram_id"]}).sort("created_at", -1).to_list(5)
-    purs = await db.purchases.find({"user_tid": user["telegram_id"]}).sort("created_at", -1).to_list(5)
-    st = {"pending": "st_pending", "approved": "st_approved", "rejected": "st_rejected", "cancelled": "st_cancelled"}
-    lines = [t(lang, "hist_header"), t(lang, "hist_deposits")]
-    if deps:
-        for d in deps:
-            amt = d.get("credited_amount") or d["amount"]
-            lines.append(f"• {fmt_amount(amt, d['currency'])} — {t(lang, st.get(d['status'], 'st_pending'))} — {d['created_at'][:10]}")
-    else:
-        lines.append(t(lang, "hist_none_dep"))
-    lines.append(t(lang, "hist_purchases"))
-    if purs:
-        for p in purs:
-            names = ", ".join(f"{i['name']}×{i.get('qty',1)}" for i in p["items"])
-            lines.append(f"• {names} — {fmt_amount(p['total'], p['currency'])} — {p['created_at'][:10]}")
-    else:
-        lines.append(t(lang, "hist_none_pur"))
-    await send_message(chat_id, "\n".join(lines), kb=back_kb(lang))
+    tid = user["telegram_id"]
+    deps = await db.deposits.find({"user_tid": tid}).sort("created_at", -1).limit(20).to_list(20)
+    purs = await db.purchases.find({"user_tid": tid}).sort("created_at", -1).limit(20).to_list(20)
+
+    events = []
+    for d in deps:
+        events.append(("deposit", d.get("created_at") or "", d))
+    for o in purs:
+        events.append(("order", o.get("created_at") or "", o))
+    events.sort(key=lambda x: x[1], reverse=True)
+    events = events[:20]
+
+    if not events:
+        await send_message(chat_id, t(lang, "hist_header") + "\n\nBelum ada transaksi.", kb=back_kb(lang))
+        return
+
+    status_labels = {
+        "pending": "⏳ Pending", "approved": "✅ Disetujui", "rejected": "❌ Ditolak",
+        "cancelled": "🚫 Dibatalkan", "expired": "⌛ Kedaluwarsa", "paid": "💳 Dibayar",
+        "processing": "⚙️ Diproses", "delivered": "✅ Selesai", "delivery_failed": "⚠️ Gagal Kirim",
+        "failed": "❌ Gagal", "refunded": "↩️ Refund",
+    }
+    lines = [t(lang, "hist_header"), ""]
+    rows = []
+    for kind, _, item in events:
+        if kind == "order":
+            invoice = item.get("invoice_id", "-")
+            names = ", ".join(f"{escape(str(i.get('name','Produk')))} ×{i.get('qty',1)}" for i in item.get("items", []))
+            label = f"🧾 <code>{escape(invoice)}</code> — {fmt_amount(item.get('total', 0), item.get('currency','IDR'))}"
+            lines.append(f"{label}\n   {names}\n   {status_labels.get(item.get('status'), item.get('status','-'))}")
+            rows.append([{"text": f"🧾 {invoice} — Detail", "callback_data": f"hist:ord:{item['_id']}"}])
+        else:
+            dep_id = item.get("_id", "")
+            amount = item.get("payment_amount") or item.get("amount") or 0
+            method = "GoPay QR" if item.get("method") == "gopay" else (item.get("method") or "Deposit")
+            lines.append(f"💰 {method} — {fmt_amount(amount, item.get('currency','IDR'))}\n   {status_labels.get(item.get('status'), item.get('status','-'))}")
+            rows.append([{"text": f"💰 Deposit — Detail", "callback_data": f"hist:dep:{dep_id}"}])
+
+    rows.append([{"text": t(lang, "btn_main"), "callback_data": "menu:main"}])
+    await send_message(chat_id, "\n".join(lines), kb={"inline_keyboard": rows})
+
+
+async def show_order_history_detail(chat_id, user, order_id):
+    lang = user.get("lang", "id")
+    order = await db.purchases.find_one({"_id": order_id, "user_tid": user["telegram_id"]})
+    if not order:
+        await send_message(chat_id, "Transaksi tidak ditemukan.", kb=back_kb(lang))
+        return
+
+    status_labels = {
+        "pending": "⏳ Pending", "paid": "💳 Dibayar", "processing": "⚙️ Diproses",
+        "delivered": "✅ Selesai", "delivery_failed": "⚠️ Gagal Kirim",
+        "failed": "❌ Gagal", "refunded": "↩️ Refund",
+    }
+    lines = [
+        "🧾 <b>Detail Invoice</b>",
+        f"Invoice: <code>{escape(str(order.get('invoice_id','-')))}</code>",
+        f"Order ID: <code>{escape(str(order.get('_id','-')))}</code>",
+        f"Tanggal transaksi: <b>{escape(str(order.get('created_at','-')))}</b>",
+        f"Status: <b>{status_labels.get(order.get('status'), order.get('status','-'))}</b>",
+        f"Metode pembayaran: <b>{escape(str(order.get('payment_method','balance')))}</b>",
+        "",
+        "<b>Produk yang dibeli:</b>",
+    ]
+    for item in order.get("items", []):
+        name = escape(str(item.get("name", "Produk")))
+        qty = int(item.get("qty") or 0)
+        unit = fmt_amount(item.get("unit_price", 0), order.get("currency", "IDR"))
+        subtotal = fmt_amount(item.get("subtotal", 0), order.get("currency", "IDR"))
+        discount = fmt_amount(item.get("discount_total", 0), order.get("currency", "IDR"))
+        lines.append(f"• <b>{name}</b> ×{qty}")
+        lines.append(f"  Harga/unit: {unit} | Subtotal: {subtotal}")
+        if float(item.get("discount_total") or 0) > 0:
+            lines.append(f"  Diskon: {discount}" + (f" ({escape(str(item.get('discount_name')) )})" if item.get("discount_name") else ""))
+    lines.extend([
+        "",
+        f"Total diskon: <b>{fmt_amount(order.get('discount_total',0), order.get('currency','IDR'))}</b>",
+        f"Coupon: <b>{escape(str(order.get('coupon_code') or '-'))}</b>",
+        f"Total transaksi: <b>{fmt_amount(order.get('total',0), order.get('currency','IDR'))}</b>",
+    ])
+    if order.get("paid_at"):
+        lines.append(f"Dibayar: {escape(str(order['paid_at']))}")
+    if order.get("delivered_at"):
+        lines.append(f"Dikirim: {escape(str(order['delivered_at']))}")
+    if order.get("delivery_error"):
+        lines.append(f"Catatan: <b>{escape(str(order['delivery_error']))}</b>")
+    await send_message(chat_id, "\n".join(lines), kb={"inline_keyboard": [
+        [{"text": t(lang, "hist_back"), "callback_data": "menu:history"}],
+        [{"text": t(lang, "btn_main"), "callback_data": "menu:main"}],
+    ]})
+
+
+async def show_deposit_history_detail(chat_id, user, dep_id):
+    lang = user.get("lang", "id")
+    dep = await db.deposits.find_one({"_id": dep_id, "user_tid": user["telegram_id"]})
+    if not dep:
+        await send_message(chat_id, "Deposit tidak ditemukan.", kb=back_kb(lang))
+        return
+
+    status_labels = {
+        "pending": "⏳ Pending", "approved": "✅ Disetujui", "rejected": "❌ Ditolak",
+        "cancelled": "🚫 Dibatalkan", "expired": "⌛ Kedaluwarsa",
+    }
+    lines = [
+        "💰 <b>Detail Deposit</b>",
+        f"Deposit ID: <code>{escape(str(dep.get('_id','-')))}</code>",
+        f"Tanggal: <b>{escape(str(dep.get('created_at','-')))}</b>",
+        f"Metode: <b>{escape(str(dep.get('method','-')))}</b>",
+        f"Status: <b>{status_labels.get(dep.get('status'), dep.get('status','-'))}</b>",
+        f"Deposit: <b>{fmt_amount(dep.get('amount',0), dep.get('currency','IDR'))}</b>",
+    ]
+    if dep.get("admin_fee") is not None:
+        lines.append(f"Admin fee 0.7%: <b>{fmt_amount(dep.get('admin_fee'), dep.get('currency','IDR'))}</b>")
+    if dep.get("platform_code") is not None:
+        lines.append(f"Admin platform: <b>{dep.get('platform_code')}</b>")
+    if dep.get("payment_amount") is not None:
+        lines.append(f"Total dibayarkan: <b>{fmt_amount(dep.get('payment_amount'), dep.get('currency','IDR'))}</b>")
+    if dep.get("credited_amount") is not None:
+        lines.append(f"Saldo dikreditkan: <b>{fmt_amount(dep.get('credited_amount'), dep.get('currency','IDR'))}</b>")
+    if dep.get("coin"):
+        lines.append(f"Koin/Jaringan: <b>{escape(str(dep.get('coin')))} / {escape(str(dep.get('network')))}</b>")
+    if dep.get("tx_hash"):
+        lines.append(f"TX: <code>{escape(str(dep.get('tx_hash')))}</code>")
+    if dep.get("gopay_tx_id"):
+        lines.append(f"GoPay TX: <code>{escape(str(dep.get('gopay_tx_id')))}</code>")
+    if dep.get("decided_at"):
+        lines.append(f"Diproses: {escape(str(dep.get('decided_at')))}")
+    await send_message(chat_id, "\n".join(lines), kb={"inline_keyboard": [
+        [{"text": t(lang, "hist_back"), "callback_data": "menu:history"}],
+        [{"text": t(lang, "btn_main"), "callback_data": "menu:main"}],
+    ]})
 
 
 async def show_settings(chat_id, user):
@@ -622,17 +1139,38 @@ def frozen_text(user):
 async def handle_callback(cb):
     data = cb.get("data", "")
     chat_id = cb["message"]["chat"]["id"]
+
     if data.startswith("adm:"):
         _, action, dep_id = data.split(":", 2)
         await handle_admin_callback(cb, action, dep_id)
         return
+
     user = await get_user(cb["from"])
     lang = user.get("lang", "id")
+    message_id = cb.get("message", {}).get("message_id")
+    if message_id is not None:
+        _EDIT_TARGETS[chat_id] = message_id
     await answer_callback(cb["id"])
+
+    if data == "gate:check":
+        clear_cache_for_user(user["telegram_id"])
+        if not await ensure_join_gate(chat_id, user):
+            return
+        if not user.get("currency"):
+            await show_currency_selection(chat_id, lang)
+        else:
+            await show_main_menu(chat_id, user)
+        return
+
+    if not await ensure_join_gate(chat_id, user):
+        return
 
     if data.startswith("setlang:"):
         new_lang = data.split(":")[1]
-        await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$set": {"lang": new_lang}})
+        await db.bot_users.update_one(
+            {"telegram_id": user["telegram_id"]},
+            {"$set": {"lang": new_lang}},
+        )
         user["lang"] = new_lang
         await send_message(chat_id, t(new_lang, "lang_set"))
         if user.get("currency"):
@@ -643,7 +1181,12 @@ async def handle_callback(cb):
 
     if data.startswith("cur:"):
         new_cur = data.split(":")[1]
-        await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$set": {"currency": new_cur}})
+        if new_cur not in CUR_FIELD:
+            return
+        await db.bot_users.update_one(
+            {"telegram_id": user["telegram_id"]},
+            {"$set": {"currency": new_cur}},
+        )
         user["currency"] = new_cur
         await show_main_menu(chat_id, user)
         return
@@ -660,7 +1203,9 @@ async def handle_callback(cb):
         await set_state(user["telegram_id"], None)
         await show_main_menu(chat_id, user)
     elif data == "menu:products":
-        await show_products(chat_id, user)
+        await show_products(chat_id, user, 1)
+    elif data.startswith("products:"):
+        await show_products(chat_id, user, int(data.split(":", 1)[1]))
     elif data == "menu:stock":
         await show_stock(chat_id, user)
     elif data.startswith("prod:"):
@@ -676,7 +1221,8 @@ async def handle_callback(cb):
     elif data.startswith("qtydec:"):
         await change_qty(chat_id, user, data.split(":", 1)[1], -1)
     elif data.startswith("cartrm:"):
-        cart = [i for i in norm_cart(user.get("cart")) if i["pid"] != data.split(":", 1)[1]]
+        pid = data.split(":", 1)[1]
+        cart = [i for i in norm_cart(user.get("cart")) if i["pid"] != pid]
         await save_cart(user["telegram_id"], cart)
         user["cart"] = cart
         await show_cart(chat_id, user)
@@ -687,6 +1233,17 @@ async def handle_callback(cb):
         await do_checkout(chat_id, user, norm_cart(user.get("cart")))
     elif data == "menu:deposit":
         await show_deposit_menu(chat_id, user)
+    elif data == "gopay:yes":
+        await confirm_gopay_deposit(chat_id, user)
+    elif data == "gopay:no":
+        await set_state(user["telegram_id"], None)
+        _EDIT_TARGETS.pop(chat_id, None)
+        if message_id is not None:
+            try:
+                await delete_message(chat_id, message_id)
+            except Exception:
+                pass
+        await show_main_menu(chat_id, user)
     elif data.startswith("depcoin:"):
         await show_network_selection(chat_id, user, data.split(":")[1])
     elif data.startswith("depnet:"):
@@ -696,6 +1253,10 @@ async def handle_callback(cb):
         await show_balance(chat_id, user)
     elif data == "menu:history":
         await show_history(chat_id, user)
+    elif data.startswith("hist:ord:"):
+        await show_order_history_detail(chat_id, user, data.split(":", 2)[2])
+    elif data.startswith("hist:dep:"):
+        await show_deposit_history_detail(chat_id, user, data.split(":", 2)[2])
     elif data == "menu:settings":
         await show_settings(chat_id, user)
     elif data == "langmenu":
@@ -712,12 +1273,16 @@ async def handle_callback(cb):
 async def handle_message(message):
     if "from" not in message or message["from"].get("is_bot"):
         return
+
     chat_id = message["chat"]["id"]
+    message_id = message.get("message_id")
     user = await get_user(message["from"])
     lang = user.get("lang", "id")
     text = (message.get("text") or "").strip()
 
     if text == "/start":
+        if not await ensure_join_gate(chat_id, user):
+            return
         await set_state(user["telegram_id"], None)
         if not user.get("currency"):
             await show_currency_selection(chat_id, lang)
@@ -725,6 +1290,9 @@ async def handle_message(message):
             await send_message(chat_id, frozen_text(user))
         else:
             await show_main_menu(chat_id, user)
+        return
+
+    if not await ensure_join_gate(chat_id, user):
         return
 
     if not user.get("currency"):
@@ -745,7 +1313,7 @@ async def handle_message(message):
     if text in ("/riwayat", "/history"):
         await show_history(chat_id, user)
         return
-    if text == "/stok" or text == "/stock":
+    if text in ("/stok", "/stock"):
         await show_stock(chat_id, user)
         return
     if text == "/help":
@@ -755,21 +1323,37 @@ async def handle_message(message):
     state = user.get("state")
     if state == "dep_usd_amount":
         await handle_dep_usd_amount(chat_id, user, text)
+    elif state == "dep_usd_wallet":
+        await handle_dep_usd_wallet(chat_id, user, text)
     elif state == "dep_usd_proof":
         await handle_usd_proof(chat_id, user, message)
     elif state == "dep_idr_amount":
         await handle_dep_idr_amount(chat_id, user, text)
+    elif state == "dep_idr_confirm":
+        await send_message(chat_id, t(lang, "gopay_confirm_button"))
     elif state == "dep_idr_proof":
         await handle_idr_proof(chat_id, user, message)
     else:
         await show_main_menu(chat_id, user)
 
+    if message_id and state in {"dep_usd_amount", "dep_usd_wallet", "dep_usd_proof", "dep_idr_amount", "dep_idr_confirm", "dep_idr_proof"}:
+        try:
+            await delete_message(chat_id, message_id)
+        except Exception:
+            pass
+
 
 async def process_update(update: dict):
+    chat_id = None
     try:
         if "callback_query" in update:
+            chat_id = update["callback_query"].get("message", {}).get("chat", {}).get("id")
             await handle_callback(update["callback_query"])
         elif "message" in update:
+            chat_id = update["message"].get("chat", {}).get("id")
             await handle_message(update["message"])
     except Exception:
         logger.exception("Failed processing update")
+    finally:
+        if chat_id is not None:
+            _EDIT_TARGETS.pop(chat_id, None)
