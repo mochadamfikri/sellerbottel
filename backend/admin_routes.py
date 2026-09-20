@@ -438,6 +438,62 @@ async def update_settings(body: SettingsBody):
     return s
 
 
+# ============ ORDERS ============
+
+@router.get("/orders")
+async def list_orders(status: str = "all", search: str = "", limit: int = 200):
+    q = {}
+    if status != "all":
+        q["status"] = status
+    if search.strip():
+        pattern = re.escape(search.strip())
+        q["$or"] = [
+            {"invoice_id": {"$regex": pattern, "$options": "i"}},
+            {"username": {"$regex": pattern, "$options": "i"}},
+        ]
+        if search.strip().isdigit():
+            q["$or"].append({"user_tid": int(search.strip())})
+    return await db.purchases.find(q).sort("created_at", -1).limit(max(1, min(limit, 500))).to_list(max(1, min(limit, 500)))
+
+
+@router.get("/orders/{oid}")
+async def get_order(oid: str):
+    order = await db.purchases.find_one({"_id": oid})
+    if not order:
+        raise HTTPException(404, "Order tidak ditemukan")
+    return order
+
+
+@router.post("/orders/{oid}/refund")
+async def refund_order(oid: str):
+    order = await db.purchases.find_one({"_id": oid})
+    if not order:
+        raise HTTPException(404, "Order tidak ditemukan")
+    if order.get("status") not in {"failed", "delivery_failed"}:
+        raise HTTPException(400, "Hanya order gagal yang bisa direfund otomatis.")
+
+    field = "balance_usd" if order["currency"] == "USD" else "balance_idr"
+    refund_key = f"refund:{oid}"
+    result = await db.bot_users.update_one(
+        {"telegram_id": order["user_tid"], "refund_ids": {"$ne": refund_key}},
+        {"$inc": {field: float(order["total"])}, "$addToSet": {"refund_ids": refund_key}},
+    )
+    if result.modified_count != 1:
+        raise HTTPException(409, "Order sudah direfund.")
+
+    await db.purchases.update_one(
+        {"_id": oid},
+        {"$set": {"status": "refunded", "refunded_at": now_iso(), "refund_reason": "Admin refund"}},
+    )
+    user = await db.bot_users.find_one({"telegram_id": order["user_tid"]}, {"lang": 1})
+    if user:
+        await send_message(
+            order["user_tid"],
+            t(user.get("lang") or "id", "order_refunded", amount=fmt_amount(order["total"], order["currency"]), invoice=order["invoice_id"]),
+        )
+    return {"ok": True}
+
+
 # ============ BOT MESSAGES ============
 
 ALLOWED_PLACEHOLDERS = {
