@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from db import db
 from inventory import commit_items, release_items, reserve_items
 from rates import get_rate
+from pricing import price_for_product
 
 
 CUR_FIELD = {"USD": "balance_usd", "IDR": "balance_idr"}
@@ -90,11 +91,17 @@ async def execute_checkout(user, cart_items):
                 "stock": stock,
             }
 
-        price = await product_price(product, currency)
+        pricing = await price_for_product(product, currency, qty)
+        price = pricing["unit_price"]
         items.append({
             "product": product,
             "qty": qty,
             "unit_price": price,
+            "base_unit_price": pricing["base_unit_price"],
+            "discount_per_unit": pricing["discount_per_unit"],
+            "discount_total": pricing["discount_total"],
+            "discount_id": pricing["discount_id"],
+            "discount_name": pricing["discount_name"],
             "subtotal": price * qty,
         })
         total += price * qty
@@ -114,6 +121,11 @@ async def execute_checkout(user, cart_items):
                 "name": item["product"]["name"],
                 "qty": item["qty"],
                 "unit_price": item["unit_price"],
+                "base_unit_price": item["base_unit_price"],
+                "discount_per_unit": item["discount_per_unit"],
+                "discount_total": item["discount_total"],
+                "discount_id": item["discount_id"],
+                "discount_name": item["discount_name"],
                 "subtotal": item["subtotal"],
                 "delivery_type": item["product"].get("delivery_type"),
             }
@@ -127,7 +139,7 @@ async def execute_checkout(user, cart_items):
         "paid_at": None,
         "delivered_at": None,
         "delivery_error": None,
-        "discount_total": 0.0,
+        "discount_total": sum(item["discount_total"] for item in items),
         "coupon_code": None,
     }
     await db.purchases.insert_one(order)
