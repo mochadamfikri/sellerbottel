@@ -3,10 +3,11 @@ import logging
 from db import db, get_settings
 from rates import get_rate
 from chain import verify_tx, looks_like_tx_hash
-from tgapi import send_message, answer_callback, send_document
+from tgapi import send_message, answer_callback, send_document, delete_message
 from services import credit_deposit, reject_deposit, cancel_deposit, notify_admin, fmt_amount, now_iso
 from storage import get_object
 from i18n import t, LANG_NAMES
+from checkout import execute_checkout, stock_for
 
 logger = logging.getLogger("bot")
 
@@ -64,14 +65,14 @@ async def product_price(prod: dict, currency: str) -> float:
     return round(float(prod["price_usd"]) * rate / 100) * 100
 
 
-def stock_label(prod, lang):
-    s = prod.get("stock")
-    return "∞" if s is None else str(int(s))
+async def stock_label(prod, lang):
+    stock = await stock_for(prod)
+    return "∞" if stock is None else str(int(stock))
 
 
-def has_stock(prod, qty=1):
-    s = prod.get("stock")
-    return True if s is None else s >= qty
+async def has_stock(prod, qty=1):
+    stock = await stock_for(prod)
+    return True if stock is None else stock >= qty
 
 
 def norm_cart(cart):
@@ -107,17 +108,23 @@ async def show_currency_selection(chat_id, lang="id"):
 
 async def show_products(chat_id, user):
     lang = user.get("lang", "id")
-    products = await db.products.find({"active": True}).to_list(100)
+    page = 1
+    products = await db.products.find({"active": True}).sort("created_at", -1).skip(0).limit(8).to_list(8)
     if not products:
         await send_message(chat_id, t(lang, "no_products"), kb=back_kb(lang))
         return
     rows = []
     for p in products:
         price = await product_price(p, user["currency"])
-        sl = stock_label(p, lang)
-        prefix = "❌ " if not has_stock(p) else ""
+        sl = await stock_label(p, lang)
+        prefix = "❌ " if not await has_stock(p) else ""
         rows.append([{"text": f"{prefix}{p['name']} — {fmt_amount(price, user['currency'])} ({t(lang,'stock_word')} {sl})", "callback_data": f"prod:{p['_id']}"}])
-    rows.append([{"text": t(lang, "btn_main"), "callback_data": "menu:main"}])
+    total_count = await db.products.count_documents({"active": True})
+    nav = []
+    if total_count > 8:
+        nav.append({"text": "➡️ Berikutnya", "callback_data": "products:2"})
+    nav.append({"text": t(lang, "btn_main"), "callback_data": "menu:main"})
+    rows.append(nav)
     await send_message(chat_id, t(lang, "products_title"), kb={"inline_keyboard": rows})
 
 
@@ -130,8 +137,8 @@ async def show_stock(chat_id, user):
     lines = [t(lang, "stock_title")]
     for p in products:
         price = await product_price(p, user["currency"])
-        sl = stock_label(p, lang)
-        mark = "❌" if not has_stock(p) else "✅"
+        sl = await stock_label(p, lang)
+        mark = "❌" if not await has_stock(p) else "✅"
         lines.append(f"{mark} {p['name']} — {fmt_amount(price, user['currency'])} → {t(lang,'stock_word')} <b>{sl}</b>")
     await send_message(chat_id, "\n".join(lines), kb=back_kb(lang))
 
@@ -143,11 +150,11 @@ async def show_product_detail(chat_id, user, pid):
         await send_message(chat_id, t(lang, "product_not_found"), kb=back_kb(lang))
         return
     price = await product_price(p, user["currency"])
-    type_label = t(lang, {"file": "type_file", "link": "type_link", "license": "type_license"}.get(p["delivery_type"], "type_file"))
+    type_label = t(lang, {"file": "type_file", "link": "type_link", "license": "type_license", "inventory": "type_inventory"}.get(p["delivery_type"], "type_file"))
     text = t(lang, "prod_detail", name=p["name"], desc=p.get("description", ""), type=type_label,
-             price=fmt_amount(price, user["currency"]), stock=stock_label(p, lang))
+             price=fmt_amount(price, user["currency"]), stock=await stock_label(p, lang))
     rows = []
-    if has_stock(p):
+    if await has_stock(p):
         rows.append([{"text": t(lang, "btn_buy", price=fmt_amount(price, user["currency"])), "callback_data": f"buy:{pid}"}])
         rows.append([{"text": t(lang, "btn_add_cart"), "callback_data": f"cartadd:{pid}"}])
     else:
