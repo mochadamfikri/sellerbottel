@@ -95,7 +95,19 @@ export default function SettingsPage() {
             <input data-testid="admin-telegram-id-input" className={inputCls} value={s.admin_telegram_id || ""} onChange={(e) => setS({ ...s, admin_telegram_id: e.target.value })} />
           </div>
 
-          <div className="pt-2 border-t border-slate-800">
+          <div className="pt-2 border-t border-slate-800 space-y-3">
+            <h3 className="text-sm font-semibold mb-2">Batas Deposit</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-slate-400">Maks. Deposit USD</label>
+                <input type="number" className={inputCls} value={s.max_deposit_usd || ""} onChange={(e) => setS({ ...s, max_deposit_usd: e.target.value })} />
+              </div>
+              <div>
+                <label className="text-xs text-slate-400">Maks. Deposit IDR</label>
+                <input type="number" className={inputCls} value={s.max_deposit_idr || ""} onChange={(e) => setS({ ...s, max_deposit_idr: e.target.value })} />
+              </div>
+            </div>
+
             <h3 className="text-sm font-semibold mb-2">Kurs USD → IDR</h3>
             <div className="flex items-center justify-between mb-3">
               <span className="text-sm text-slate-400">Mode Manual</span>
