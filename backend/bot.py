@@ -329,24 +329,52 @@ async def deliver_product(chat_id, p, lang):
         return False
 
 
-async def deliver_inventory(chat_id, product, lines):
-    if not lines:
+def _inventory_record_lines(record: dict, schema: list[str]):
+    if not isinstance(record, dict):
+        return [str(record)]
+    fields = schema or list(record.keys())
+    return [
+        f"{field}: {record.get(field, '')}"
+        for field in fields
+        if str(record.get(field, "")).strip() != ""
+    ]
+
+
+async def deliver_inventory(chat_id, product, records):
+    if not records:
         return False
-    if len(lines) > 20:
-        payload = "\n".join(lines).encode("utf-8")
+
+    schema = product.get("inventory_schema") or ["value"]
+    plain_records = [
+        _inventory_record_lines(record, schema)
+        for record in records
+    ]
+
+    if len(records) > 20:
+        chunks = []
+        for index, lines in enumerate(plain_records, 1):
+            chunks.append(f"{index}.\n" + "\n".join(lines))
+        payload = "\n\n".join(chunks).encode("utf-8")
         result = await send_document(
             chat_id,
             payload,
             f"{product['name']}-inventory.txt",
-            caption=f"📦 {product['name']} — {len(lines)} akun",
+            caption=f"📦 {product['name']} — {len(records)} item",
         )
         return bool(result.get("ok"))
 
+    blocks = []
+    for index, record_lines in enumerate(plain_records, 1):
+        body = "\n".join(
+            f"<b>{escape(line.split(':', 1)[0])}:</b> <code>{escape(line.split(':', 1)[1].strip())}</code>"
+            if ":" in line else f"<code>{escape(line)}</code>"
+            for line in record_lines
+        )
+        blocks.append(f"<b>#{index}</b>\n{body}")
+
     result = await send_message(
         chat_id,
-        "<b>📦 " + product["name"] + "</b>\n\n" + "\n".join(
-            f"<code>{line}</code>" for line in lines
-        ),
+        "<b>📦 " + escape(product["name"]) + "</b>\n\n" + "\n\n".join(blocks),
     )
     return bool(result.get("ok"))
 
@@ -549,9 +577,43 @@ async def show_deposit_menu(chat_id, user):
         )
         return
 
-    if __import__("os").environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}:
-        min_idr = float(s.get("min_deposit_idr", 50000))
-        await set_state(user["telegram_id"], "dep_idr_amount")
+    import os
+    qris_ready = bool(s.get("qris_enabled", False)) and os.environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}
+    bank_ready = bool(s.get("bank_enabled", False)) and bool(s.get("bank_account_number"))
+
+    if qris_ready and bank_ready:
+        await send_message(chat_id, t(lang, "dep_idr_method_title"), kb={
+            "inline_keyboard": [
+                [{"text": t(lang, "btn_gopay_qris"), "callback_data": "depmethod:qris"}],
+                [{"text": t(lang, "btn_bank_transfer"), "callback_data": "depmethod:bank"}],
+                [{"text": t(lang, "btn_main"), "callback_data": "menu:main"}],
+            ]
+        })
+        return
+
+    if qris_ready:
+        await start_idr_deposit(chat_id, user, "qris")
+        return
+
+    if bank_ready:
+        await start_idr_deposit(chat_id, user, "bank")
+        return
+
+    await send_message(chat_id, t(lang, "dep_gateway_offline"), kb=back_kb(lang))
+
+
+async def start_idr_deposit(chat_id, user, method):
+    lang = user.get("lang", "id")
+    s = await get_settings()
+    min_idr = float(s.get("min_deposit_idr", 50000))
+    import os
+
+    if method == "qris":
+        qris_ready = bool(s.get("qris_enabled", False)) and os.environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}
+        if not qris_ready:
+            await send_message(chat_id, t(lang, "dep_gateway_offline"), kb=back_kb(lang))
+            return
+        await set_state(user["telegram_id"], "dep_idr_amount", {"method": "qris"})
         prompt = await send_message(
             chat_id,
             t(lang, "dep_idr_gopay_title", min=fmt_amount(min_idr, "IDR")),
@@ -564,24 +626,26 @@ async def show_deposit_menu(chat_id, user):
             )
         return
 
-    if not s.get("bank_account_number"):
-        await send_message(chat_id, t(lang, "dep_no_bank"), kb=back_kb(lang))
+    if method == "bank":
+        if not s.get("bank_enabled") or not s.get("bank_account_number"):
+            await send_message(chat_id, t(lang, "dep_no_bank"), kb=back_kb(lang))
+            return
+        await set_state(user["telegram_id"], "dep_idr_amount", {"method": "bank"})
+        await send_message(
+            chat_id,
+            t(
+                lang,
+                "dep_idr_title",
+                bank=s.get("bank_name", ""),
+                account=s.get("bank_account_number", ""),
+                holder=s.get("bank_account_holder", ""),
+                min=fmt_amount(min_idr, "IDR"),
+            ),
+            kb=cancel_kb(lang),
+        )
         return
 
-    min_idr = s.get("min_deposit_idr", 50000)
-    await set_state(user["telegram_id"], "dep_idr_amount")
-    await send_message(
-        chat_id,
-        t(
-            lang,
-            "dep_idr_title",
-            bank=s.get("bank_name", ""),
-            account=s.get("bank_account_number", ""),
-            holder=s.get("bank_account_holder", ""),
-            min=fmt_amount(min_idr, "IDR"),
-        ),
-        kb=cancel_kb(lang),
-    )
+    await send_message(chat_id, t(lang, "dep_gateway_offline"), kb=back_kb(lang))
 
 async def show_network_selection(chat_id, user, coin):
     lang = user.get("lang", "id")
@@ -654,6 +718,8 @@ async def handle_dep_usd_wallet(chat_id, user, text):
 async def handle_dep_idr_amount(chat_id, user, text):
     lang = user.get("lang", "id")
     s = await get_settings()
+    data = user.get("state_data", {})
+    method = data.get("method") or "bank"
     min_idr = float(s.get("min_deposit_idr", 50000))
     try:
         amount = float(
@@ -679,8 +745,16 @@ async def handle_dep_idr_amount(chat_id, user, text):
         )
         return
 
-    if __import__("os").environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}:
-        old_prompt_id = (user.get("state_data") or {}).get("prompt_message_id")
+    import os
+    qris_ready = bool(s.get("qris_enabled", False)) and os.environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}
+    bank_ready = bool(s.get("bank_enabled", False)) and bool(s.get("bank_account_number"))
+
+    if method == "qris":
+        if not qris_ready:
+            await set_state(user["telegram_id"], None)
+            await send_message(chat_id, t(lang, "dep_gateway_offline"), kb=back_kb(lang))
+            return
+        old_prompt_id = data.get("prompt_message_id")
         if old_prompt_id:
             try:
                 await delete_message(chat_id, old_prompt_id)
@@ -693,6 +767,7 @@ async def handle_dep_idr_amount(chat_id, user, text):
             user["telegram_id"],
             "dep_idr_confirm",
             {
+                "method": "qris",
                 "amount": int(amount),
                 "admin_fee": admin_fee,
                 "platform_code": platform_code,
@@ -718,7 +793,12 @@ async def handle_dep_idr_amount(chat_id, user, text):
         )
         return
 
-    await set_state(user["telegram_id"], "dep_idr_proof", {"amount": amount})
+    if not bank_ready:
+        await set_state(user["telegram_id"], None)
+        await send_message(chat_id, t(lang, "dep_gateway_offline"), kb=back_kb(lang))
+        return
+
+    await set_state(user["telegram_id"], "dep_idr_proof", {"method": "bank", "amount": amount})
     await send_message(
         chat_id,
         t(lang, "amount_set_idr", amount=fmt_amount(amount, "IDR")),
@@ -728,6 +808,13 @@ async def handle_dep_idr_amount(chat_id, user, text):
 async def confirm_gopay_deposit(chat_id, user):
     lang = user.get("lang", "id")
     data = user.get("state_data", {})
+    s = await get_settings()
+    import os
+    qris_ready = bool(s.get("qris_enabled", False)) and os.environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}
+    if not qris_ready:
+        await set_state(user["telegram_id"], None)
+        await send_message(chat_id, t(lang, "dep_gateway_offline"), kb=back_kb(lang))
+        return
     amount = int(data.get("amount") or 0)
     admin_fee = int(data.get("admin_fee") or 0)
     platform_code = int(data.get("platform_code") or 0)
@@ -876,6 +963,11 @@ async def handle_usd_proof(chat_id, user, message):
 async def handle_idr_proof(chat_id, user, message):
     lang = user.get("lang", "id")
     data = user.get("state_data", {})
+    s = await get_settings()
+    if not s.get("bank_enabled") or not s.get("bank_account_number"):
+        await set_state(user["telegram_id"], None)
+        await send_message(chat_id, t(lang, "dep_gateway_offline"), kb=back_kb(lang))
+        return
     amount = data.get("amount")
     photo = message.get("photo")
     if not photo:
@@ -1233,6 +1325,10 @@ async def handle_callback(cb):
         await do_checkout(chat_id, user, norm_cart(user.get("cart")))
     elif data == "menu:deposit":
         await show_deposit_menu(chat_id, user)
+    elif data == "depmethod:qris":
+        await start_idr_deposit(chat_id, user, "qris")
+    elif data == "depmethod:bank":
+        await start_idr_deposit(chat_id, user, "bank")
     elif data == "gopay:yes":
         await confirm_gopay_deposit(chat_id, user)
     elif data == "gopay:no":
