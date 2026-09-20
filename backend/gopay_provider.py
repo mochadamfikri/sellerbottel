@@ -168,6 +168,9 @@ async def _history():
 async def poll_gopay_once():
     if os.environ.get("GOPAY_ENABLED", "").lower() not in {"1", "true", "yes"}:
         return {"checked": False, "matched": 0}
+    settings = await get_settings()
+    if not settings.get("qris_enabled", False):
+        return {"checked": False, "matched": 0}
 
     now = datetime.now(timezone.utc)
     await db.gopay_payments.update_many(
