@@ -3,6 +3,7 @@ import logging
 import math
 import re
 import asyncio
+import secrets
 from db import db, get_settings
 from rates import get_rate
 from chain import verify_tx, looks_like_tx_hash
@@ -656,25 +657,36 @@ async def handle_dep_idr_amount(chat_id, user, text):
         return
 
     if __import__("os").environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}:
-        try:
-            payment = await create_gopay_payment(user, amount)
-            await set_state(user["telegram_id"], None)
-            caption = t(
+        admin_fee = max(1, int(round(amount * 0.007)))
+        platform_code = secrets.randbelow(900) + 100
+        total_payment = int(amount + admin_fee + platform_code)
+        await set_state(
+            user["telegram_id"],
+            "dep_idr_confirm",
+            {
+                "amount": int(amount),
+                "admin_fee": admin_fee,
+                "platform_code": platform_code,
+                "total_payment": total_payment,
+            },
+        )
+        await send_message(
+            chat_id,
+            t(
                 lang,
-                "gopay_qr_created",
+                "gopay_deposit_confirm",
                 amount=fmt_amount(amount, "IDR"),
-                payment_amount=fmt_amount(payment["payment_amount"], "IDR"),
-            )
-            await send_photo_bytes(
-                chat_id,
-                payment["image"],
-                "gopay-qris.jpg",
-                caption=caption,
-                kb=back_kb(lang),
-            )
-        except Exception:
-            logger.exception("GoPay QR creation failed")
-            await send_message(chat_id, t(lang, "gopay_unavailable"), kb=back_kb(lang))
+                fee=fmt_amount(admin_fee, "IDR"),
+                platform_code=platform_code,
+                total=fmt_amount(total_payment, "IDR"),
+            ),
+            kb={
+                "inline_keyboard": [
+                    [{"text": t(lang, "btn_deposit_agree"), "callback_data": "gopay:yes"}],
+                    [{"text": t(lang, "btn_deposit_cancel"), "callback_data": "gopay:no"}],
+                ]
+            },
+        )
         return
 
     await set_state(user["telegram_id"], "dep_idr_proof", {"amount": amount})
@@ -683,6 +695,40 @@ async def handle_dep_idr_amount(chat_id, user, text):
         t(lang, "amount_set_idr", amount=fmt_amount(amount, "IDR")),
         kb=cancel_kb(lang),
     )
+
+async def confirm_gopay_deposit(chat_id, user):
+    lang = user.get("lang", "id")
+    data = user.get("state_data", {})
+    amount = int(data.get("amount") or 0)
+    admin_fee = int(data.get("admin_fee") or 0)
+    platform_code = int(data.get("platform_code") or 0)
+    if amount < 1 or admin_fee < 1 or not 100 <= platform_code <= 999:
+        await set_state(user["telegram_id"], None)
+        await send_message(chat_id, t(lang, "gopay_unavailable"), kb=back_kb(lang))
+        return
+
+    try:
+        payment = await create_gopay_payment(user, amount, platform_code=platform_code)
+        await set_state(user["telegram_id"], None)
+        caption = t(
+            lang,
+            "gopay_qr_created",
+            amount=fmt_amount(amount, "IDR"),
+            fee=fmt_amount(payment["admin_fee"], "IDR"),
+            platform_code=payment["platform_code"],
+            payment_amount=fmt_amount(payment["payment_amount"], "IDR"),
+        )
+        await send_photo_bytes(
+            chat_id,
+            payment["image"],
+            "gopay-qris.jpg",
+            caption=caption,
+            kb=back_kb(lang),
+        )
+    except Exception:
+        logger.exception("GoPay QR creation failed")
+        await set_state(user["telegram_id"], None)
+        await send_message(chat_id, t(lang, "gopay_unavailable"), kb=back_kb(lang))
 
 async def create_pending_deposit(user, data, tx_hash=None, proof_file_id=None, credited_amount=None, auto_verified=False):
     dep = {
@@ -1045,6 +1091,17 @@ async def handle_callback(cb):
         await do_checkout(chat_id, user, norm_cart(user.get("cart")))
     elif data == "menu:deposit":
         await show_deposit_menu(chat_id, user)
+    elif data == "gopay:yes":
+        await confirm_gopay_deposit(chat_id, user)
+    elif data == "gopay:no":
+        await set_state(user["telegram_id"], None)
+        _EDIT_TARGETS.pop(chat_id, None)
+        if message_id is not None:
+            try:
+                await delete_message(chat_id, message_id)
+            except Exception:
+                pass
+        await show_main_menu(chat_id, user)
     elif data.startswith("depcoin:"):
         await show_network_selection(chat_id, user, data.split(":")[1])
     elif data.startswith("depnet:"):
@@ -1126,12 +1183,14 @@ async def handle_message(message):
         await handle_usd_proof(chat_id, user, message)
     elif state == "dep_idr_amount":
         await handle_dep_idr_amount(chat_id, user, text)
+    elif state == "dep_idr_confirm":
+        await send_message(chat_id, t(lang, "gopay_confirm_button"))
     elif state == "dep_idr_proof":
         await handle_idr_proof(chat_id, user, message)
     else:
         await show_main_menu(chat_id, user)
 
-    if message_id and state in {"dep_usd_amount", "dep_usd_wallet", "dep_usd_proof", "dep_idr_amount", "dep_idr_proof"}:
+    if message_id and state in {"dep_usd_amount", "dep_usd_wallet", "dep_usd_proof", "dep_idr_amount", "dep_idr_confirm", "dep_idr_proof"}:
         try:
             await delete_message(chat_id, message_id)
         except Exception:
