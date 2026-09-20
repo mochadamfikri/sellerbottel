@@ -16,11 +16,11 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") if os.environ.get("REACT_APP_BACKEND_URL") else \
     "https://tg-product-seller.preview.emergentagent.com"
-WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "wsec_9f2c1e7ab84d43aa9d0f6b2e5c8a1d37")
+TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
-ADMIN_EMAIL = "admin@tokobot.com"
-ADMIN_PASSWORD = "admin123"
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 TEST_TID = 111222333
 TEST_TID_DEPOSITS = 111222334
@@ -99,8 +99,12 @@ class TestWebhook:
         yield
 
     def test_wrong_secret_403(self):
-        r = requests.post(f"{BASE_URL}/api/telegram/webhook/wrong_secret",
-                          json={"update_id": 1}, timeout=15)
+        r = requests.post(
+            f"{BASE_URL}/api/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": "wrong"},
+            json={"update_id": 1},
+            timeout=15,
+        )
         assert r.status_code == 403
 
     def test_start_message_creates_user(self):
@@ -113,7 +117,12 @@ class TestWebhook:
                 "text": "/start",
             },
         }
-        r = requests.post(f"{BASE_URL}/api/telegram/webhook/{WEBHOOK_SECRET}", json=update, timeout=15)
+        r = requests.post(
+            f"{BASE_URL}/api/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": TELEGRAM_WEBHOOK_SECRET or ""},
+            json=update,
+            timeout=15,
+        )
         assert r.status_code == 200
         assert r.json().get("ok") is True
         # webhook processes update as background task; wait for DB write
@@ -136,7 +145,12 @@ class TestWebhook:
                 "data": "cur:IDR",
             },
         }
-        r = requests.post(f"{BASE_URL}/api/telegram/webhook/{WEBHOOK_SECRET}", json=cb, timeout=15)
+        r = requests.post(
+            f"{BASE_URL}/api/telegram/webhook",
+            headers={"X-Telegram-Bot-Api-Secret-Token": TELEGRAM_WEBHOOK_SECRET or ""},
+            json=cb,
+            timeout=15,
+        )
         assert r.status_code == 200
         cur = None
         for _ in range(15):
