@@ -65,7 +65,6 @@ async def ensure_indexes():
     await db.bot_message_history.create_index([("lang", 1), ("key", 1), ("version", -1)])
     await db.required_channels.create_index("channel_id", unique=True)
     await db.broadcasts.create_index([("created_at", -1)])
-    await db.counters.create_index("_id", unique=True)
     await db.processed_updates.create_index("update_id", unique=True)
     await db.gopay_payments.create_index("active_payment_amount", unique=True, sparse=True)
     await db.gopay_payments.create_index([("status", 1), ("expires_at", 1)])
