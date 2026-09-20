@@ -28,16 +28,16 @@ def create_access_token(user_id: str, email: str) -> str:
 
 
 async def seed_admin():
-    email = os.environ.get("ADMIN_EMAIL", "admin@tokobot.com").lower()
-    password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+    password = os.environ.get("ADMIN_PASSWORD", "")
+    if not email or not password:
+        raise RuntimeError("ADMIN_EMAIL dan ADMIN_PASSWORD wajib di-set. Tidak ada default admin/password.")
     existing = await db.admins.find_one({"email": email})
     if existing is None:
         await db.admins.insert_one({
             "_id": "admin-1", "email": email, "password_hash": hash_password(password),
             "name": "Admin", "role": "admin", "created_at": datetime.now(timezone.utc).isoformat(),
         })
-    elif not verify_password(password, existing["password_hash"]):
-        await db.admins.update_one({"email": email}, {"$set": {"password_hash": hash_password(password)}})
     await db.login_attempts.create_index("identifier")
 
 
@@ -72,7 +72,11 @@ class LoginBody(BaseModel):
 @router.post("/login")
 async def login(body: LoginBody, request: Request, response: Response):
     email = body.email.lower().strip()
-    identifier = f"{request.client.host}:{email}"
+    trusted_proxy = os.environ.get("TRUST_PROXY", "").lower() in {"1", "true", "yes"}
+    client_ip = request.client.host if request.client else "unknown"
+    if trusted_proxy:
+        client_ip = request.headers.get("x-forwarded-for", client_ip).split(",")[0].strip()
+    identifier = f"{client_ip}:{email}"
     attempt = await db.login_attempts.find_one({"identifier": identifier})
     if attempt and attempt.get("count", 0) >= 5:
         locked_at = datetime.fromisoformat(attempt["last_at"])
@@ -89,7 +93,7 @@ async def login(body: LoginBody, request: Request, response: Response):
         raise HTTPException(status_code=401, detail="Email atau password salah")
     await db.login_attempts.delete_one({"identifier": identifier})
     token = create_access_token(user["_id"], email)
-    response.set_cookie(key="access_token", value=token, httponly=True, secure=True, samesite="none", max_age=43200, path="/")
+    response.set_cookie(key="access_token", value=token, httponly=True, secure=True, samesite=os.environ.get("COOKIE_SAMESITE", "lax"), max_age=43200, path="/")
     return {"id": user["_id"], "email": email, "name": user.get("name", "Admin"), "token": token}
 
 
