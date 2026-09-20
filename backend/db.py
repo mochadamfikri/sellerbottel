@@ -24,6 +24,9 @@ DEFAULT_SETTINGS = {
     "manual_rate": 16000.0,
     "cached_rate": 16000.0,
     "rate_updated_at": None,
+    "qris_enabled": os.environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"},
+    "bank_enabled": True,
+    "stats_reset_at": None,
     "join_gate_enabled": True,
     "join_gate_fail_open": True,
     "required_channels": [],
@@ -77,4 +80,8 @@ async def ensure_indexes():
 
 async def get_settings() -> dict:
     s = await db.settings.find_one({"_id": "main"})
-    return s or DEFAULT_SETTINGS
+    if not s:
+        return dict(DEFAULT_SETTINGS)
+    merged = dict(DEFAULT_SETTINGS)
+    merged.update(s)
+    return merged

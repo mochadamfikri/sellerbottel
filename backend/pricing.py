@@ -57,7 +57,15 @@ async def price_for_product(product, currency, quantity=1):
         if mode == "percent":
             discount_per_unit = base * min(100.0, max(0.0, value)) / 100.0
         elif mode == "fixed":
-            discount_per_unit = min(base, max(0.0, value))
+            fixed_currency = discount.get("fixed_currency") or currency
+            fixed_value = max(0.0, value)
+            if fixed_currency == "IDR" and currency == "USD":
+                rate = await get_rate()
+                fixed_value = fixed_value / rate
+            elif fixed_currency == "USD" and currency == "IDR":
+                rate = await get_rate()
+                fixed_value = fixed_value * rate
+            discount_per_unit = min(base, fixed_value)
         else:
             continue
 

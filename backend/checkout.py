@@ -39,11 +39,20 @@ async def product_price(product, currency):
 
 
 async def stock_for(product):
-    if product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
-        return await db.inventory_items.count_documents({
+    is_inventory = (
+        product.get("product_kind") == "digital"
+        or product.get("delivery_type") == "inventory"
+        or product.get("inventory_enabled")
+    )
+    if is_inventory:
+        available = await db.inventory_items.count_documents({
             "product_id": product["_id"],
             "status": "available",
         })
+        if product.get("stock_mode") == "manual" and product.get("manual_stock") is not None:
+            return min(available, max(0, int(product.get("manual_stock") or 0)))
+        return available
+
     stock = product.get("stock")
     return None if stock is None else int(stock)
 
@@ -164,7 +173,7 @@ async def execute_checkout(user, cart_items):
             product = item["product"]
             qty = item["qty"]
 
-            if product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
+            if product.get("product_kind") == "digital" or product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
                 reserved = await reserve_items(product["_id"], qty, reservation_id)
                 if len(reserved) != qty:
                     raise ValueError(f"Stok {product['name']} tidak cukup.")

@@ -176,6 +176,21 @@ STRINGS = {
     },
 }
 
+# Admin payment gateway selection messages are kept here so they can be overridden
+# through the existing bot-message editor later.
+STRINGS["id"].update({
+    "dep_idr_method_title": "💰 <b>Pilih Metode Deposit IDR</b>\n\nPilih metode pembayaran yang tersedia:",
+    "btn_gopay_qris": "📱 QRIS +0.7% otomatis",
+    "btn_bank_transfer": "🏦 Bank Transfer 0 fees — manual checking",
+    "dep_gateway_offline": "⚠️ <b>Maaf, sedang ada gangguan pada gateway payment/bank kami.</b>\n\nSilakan coba lagi nanti.",
+})
+STRINGS["en"].update({
+    "dep_idr_method_title": "💰 <b>Choose IDR Deposit Method</b>\n\nChoose an available payment method:",
+    "btn_gopay_qris": "📱 QRIS +0.7% automatic",
+    "btn_bank_transfer": "🏦 Bank Transfer 0 fees — manual checking",
+    "dep_gateway_offline": "⚠️ <b>Sorry, our payment/bank gateway is currently unavailable.</b>\n\nPlease try again later.",
+})
+
 LANG_NAMES = {"id": "🇮🇩 Indonesia", "en": "🇬🇧 English"}
 
 OVERRIDES = {}
