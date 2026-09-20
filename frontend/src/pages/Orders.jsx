@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import api, { fmtAmount, fmtDate, formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
@@ -11,8 +11,8 @@ export default function Orders() {
   const [orders, setOrders] = useState([]);
   const [detail, setDetail] = useState(null);
 
-  const load = () => api.get("/admin/orders", { params: { status, search } }).then(({ data }) => setOrders(data));
-  useEffect(() => { load(); }, [status, search]);
+  const load = useCallback(() => api.get("/admin/orders", { params: { status, search } }).then(({ data }) => setOrders(data)), [status, search]);
+  useEffect(() => { load(); }, [load]);
 
   const openDetail = async (o) => {
     try {
