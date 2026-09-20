@@ -8,6 +8,7 @@ from services import credit_deposit, reject_deposit, cancel_deposit, notify_admi
 from storage import get_object
 from i18n import t, LANG_NAMES
 from checkout import execute_checkout, stock_for
+from inventory import decrypt_items
 
 logger = logging.getLogger("bot")
 
@@ -211,8 +212,8 @@ async def change_qty(chat_id, user, pid, delta):
             new_qty = item["qty"] + delta
             if new_qty < 1:
                 cart = [i for i in cart if i["pid"] != pid]
-            elif p and not has_stock(p, new_qty):
-                await send_message(chat_id, t(lang, "qty_max", stock=stock_label(p, lang)))
+            elif p and not await has_stock(p, new_qty):
+                await send_message(chat_id, t(lang, "qty_max", stock=await stock_label(p, lang)))
                 return
             else:
                 item["qty"] = new_qty
@@ -231,8 +232,8 @@ async def add_to_cart(chat_id, user, pid):
     cart = norm_cart(user.get("cart"))
     existing = next((i for i in cart if i["pid"] == pid), None)
     new_qty = (existing["qty"] + 1) if existing else 1
-    if not has_stock(p, new_qty):
-        await send_message(chat_id, t(lang, "qty_max", stock=stock_label(p, lang)), kb=back_kb(lang))
+    if not await has_stock(p, new_qty):
+        await send_message(chat_id, t(lang, "qty_max", stock=await stock_label(p, lang)), kb=back_kb(lang))
         return
     if existing:
         existing["qty"] = new_qty
@@ -247,60 +248,192 @@ async def add_to_cart(chat_id, user, pid):
 # ============ CHECKOUT & DELIVERY ============
 
 async def deliver_product(chat_id, p, lang):
-    if p["delivery_type"] == "file" and p.get("storage_path"):
-        try:
+    try:
+        if p["delivery_type"] == "file" and p.get("storage_path"):
             data, _ = await get_object(p["storage_path"])
-            await send_document(chat_id, data, p.get("original_filename", "produk.bin"), caption=f"📦 {p['name']}")
-        except Exception:
-            logger.exception("file delivery failed")
-            await send_message(chat_id, t(lang, "deliver_fail", name=p["name"]))
-    elif p["delivery_type"] == "link":
-        await send_message(chat_id, t(lang, "deliver_link", name=p["name"], content=p.get("content", "")))
-    else:
-        await send_message(chat_id, t(lang, "deliver_license", name=p["name"], content=p.get("content", "")))
+            result = await send_document(
+                chat_id,
+                data,
+                p.get("original_filename", "produk.bin"),
+                caption=f"📦 {p['name']}",
+            )
+            return bool(result.get("ok"))
+        if p["delivery_type"] == "link":
+            result = await send_message(
+                chat_id,
+                t(lang, "deliver_link", name=p["name"], content=p.get("content", "")),
+            )
+            return bool(result.get("ok"))
+        result = await send_message(
+            chat_id,
+            t(lang, "deliver_license", name=p["name"], content=p.get("content", "")),
+        )
+        return bool(result.get("ok"))
+    except Exception:
+        logger.exception("product delivery failed")
+        await send_message(chat_id, t(lang, "deliver_fail", name=p["name"]))
+        return False
+
+
+async def deliver_inventory(chat_id, product, lines):
+    if not lines:
+        return False
+    if len(lines) > 20:
+        payload = "\n".join(lines).encode("utf-8")
+        result = await send_document(
+            chat_id,
+            payload,
+            f"{product['name']}-inventory.txt",
+            caption=f"📦 {product['name']} — {len(lines)} akun",
+        )
+        return bool(result.get("ok"))
+
+    result = await send_message(
+        chat_id,
+        "<b>📦 " + product["name"] + "</b>\n\n" + "\n".join(
+            f"<code>{line}</code>" for line in lines
+        ),
+    )
+    return bool(result.get("ok"))
+
+
+def build_invoice_text(order):
+    lines = [
+        f"<b>{order['invoice_id']}</b>",
+        f"tanggal transaksi: {order['created_at'][:10]}",
+        "terimakasih telah membeli",
+        "",
+        "berikut list pembelian anda",
+    ]
+    for item in order["items"]:
+        lines.append(f"nama product: {item['name']}")
+        lines.append(f"quantity: {item['qty']}")
+
+    return "\n".join(lines)
 
 
 async def do_checkout(chat_id, user, cart_items):
     lang = user.get("lang", "id")
-    currency = user["currency"]
-    items, total = [], 0.0
-    for item in cart_items:
-        p = await db.products.find_one({"_id": item["pid"], "active": True})
-        if not p:
-            continue
-        if not has_stock(p, item["qty"]):
-            await send_message(chat_id, t(lang, "stock_insufficient", name=p["name"], stock=stock_label(p, lang)), kb=back_kb(lang))
+
+    result = await execute_checkout(user, cart_items)
+    if not result["ok"]:
+        if result["error"] == "stock":
+            p = result["product"]
+            await send_message(
+                chat_id,
+                t(
+                    lang,
+                    "stock_insufficient",
+                    name=p["name"],
+                    stock=result["stock"],
+                ),
+                kb=back_kb(lang),
+            )
             return
-        price = await product_price(p, currency)
-        items.append((p, item["qty"], price))
-        total += price * item["qty"]
-    if not items:
-        await send_message(chat_id, t(lang, "no_valid_products"), kb=back_kb(lang))
+
+        if result["error"] == "empty":
+            await send_message(chat_id, t(lang, "no_valid_products"), kb=back_kb(lang))
+            return
+
+        if result["error"] == "checkout" and "Saldo" in result.get("message", ""):
+            ptotal = 0.0
+            for item in cart_items:
+                p = await db.products.find_one({"_id": item["pid"], "active": True})
+                if p:
+                    ptotal += await product_price(p, user["currency"]) * max(1, int(item.get("qty", 1)))
+            balance = float(user.get(CUR_FIELD[user["currency"]], 0))
+            await send_message(
+                chat_id,
+                t(
+                    lang,
+                    "insufficient",
+                    total=fmt_amount(ptotal, user["currency"]),
+                    balance=fmt_amount(balance, user["currency"]),
+                    short=fmt_amount(max(0, ptotal - balance), user["currency"]),
+                ),
+                kb={
+                    "inline_keyboard": [
+                        [{"text": t(lang, "btn_deposit_now"), "callback_data": "menu:deposit"}],
+                        [{"text": t(lang, "btn_main"), "callback_data": "menu:main"}],
+                    ]
+                },
+            )
+            return
+
+        await send_message(chat_id, t(lang, "checkout_failed"), kb=back_kb(lang))
         return
-    balance = float(user.get(CUR_FIELD[currency], 0))
-    if balance < total:
-        await send_message(chat_id,
-            t(lang, "insufficient", total=fmt_amount(total, currency), balance=fmt_amount(balance, currency), short=fmt_amount(total - balance, currency)),
-            kb={"inline_keyboard": [
-                [{"text": t(lang, "btn_deposit_now"), "callback_data": "menu:deposit"}],
-                [{"text": t(lang, "btn_main"), "callback_data": "menu:main"}]]})
-        return
-    await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$inc": {CUR_FIELD[currency]: -total}, "$set": {"cart": []}})
-    for p, qty, _ in items:
-        if p.get("stock") is not None:
-            await db.products.update_one({"_id": p["_id"]}, {"$inc": {"stock": -qty}})
-    purchase = {
-        "_id": str(uuid.uuid4()), "user_tid": user["telegram_id"], "username": user.get("username", ""),
-        "items": [{"product_id": p["_id"], "name": p["name"], "qty": qty, "price": price} for p, qty, price in items],
-        "total": total, "currency": currency, "created_at": now_iso(),
+
+    order = result["order"]
+    await send_message(chat_id, build_invoice_text(order))
+    await send_message(
+        chat_id,
+        t(lang, "pay_success", total=fmt_amount(order["total"], order["currency"])),
+    )
+
+    all_delivered = True
+    allocation_by_product = {
+        item["product_id"]: item
+        for item in result.get("allocations", [])
     }
-    await db.purchases.insert_one(purchase)
-    await send_message(chat_id, t(lang, "pay_success", total=fmt_amount(total, currency)))
-    for p, qty, _ in items:
-        await deliver_product(chat_id, p, lang)
-    await send_message(chat_id, t(lang, "delivered_all", balance=fmt_amount(balance - total, currency)), kb=back_kb(lang))
-    names = ", ".join(f"{p['name']} ×{qty}" for p, qty, _ in items)
-    await notify_admin(f"🛒 <b>Penjualan Baru!</b>\n\nPembeli: {user_label(user)}\nProduk: {names}\nTotal: <b>{fmt_amount(total, currency)}</b>")
+
+    for item in result["items"]:
+        product = item["product"]
+        qty = item["qty"]
+
+        if product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
+            allocation = allocation_by_product.get(product["_id"])
+            inventory_items = allocation.get("items", []) if allocation else []
+            ok = await deliver_inventory(
+                chat_id,
+                product,
+                decrypt_items(inventory_items),
+            )
+        else:
+            ok = True
+            for _ in range(qty):
+                one = await deliver_product(chat_id, product, lang)
+                ok = ok and one
+
+        all_delivered = all_delivered and ok
+
+    final_status = "delivered" if all_delivered else "delivery_failed"
+    await db.purchases.update_one(
+        {"_id": order["_id"]},
+        {
+            "$set": {
+                "status": final_status,
+                "delivered_at": now_iso() if all_delivered else None,
+                "delivery_error": None if all_delivered else "Satu atau lebih produk gagal dikirim.",
+            }
+        },
+    )
+
+    if all_delivered:
+        await send_message(
+            chat_id,
+            t(
+                lang,
+                "delivered_all",
+                balance=fmt_amount(result["remaining_balance"], order["currency"]),
+            ),
+            kb=back_kb(lang),
+        )
+    else:
+        await send_message(
+            chat_id,
+            t(lang, "delivery_attention", invoice=order["invoice_id"]),
+            kb=back_kb(lang),
+        )
+
+    names = ", ".join(f"{item['product']['name']} ×{item['qty']}" for item in result["items"])
+    await notify_admin(
+        f"🛒 <b>Penjualan Baru!</b>\n\n"
+        f"Invoice: <code>{order['invoice_id']}</code>\n"
+        f"Pembeli: {user_label(user)}\n"
+        f"Produk: {names}\n"
+        f"Total: <b>{fmt_amount(order['total'], order['currency'])}</b>\n"
+        f"Status: <b>{final_status}</b>"
+    )
 
 
 # ============ DEPOSIT ============
