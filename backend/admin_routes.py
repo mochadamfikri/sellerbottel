@@ -14,7 +14,6 @@ from db import db, get_settings
 from auth import get_current_admin, verify_password
 from rates import get_rate
 from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso
-from storage import put_object
 from tgapi import download_telegram_file, send_message, send_photo_bytes, tg
 from inventory import (
     validate_records,
@@ -170,6 +169,8 @@ async def create_product(
     stock: Optional[int] = Form(None),
     product_kind: str = Form("digital"),
     stock_mode: str = Form("auto"),
+    service_wait_minutes: Optional[int] = Form(None),
+    service_message_template: str = Form(""),
     file: Optional[UploadFile] = File(None),
 ):
     product_kind = _validate_product_kind(product_kind)
@@ -178,23 +179,25 @@ async def create_product(
 
     storage_path, original_filename = None, None
     if product_kind == "service":
-        if delivery_type not in {"link", "license", "file"}:
-            raise HTTPException(400, "Tipe pengiriman jasa tidak valid.")
-        if delivery_type == "file":
-            if not file:
-                raise HTTPException(400, "File wajib diupload untuk produk tipe file")
-            storage_path, original_filename = await _save_file(file)
+        wait_minutes = int(service_wait_minutes or 5)
+        if wait_minutes not in {1, 5, 10, 25, 60}:
+            raise HTTPException(400, "Waktu tunggu jasa harus 1, 5, 10, 25, atau 60 menit.")
         manual_stock = None
         stored_stock = None
         inventory_enabled = False
-        stored_delivery = delivery_type
-        stored_content = content
+        stored_delivery = "service"
+        stored_content = ""
+        message_template = (service_message_template or "Jasa {product_name} sedang dalam antrean, harap tunggu {wait_minutes} untuk dapat menghubungi admin.").strip()
+        if not message_template:
+            raise HTTPException(400, "Pesan antrean jasa wajib diisi.")
     else:
         manual_stock = None if stock_mode == "auto" else max(0, int(stock or 0))
         stored_stock = manual_stock
         inventory_enabled = True
         stored_delivery = "inventory"
         stored_content = ""
+        wait_minutes = None
+        message_template = ""
 
     prod = {
         "_id": str(uuid.uuid4()),
@@ -207,6 +210,8 @@ async def create_product(
         "content": stored_content,
         "storage_path": storage_path,
         "original_filename": original_filename,
+        "service_wait_minutes": wait_minutes,
+        "service_message_template": message_template,
         "active": active,
         "stock": stored_stock,
         "stock_mode": stock_mode if product_kind == "digital" else "unlimited",
@@ -253,23 +258,33 @@ async def update_product(
     }
 
     if product_kind == "service":
-        if delivery_type not in {"link", "license", "file"}:
-            raise HTTPException(400, "Tipe pengiriman jasa tidak valid.")
+        wait_minutes = int(service_wait_minutes or 5)
+        if wait_minutes not in {1, 5, 10, 25, 60}:
+            raise HTTPException(400, "Waktu tunggu jasa harus 1, 5, 10, 25, atau 60 menit.")
+        message_template = (service_message_template or "Jasa {product_name} sedang dalam antrean, harap tunggu {wait_minutes} untuk dapat menghubungi admin.").strip()
+        if not message_template:
+            raise HTTPException(400, "Pesan antrean jasa wajib diisi.")
         updates.update({
-            "delivery_type": delivery_type,
-            "content": content,
+            "delivery_type": "service",
+            "content": "",
+            "service_wait_minutes": wait_minutes,
+            "service_message_template": message_template,
+            "storage_path": None,
+            "original_filename": None,
             "stock": None,
             "stock_mode": "unlimited",
             "manual_stock": None,
             "inventory_enabled": False,
         })
-        if file:
-            updates["storage_path"], updates["original_filename"] = await _save_file(file)
     else:
         manual_stock = None if stock_mode == "auto" else max(0, int(stock or 0))
         updates.update({
             "delivery_type": "inventory",
             "content": "",
+            "service_wait_minutes": None,
+            "service_message_template": "",
+            "storage_path": None,
+            "original_filename": None,
             "stock": manual_stock,
             "stock_mode": stock_mode,
             "manual_stock": manual_stock,
