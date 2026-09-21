@@ -330,9 +330,75 @@ async def deliver_product(chat_id, p, lang):
         return False
 
 
+def _normalize_inventory_field_name(value):
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+
+
+def _inventory_field_value(record: dict, aliases: list[str], default="none"):
+    if not isinstance(record, dict):
+        return default
+
+    normalized = {
+        _normalize_inventory_field_name(key): value
+        for key, value in record.items()
+    }
+    for alias in aliases:
+        key = _normalize_inventory_field_name(alias)
+        if key in normalized:
+            value = normalized[key]
+            if value is None or str(value).strip() == "":
+                return default
+            return str(value).strip()
+    return default
+
+
+def _account_values(record: dict):
+    return {
+        "email": _inventory_field_value(
+            record,
+            ["email", "email_address", "mail", "emailaddress"],
+        ),
+        "password": _inventory_field_value(
+            record,
+            ["password", "pass", "passwd", "pwd"],
+        ),
+        "recovery": _inventory_field_value(
+            record,
+            ["recovery", "recovery_email", "recoveryemail", "recovery_mail"],
+        ),
+        "2fa": _inventory_field_value(
+            record,
+            ["2fa", "2fa_key", "2fa_secret", "authenticator", "otp_secret", "totp", "totp_secret"],
+        ),
+    }
+
+
+def _looks_like_account_record(record: dict):
+    if not isinstance(record, dict):
+        return False
+    keys = {_normalize_inventory_field_name(key) for key in record.keys()}
+    aliases = {
+        "email", "email_address", "mail", "emailaddress",
+        "password", "pass", "passwd", "pwd",
+        "recovery", "recovery_email", "recoveryemail", "recovery_mail",
+        "2fa", "2fa_key", "2fa_secret", "authenticator", "otp_secret", "totp", "totp_secret",
+    }
+    return bool(keys & aliases)
+
+
 def _inventory_record_lines(record: dict, schema: list[str]):
     if not isinstance(record, dict):
         return [str(record)]
+
+    if _looks_like_account_record(record):
+        values = _account_values(record)
+        return [
+            f"email: {values['email']}",
+            f"password: {values['password']}",
+            f"recovery: {values['recovery']}",
+            f"2fa: {values['2fa']}",
+        ]
+
     fields = schema or list(record.keys())
     return [
         f"{field}: {record.get(field, '')}"
@@ -341,36 +407,78 @@ def _inventory_record_lines(record: dict, schema: list[str]):
     ]
 
 
-async def deliver_inventory(chat_id, product, records):
+def _account_txt_line(record: dict):
+    values = _account_values(record)
+    return ":".join([
+        values["email"].replace("\n", " ").replace("\r", " "),
+        values["password"].replace("\n", " ").replace("\r", " "),
+        values["recovery"].replace("\n", " ").replace("\r", " "),
+        values["2fa"].replace("\n", " ").replace("\r", " "),
+    ])
+
+
+def _safe_filename_part(value):
+    value = re.sub(r"[^\w.-]+", "_", str(value or "").strip(), flags=re.UNICODE)
+    return value.strip("._") or "product"
+
+
+async def deliver_inventory(chat_id, product, records, invoice_id=None):
     if not records:
         return False
 
     schema = product.get("inventory_schema") or ["value"]
+    account_mode = any(_looks_like_account_record(record) for record in records)
     plain_records = [
         _inventory_record_lines(record, schema)
         for record in records
     ]
 
     if len(records) > 20:
-        chunks = []
-        for index, lines in enumerate(plain_records, 1):
-            chunks.append(f"{index}.\n" + "\n".join(lines))
-        payload = "\n\n".join(chunks).encode("utf-8")
+        if account_mode:
+            detail_lines = [
+                f"{index}. {_account_txt_line(record)}"
+                for index, record in enumerate(records, 1)
+            ]
+            payload_text = (
+                "format akun= email:password:recovery:2fa_key\n"
+                "note: recovery jika none berarti tidak ada opsi pemulihan yang tertanam di akun\n\n"
+                + "\n".join(detail_lines)
+            )
+        else:
+            detail_lines = [
+                f"{index}.\n" + "\n".join(lines)
+                for index, lines in enumerate(plain_records, 1)
+            ]
+            payload_text = "\n\n".join(detail_lines)
+
+        filename = (
+            f"invoice_{_safe_filename_part(product.get('name'))}_{len(records)}.txt"
+        )
         result = await send_document(
             chat_id,
-            payload,
-            f"{product['name']}-inventory.txt",
+            payload_text.encode("utf-8"),
+            filename,
             caption=f"📦 {product['name']} — {len(records)} item",
         )
         return bool(result.get("ok"))
 
     blocks = []
-    for index, record_lines in enumerate(plain_records, 1):
-        body = "\n".join(
-            f"<b>{escape(line.split(':', 1)[0])}:</b> <code>{escape(line.split(':', 1)[1].strip())}</code>"
-            if ":" in line else f"<code>{escape(line)}</code>"
-            for line in record_lines
-        )
+    for index, record in enumerate(records, 1):
+        if _looks_like_account_record(record):
+            values = _account_values(record)
+            body = "\n".join([
+                f"email: <code>{escape(values['email'])}</code>",
+                f"password: <code>{escape(values['password'])}</code>",
+                f"recovery: <code>{escape(values['recovery'])}</code>",
+                f"2fa: <code>{escape(values['2fa'])}</code>",
+            ])
+        else:
+            record_lines = plain_records[index - 1]
+            body = "\n".join(
+                f"<b>{escape(line.split(':', 1)[0])}:</b> <code>{escape(line.split(':', 1)[1].strip())}</code>"
+                if ":" in line else f"<code>{escape(line)}</code>"
+                for line in record_lines
+            )
         blocks.append(f"<b>#{index}</b>\n{body}")
 
     result = await send_message(
@@ -383,19 +491,19 @@ async def deliver_inventory(chat_id, product, records):
 def build_invoice_text(order):
     currency = order.get("currency", "IDR")
     lines = [
-        f"<b>Invoice {escape(str(order.get('invoice_id', '-')))}</b>",
-        f"tanggal transaksi: {escape(str(order.get('created_at', '-')))}",
-        f"status: <b>{escape(str(order.get('status', 'pending')))}</b>",
-        f"metode pembayaran: <b>{escape(str(order.get('payment_method', 'balance')))}</b>",
+        f"Invoice {order.get('invoice_id', '-')}",
+        f"tanggal transaksi: {order.get('created_at', '-')}",
+        f"status: {order.get('status', 'pending')}",
+        f"metode pembayaran: {order.get('payment_method', 'balance')}",
         "",
-        "<b>Detail pembelian:</b>",
+        "Detail pembelian:",
     ]
     for item in order.get("items", []):
-        name = escape(str(item.get("name", "Produk")))
+        name = str(item.get("name", "Produk"))
         qty = int(item.get("qty") or 0)
         unit = fmt_amount(item.get("unit_price", 0), currency)
         subtotal = fmt_amount(item.get("subtotal", 0), currency)
-        lines.append(f"• <b>{name}</b>")
+        lines.append(f"• {name}")
         lines.append(f"  quantity: {qty} akun/item")
         lines.append(f"  harga/unit: {unit}")
         lines.append(f"  subtotal: {subtotal}")
@@ -404,12 +512,12 @@ def build_invoice_text(order):
 
     lines.extend([
         "",
-        f"total diskon: <b>{fmt_amount(order.get('discount_total', 0), currency)}</b>",
-        f"total transaksi: <b>{fmt_amount(order.get('total', 0), currency)}</b>",
+        f"total diskon: {fmt_amount(order.get('discount_total', 0), currency)}",
+        f"total transaksi: {fmt_amount(order.get('total', 0), currency)}",
         "",
         "terimakasih telah membeli.",
     ])
-    return "\n".join(lines)
+    return "<pre>" + escape("\n".join(lines)) + "</pre>"
 
 
 _SERVICE_TASKS = {}
@@ -662,6 +770,7 @@ async def _do_checkout(chat_id, user, cart_items):
                 chat_id,
                 product,
                 decrypt_items(inventory_items),
+                invoice_id=order.get("invoice_id"),
             )
             all_delivered = all_delivered and ok
         elif product.get("product_kind") == "service" or product.get("delivery_type") == "service":
