@@ -5,6 +5,7 @@ import re
 import asyncio
 import secrets
 from html import escape
+from datetime import datetime, timezone, timedelta
 from db import db, get_settings
 from rates import get_rate
 from chain import verify_tx, looks_like_tx_hash
@@ -16,7 +17,7 @@ from tgapi import (
     delete_message,
     send_photo_bytes,
 )
-from services import credit_deposit, reject_deposit, cancel_deposit, notify_admin, fmt_amount, now_iso
+from services import credit_deposit, reject_deposit, cancel_deposit, notify_admin, fmt_amount, now_iso, user_lang
 from storage import get_object
 from i18n import t, LANG_NAMES
 from checkout import execute_checkout, stock_for
@@ -409,6 +410,179 @@ def build_invoice_text(order):
         "terimakasih telah membeli.",
     ])
     return "\n".join(lines)
+
+
+_SERVICE_TASKS = {}
+
+def _service_remaining_text(seconds: int) -> str:
+    minutes = max(0, int((seconds + 59) // 60))
+    return f"{minutes} menit" if minutes != 1 else "1 menit"
+
+
+def _service_template(product: dict) -> str:
+    return (
+        product.get("service_message_template")
+        or "Jasa {product_name} sedang dalam antrean, harap tunggu {wait_minutes} untuk dapat menghubungi admin."
+    )
+
+
+async def _run_service_wait(order_id: str, user_tid: int, chat_id: int, product: dict, lang: str, ready_at: str, message_id: int | None = None):
+    task_key = f"{order_id}:{product['_id']}"
+    try:
+        ready = datetime.fromisoformat(ready_at)
+        while True:
+            remaining = (ready - datetime.now(timezone.utc)).total_seconds()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(60, max(1, remaining)))
+            if message_id:
+                left = (ready - datetime.now(timezone.utc)).total_seconds()
+                if left > 0:
+                    try:
+                        await tg_edit_message(
+                            chat_id,
+                            message_id,
+                            f"⏳ <b>{escape(product['name'])}</b> masih dalam antrean.\nWaktu tersisa: <b>{_service_remaining_text(int(left))}</b>.",
+                            kb={"inline_keyboard": [[{"text": "🔒 Hubungi Admin", "callback_data": f"service:wait:{order_id}"}]]},
+                        )
+                    except Exception:
+                        logger.exception("Gagal memperbarui countdown jasa %s", order_id)
+
+        order = await db.purchases.find_one({"_id": order_id, "user_tid": user_tid})
+        if not order or order.get("status") not in {"service_waiting", "paid"}:
+            return
+
+        admin_settings = await get_settings()
+        admin_id = str(admin_settings.get("admin_telegram_id") or "").strip()
+        admin_kb = None
+        if admin_id:
+            admin_kb = {"inline_keyboard": [[{"text": "💬 Hubungi Customer", "url": f"tg://user?id={user_tid}"}]]}
+
+        try:
+            await notify_admin(
+                f"🛎️ <b>Jasa siap dihubungi</b>\n"
+                f"Produk: <b>{escape(product['name'])}</b>\n"
+                f"Order: <code>{escape(str(order.get('invoice_id', order_id)))}</code>\n"
+                f"Customer ID: <code>{user_tid}</code>",
+                kb=admin_kb,
+            )
+        except Exception:
+            logger.exception("Notifikasi admin jasa gagal untuk order %s", order_id)
+
+        if message_id:
+            try:
+                await tg_edit_message(
+                    chat_id,
+                    message_id,
+                    f"✅ <b>{escape(product['name'])}</b> sudah selesai antre.\nSilakan hubungi admin untuk melanjutkan.",
+                    kb={"inline_keyboard": [[{"text": "💬 Chat Admin", "url": f"tg://user?id={admin_id}"}]]} if admin_id else None,
+                )
+            except Exception:
+                logger.exception("Gagal membuka tombol admin untuk order %s", order_id)
+
+        await db.purchases.update_one(
+            {"_id": order_id, "status": {"$in": ["paid", "service_waiting"]}},
+            {"$inc": {"service_pending_count": -1}},
+        )
+        fresh = await db.purchases.find_one({"_id": order_id})
+        if fresh and int(fresh.get("service_pending_count") or 0) <= 0:
+            await db.purchases.update_one(
+                {"_id": order_id, "status": "service_waiting"},
+                {"$set": {"status": "delivered", "delivered_at": now_iso(), "delivery_error": None}},
+            )
+            latest = await db.purchases.find_one({"_id": order_id})
+            if latest and latest.get("status") == "delivered":
+                u = await db.bot_users.find_one({"telegram_id": user_tid})
+                if u:
+                    await send_message(
+                        chat_id,
+                        t(
+                            u.get("lang") or lang,
+                            "delivered_all",
+                            balance=fmt_amount(
+                                u.get(CUR_FIELD[latest.get("currency", "IDR")], 0),
+                                latest.get("currency", "IDR"),
+                            ),
+                        ),
+                        kb=back_kb(u.get("lang") or lang),
+                    )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Service wait failed for order %s product %s", order_id, product.get("_id"))
+    finally:
+        _SERVICE_TASKS.pop(task_key, None)
+
+
+async def queue_service_delivery(chat_id: int, user: dict, product: dict, order: dict, lang: str):
+    wait_minutes = int(product.get("service_wait_minutes") or 5)
+    ready_at = (datetime.now(timezone.utc) + timedelta(minutes=wait_minutes)).isoformat()
+    template = _service_template(product)
+    try:
+        text = template.format(
+            product_name=escape(str(product.get("name") or "Produk Jasa")),
+            wait_minutes=wait_minutes,
+        )
+    except Exception:
+        text = (
+            f"Jasa <b>{escape(str(product.get('name') or 'Produk Jasa'))}</b> sedang dalam antrean, "
+            f"harap tunggu <b>{wait_minutes} menit</b> untuk dapat menghubungi admin."
+        )
+    text = f"⏳ {text}\n\nWaktu tersisa: <b>{wait_minutes} menit</b>."
+    result = await send_message(
+        chat_id,
+        text,
+        kb={"inline_keyboard": [[{"text": "🔒 Hubungi Admin", "callback_data": f"service:wait:{order['_id']}"}]]},
+    )
+    message_id = ((result or {}).get("result") or {}).get("message_id")
+    await db.purchases.update_one(
+        {"_id": order["_id"]},
+        {
+            "$set": {
+                "status": "service_waiting",
+                "service_waiting": True,
+                "service_ready_at": ready_at,
+            },
+            "$inc": {"service_pending_count": 1},
+        },
+    )
+    task_key = f"{order['_id']}:{product['_id']}"
+    _SERVICE_TASKS[task_key] = asyncio.create_task(
+        _run_service_wait(
+            order["_id"],
+            user["telegram_id"],
+            chat_id,
+            product,
+            lang,
+            ready_at,
+            message_id,
+        )
+    )
+
+
+async def resume_service_waiters():
+    orders = await db.purchases.find({"status": "service_waiting", "service_ready_at": {"$exists": True}}).to_list(200)
+    for order in orders:
+        for item in order.get("items", []):
+            if item.get("delivery_type") != "service":
+                continue
+            product = await db.products.find_one({"_id": item.get("product_id")})
+            if not product:
+                continue
+            task_key = f"{order['_id']}:{product['_id']}"
+            if task_key in _SERVICE_TASKS:
+                continue
+            _SERVICE_TASKS[task_key] = asyncio.create_task(
+                _run_service_wait(
+                    order["_id"],
+                    order["user_tid"],
+                    order["user_tid"],
+                    product,
+                    (await user_lang(order["user_tid"])),
+                    order.get("service_ready_at") or now_iso(),
+                    order.get("service_message_id"),
+                )
+            )
 
 
 async def _do_checkout(chat_id, user, cart_items):
