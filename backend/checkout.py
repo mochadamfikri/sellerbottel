@@ -315,6 +315,12 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
             {"$set": {"status": "paid", "paid_at": now_iso()}},
         )
 
+        if user.get("traffic_source_code"):
+            await db.prospects.update_many(
+                {"tg_user_id": user["telegram_id"]},
+                {"$set": {"status": "customer", "customer_order_id": order_id, "converted_at": now_iso()}},
+            )
+
         for allocation in allocations:
             if allocation["kind"] == "inventory":
                 await commit_items(reservation_id, order_id, user["telegram_id"])
