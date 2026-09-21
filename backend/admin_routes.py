@@ -1814,26 +1814,91 @@ async def broadcast_channel_product_preview():
     return {"text": await _build_product_broadcast()}
 
 
+@router.get("/broadcasts/auto-preview")
+async def broadcast_auto_preview(content: str = "both"):
+    return {"text": await _build_auto_broadcast(content)}
+
+
 @router.post("/broadcasts/channel")
 async def broadcast_channel(
     mode: str = Form(...),
     text: str = Form(""),
+    target: str = Form("channel"),
+    content: str = Form("both"),
 ):
-    channel_id = await _broadcast_channel_target()
     mode = (mode or "").strip().lower()
+    target = (target or "channel").strip().lower()
+    content = (content or "both").strip().lower()
+
     if mode == "manual":
+        channel_id = await _broadcast_channel_target()
         if not text.strip():
             raise HTTPException(400, "Pesan manual wajib diisi.")
         body = text.strip()
-    elif mode == "products":
-        body = await _build_product_broadcast()
-    else:
-        raise HTTPException(400, "Mode broadcast channel tidak valid.")
+        result = await send_message(channel_id, body)
+        if not result.get("ok"):
+            raise HTTPException(502, f"Telegram gagal mengirim ke channel: {result.get('description', 'unknown error')}")
+        return {"ok": True, "mode": mode, "target": "channel", "channel_id": channel_id, "text": body}
 
-    result = await send_message(channel_id, body)
-    if not result.get("ok"):
-        raise HTTPException(502, f"Telegram gagal mengirim ke channel: {result.get('description', 'unknown error')}")
-    return {"ok": True, "mode": mode, "channel_id": channel_id, "text": body}
+    if mode == "products":
+        channel_id = await _broadcast_channel_target()
+        body = await _build_product_broadcast()
+        result = await send_message(channel_id, body)
+        if not result.get("ok"):
+            raise HTTPException(502, f"Telegram gagal mengirim ke channel: {result.get('description', 'unknown error')}")
+        return {"ok": True, "mode": mode, "target": "channel", "channel_id": channel_id, "text": body}
+
+    if mode == "auto":
+        if target not in {"channel", "users"}:
+            raise HTTPException(400, "Target broadcast otomatis tidak valid.")
+        body = await _build_auto_broadcast(content)
+
+        if target == "channel":
+            channel_id = await _broadcast_channel_target()
+            result = await send_message(channel_id, body)
+            if not result.get("ok"):
+                raise HTTPException(502, f"Telegram gagal mengirim ke channel: {result.get('description', 'unknown error')}")
+            return {
+                "ok": True,
+                "mode": mode,
+                "target": "channel",
+                "content": content,
+                "channel_id": channel_id,
+                "text": body,
+            }
+
+        query = {"blocked": {"$ne": True}}
+        total = await db.bot_users.count_documents(query)
+        doc = {
+            "_id": str(uuid.uuid4()),
+            "text": body,
+            "lang": "all",
+            "status": "running",
+            "success": 0,
+            "failed": 0,
+            "blocked": 0,
+            "total": total,
+            "created_at": now_iso(),
+            "finished_at": None,
+            "broadcast_type": "auto",
+            "broadcast_target": "users",
+            "broadcast_content": content,
+        }
+        await db.broadcasts.insert_one(doc)
+        asyncio.create_task(_broadcast_worker(
+            doc["_id"], query, body, None, None, None, None
+        ))
+        return {
+            "ok": True,
+            "mode": mode,
+            "target": "users",
+            "content": content,
+            "queued": True,
+            "total": total,
+            "text": body,
+        }
+
+    raise HTTPException(400, "Mode broadcast channel tidak valid.")
 
 
 
