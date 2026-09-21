@@ -13,6 +13,7 @@ from i18n import t, message_catalog, set_override, reset_override, STRINGS
 from db import db, get_settings
 from auth import get_current_admin, verify_password
 from rates import get_rate
+from pricing import price_for_product
 from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso
 from tgapi import download_telegram_file, send_message, send_photo_bytes, tg
 from html import escape
