@@ -644,6 +644,7 @@ async def _do_checkout(chat_id, user, cart_items):
     )
 
     all_delivered = True
+    service_count = 0
     allocation_by_product = {
         item["product_id"]: item
         for item in result.get("allocations", [])
@@ -661,13 +662,29 @@ async def _do_checkout(chat_id, user, cart_items):
                 product,
                 decrypt_items(inventory_items),
             )
+            all_delivered = all_delivered and ok
+        elif product.get("product_kind") == "service" or product.get("delivery_type") == "service":
+            service_count += 1
+            await queue_service_delivery(chat_id, user, product, order, lang)
         else:
             ok = True
             for _ in range(qty):
                 one = await deliver_product(chat_id, product, lang)
                 ok = ok and one
+            all_delivered = all_delivered and ok
 
-        all_delivered = all_delivered and ok
+    if service_count:
+        if not all_delivered:
+            await db.purchases.update_one(
+                {"_id": order["_id"]},
+                {"$set": {"status": "delivery_failed", "delivery_error": "Satu atau lebih produk gagal dikirim."}},
+            )
+            await send_message(
+                chat_id,
+                t(lang, "delivery_attention", invoice=order["invoice_id"]),
+                kb=back_kb(lang),
+            )
+        return
 
     final_status = "delivered" if all_delivered else "delivery_failed"
     await db.purchases.update_one(
