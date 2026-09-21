@@ -1934,7 +1934,7 @@ async def handle_message(message):
     else:
         await show_main_menu(chat_id, user)
 
-    if message_id and state in {"cart_custom_qty", "dep_usd_amount", "dep_usd_wallet", "dep_usd_proof", "dep_idr_amount", "dep_idr_confirm", "dep_idr_proof"}:
+    if message_id and state in {"cart_custom_qty", "cart_custom_confirm", "dep_usd_amount", "dep_usd_wallet", "dep_usd_proof", "dep_idr_amount", "dep_idr_confirm", "dep_idr_proof"}:
         try:
             await delete_message(chat_id, message_id)
         except Exception:
