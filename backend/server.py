@@ -14,6 +14,7 @@ from db import client, db, ensure_settings, ensure_indexes
 from auth import router as auth_router, seed_admin
 from admin_routes import router as admin_router
 from admin_user_routes import router as admin_user_router
+from promo_routes import router as promo_router
 from error_handlers import register_error_handlers
 from inventory import encryption_status
 from bot import process_update, resume_service_waiters
@@ -62,6 +63,7 @@ app.include_router(api_router)
 app.include_router(auth_router)
 app.include_router(admin_user_router)
 app.include_router(admin_router)
+app.include_router(promo_router)
 
 # Harus didaftarkan sebelum CORSMiddleware agar respons error tetap membawa header CORS.
 register_error_handlers(app)
