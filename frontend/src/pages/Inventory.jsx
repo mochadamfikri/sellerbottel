@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Upload, Plus, Trash2, RefreshCw, Database, PackageCheck } from "lucide-react";
 import api, { formatApiErrorDetail } from "../lib/api";
@@ -15,6 +15,7 @@ export default function Inventory() {
   const [busy, setBusy] = useState(false);
   const [manualData, setManualData] = useState({});
   const [fileName, setFileName] = useState("");
+  const actionLock = useRef(false);
 
   const selectedProduct = useMemo(() => products.find((p) => p._id === pid) || null, [products, pid]);
 
@@ -194,20 +195,26 @@ export default function Inventory() {
             <button
               type="button"
               disabled={!pid || !file || busy}
-              onPointerUp={(e) => { if (!e.currentTarget.disabled) validateFile(); }}
-              onKeyUp={(e) => { if ((e.key === "Enter" || e.key === " ") && !e.currentTarget.disabled) validateFile(); }}
+              onClick={() => {
+                if (actionLock.current || !pid || !file || busy) return;
+                actionLock.current = true;
+                Promise.resolve(validateFile()).finally(() => { actionLock.current = false; });
+              }}
               className="flex-1 px-4 py-2.5 rounded-lg border border-slate-700 text-slate-200 disabled:opacity-40"
             >
-              Validasi
+              {busy ? "Memproses..." : "Validasi"}
             </button>
             <button
               type="button"
               disabled={!pid || !file || busy}
-              onPointerUp={(e) => { if (!e.currentTarget.disabled) importFile(); }}
-              onKeyUp={(e) => { if ((e.key === "Enter" || e.key === " ") && !e.currentTarget.disabled) importFile(); }}
+              onClick={() => {
+                if (actionLock.current || !pid || !file || busy) return;
+                actionLock.current = true;
+                Promise.resolve(importFile()).finally(() => { actionLock.current = false; });
+              }}
               className="flex-1 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-40"
             >
-              Import Bulk
+              {busy ? "Memproses..." : "Import Bulk"}
             </button>
           </div>
           {preview && (
