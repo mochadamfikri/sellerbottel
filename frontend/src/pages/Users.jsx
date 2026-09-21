@@ -17,7 +17,8 @@ export default function UsersPage() {
 
   const load = useCallback(async (term = "") => {
     try {
-      const { data } = await api.get("/admin/users/search", { params: { search: term } });
+      const endpoint = term.trim() ? "/admin/users/search" : "/admin/users";
+      const { data } = await api.get(endpoint, term.trim() ? { params: { search: term } } : undefined);
       setUsers(data);
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal memuat pengguna.");
@@ -81,7 +82,8 @@ export default function UsersPage() {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <p className="text-xs text-slate-600 mt-2">Satu kolom pencarian untuk nama, @username, atau Telegram ID.</p>
+        <p className="text-xs text-slate-600 mt-2">Saat kosong, seluruh pengguna ditampilkan. Cari berdasarkan nama, @username, atau Telegram ID.</p>
+        <p className="text-xs text-slate-500 mt-1">{users.length} pengguna ditampilkan</p>
       </div>
 
       <div className="bg-slate-900/60 border border-slate-800 rounded-xl overflow-x-auto">
