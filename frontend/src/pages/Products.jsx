@@ -402,7 +402,17 @@ export default function Products() {
               <select
                 className={cls}
                 value={form.product_kind}
-                onChange={(e) => setForm({ ...form, product_kind: e.target.value, delivery_type: e.target.value === "digital" ? "inventory" : "link" })}
+                onChange={(e) => {
+                  const kind = e.target.value;
+                  setForm({
+                    ...form,
+                    product_kind: kind,
+                    delivery_type: kind === "digital" ? "inventory" : "service",
+                    content: kind === "service"
+                      ? (form.content || "Jasa {product_name} sedang dalam antrean, harap tunggu {wait_minutes} untuk dapat menghubungi admin.")
+                      : "",
+                  });
+                }}
               >
                 <option value="digital">A. Produk Digital / sudah ada datanya</option>
                 <option value="service">B. Produk Jasa</option>
@@ -432,7 +442,21 @@ export default function Products() {
 
             {form.product_kind === "digital" ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-4 space-y-3">
-                <p className="text-xs text-slate-500">Produk digital menggunakan inventory. Stok mengikuti data inventory.</p>
+                <div>
+                  <label className="text-xs text-slate-400">Sumber Stok</label>
+                  <select className={cls} value={form.stock_mode} onChange={(e) => setForm({ ...form, stock_mode: e.target.value })}>
+                    <option value="auto">Otomatis mengikuti jumlah data/inventory</option>
+                    <option value="manual">Manual / batas stok</option>
+                  </select>
+                </div>
+                {form.stock_mode === "manual" ? (
+                  <div>
+                    <label className="text-xs text-slate-400">Stok manual / batas maksimum</label>
+                    <input type="number" min="0" className={cls} value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} />
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500">Stok diambil otomatis dari jumlah inventory yang tersedia.</p>
+                )}
               </div>
             ) : (
               <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/50 p-4">
@@ -462,11 +486,6 @@ export default function Products() {
                 </div>
               </div>
             )}
-
-            <div className="flex items-center gap-2">
-              <Switch checked={form.active} onCheckedChange={(v) => setForm({ ...form, active: v })} />
-              <span className="text-sm text-slate-300">Produk aktif</span>
-            </div>
 
             <button onClick={save} disabled={saving || !form.name || !form.price_usd} className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5">
               {saving ? "Menyimpan..." : "Simpan Produk"}
