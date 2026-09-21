@@ -255,7 +255,7 @@ async def show_cart(chat_id, user):
         ])
     if len(valid_cart) != len(cart):
         await save_cart(user["telegram_id"], valid_cart)
-    rows.append([{"text": t(lang, "btn_checkout", total=fmt_amount(total, user["currency"])), "callback_data": "checkout"}])
+    rows.append([{"text": "🎟️ Gunakan Kupon", "callback_data": "coupon:apply"}])\n    rows.append([{"text": t(lang, "btn_checkout", total=fmt_amount(total, user["currency"])), "callback_data": "checkout"}])
     rows.append([{"text": t(lang, "btn_clear"), "callback_data": "cartclear"}, {"text": t(lang, "btn_menu_short"), "callback_data": "menu:main"}])
     text = t(lang, "cart_title") + "\n\n" + "\n".join(lines) + "\n\n" + t(lang, "cart_total", total=fmt_amount(total, user["currency"]))
     await send_message(chat_id, text, kb={"inline_keyboard": rows})
@@ -840,7 +840,7 @@ async def resume_service_waiters():
 async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
     lang = user.get("lang", "id")
 
-    result = await execute_checkout(user, cart_items, preserve_cart=preserve_cart)
+    coupon_code = str(user.get("pending_coupon") or "").strip() or None\n    result = await execute_checkout(user, cart_items, preserve_cart=preserve_cart, coupon_code=coupon_code)
     if not result["ok"]:
         if result["error"] == "stock":
             p = result["product"]
@@ -890,7 +890,7 @@ async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
         await send_message(chat_id, t(lang, "checkout_failed"), kb=back_kb(lang))
         return
 
-    order = result["order"]
+    order = result["order"]\n    if coupon_code:\n        await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$unset": {"pending_coupon": ""}})
     await send_message(chat_id, build_invoice_text(order))
     await send_message(
         chat_id,
@@ -1893,7 +1893,7 @@ async def handle_message(message):
         await send_message(chat_id, frozen_text(user))
         return
 
-    if text in ("/batal", "/menu", "/cancel"):
+    if text.lower().startswith("/coupon "):\n        code = text.split(" ", 1)[1].strip().upper()\n        await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$set": {"pending_coupon": code}})\n        user["pending_coupon"] = code\n        await send_message(chat_id, f"🎟️ Kupon <code>{escape(code)}</code> disimpan. Silakan buka keranjang dan checkout.")\n        return\n\n    if text in ("/batal", "/menu", "/cancel"):
         await set_state(user["telegram_id"], None)
         await show_main_menu(chat_id, user)
         return
@@ -1910,7 +1910,7 @@ async def handle_message(message):
         await send_message(chat_id, t(lang, "help"), kb=back_kb(lang))
         return
 
-    state = user.get("state")
+    state = user.get("state")\n    if state == "coupon_code":\n        code = text.strip().upper()\n        if not code:\n            await send_message(chat_id, "Kode kupon tidak boleh kosong.")\n            return\n        await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$set": {"pending_coupon": code, "state": None, "state_data": {}}})\n        user["pending_coupon"] = code\n        user["state"] = None\n        await send_message(chat_id, f"🎟️ Kupon <code>{escape(code)}</code> disimpan. Klik Checkout untuk menerapkannya.", kb={"inline_keyboard": [[{"text": "🛒 Keranjang", "callback_data": "menu:cart"}]]})\n        return
     if state == "cart_custom_qty":
         await handle_custom_quantity(chat_id, user, text)
     elif state == "cart_custom_confirm":
