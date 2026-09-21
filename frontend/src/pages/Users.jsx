@@ -17,7 +17,7 @@ export default function UsersPage() {
 
   const load = useCallback(async (term = "") => {
     try {
-      const endpoint = term.trim() ? "/admin/users/search" : "/admin/users";
+      const endpoint = term.trim() ? "/admin/users/search" : "/admin/users/all";
       const { data } = await api.get(endpoint, term.trim() ? { params: { search: term } } : undefined);
       setUsers(data);
     } catch (err) {
