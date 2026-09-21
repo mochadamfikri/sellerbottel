@@ -237,6 +237,8 @@ async def update_product(
     stock: Optional[int] = Form(None),
     product_kind: str = Form("digital"),
     stock_mode: str = Form("auto"),
+    service_wait_minutes: Optional[int] = Form(None),
+    service_message_template: str = Form(""),
     file: Optional[UploadFile] = File(None),
 ):
     product = await db.products.find_one({"_id": pid})
