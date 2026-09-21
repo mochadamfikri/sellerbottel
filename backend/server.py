@@ -63,7 +63,8 @@ app.include_router(api_router)
 app.include_router(auth_router)
 app.include_router(admin_user_router)
 app.include_router(admin_router)
-app.include_router(promo_router)
+if os.environ.get("PROMOTION_ENABLED", "").lower() in {"1", "true", "yes"}:
+    app.include_router(promo_router)
 
 # Harus didaftarkan sebelum CORSMiddleware agar respons error tetap membawa header CORS.
 register_error_handlers(app)
@@ -83,6 +84,7 @@ async def startup():
         raise RuntimeError("CORS_ORIGINS wajib di-set.")
     if not os.environ.get("TELEGRAM_WEBHOOK_SECRET"):
         raise RuntimeError("TELEGRAM_WEBHOOK_SECRET wajib di-set.")
+    logger.info("Promotion module: %s", "enabled" if os.environ.get("PROMOTION_ENABLED", "").lower() in {"1", "true", "yes"} else "disabled")
 
     await ensure_settings()
     await ensure_indexes()
