@@ -83,7 +83,7 @@ export default function Products() {
       fd.append("price_usd", form.price_usd);
       if (form.price_idr !== "") fd.append("price_idr", form.price_idr);
       fd.append("product_kind", form.product_kind);
-      fd.append("stock_mode", form.product_kind === "digital" ? form.stock_mode : "unlimited");
+      fd.append("stock_mode", form.product_kind === "digital" ? form.stock_mode : "auto");
       fd.append("stock", form.product_kind === "digital" && form.stock_mode === "manual" ? (form.stock || "0") : "");
       fd.append("delivery_type", form.product_kind === "digital" ? "inventory" : "service");
       fd.append("content", "");
