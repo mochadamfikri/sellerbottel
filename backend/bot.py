@@ -422,12 +422,12 @@ def _safe_filename_part(value):
     return value.strip("._") or "product"
 
 
-async def deliver_inventory(chat_id, product, records, invoice_id=None):
+async def deliver_inventory(chat_id, product, records):
     if not records:
         return False
 
     schema = product.get("inventory_schema") or ["value"]
-    account_mode = any(_looks_like_account_record(record) for record in records)
+    account_mode = all(_looks_like_account_record(record) for record in records)
     plain_records = [
         _inventory_record_lines(record, schema)
         for record in records
@@ -770,7 +770,6 @@ async def _do_checkout(chat_id, user, cart_items):
                 chat_id,
                 product,
                 decrypt_items(inventory_items),
-                invoice_id=order.get("invoice_id"),
             )
             all_delivered = all_delivered and ok
         elif product.get("product_kind") == "service" or product.get("delivery_type") == "service":
