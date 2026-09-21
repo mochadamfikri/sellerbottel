@@ -15,6 +15,7 @@ from auth import get_current_admin, verify_password
 from rates import get_rate
 from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso
 from tgapi import download_telegram_file, send_message, send_photo_bytes, tg
+from html import escape
 from inventory import (
     validate_records,
     add_records,
@@ -1723,6 +1724,84 @@ async def create_broadcast(
         doc["_id"], query, text, photo_bytes, filename, button_text or None, button_url or None
     ))
     return doc
+
+
+async def _broadcast_channel_id():
+    import os
+    configured = str(os.environ.get("BROADCAST_CHANNEL_ID", "")).strip()
+    if configured:
+        return configured
+    settings = await get_settings()
+    for channel in settings.get("required_channels") or []:
+        if channel.get("enabled", True) and channel.get("channel_id"):
+            return str(channel["channel_id"])
+    return ""
+
+
+async def _broadcast_channel_target():
+    channel_id = await _broadcast_channel_id()
+    if not channel_id:
+        raise HTTPException(400, "Channel broadcast belum dikonfigurasi. Isi BROADCAST_CHANNEL_ID atau required channel di settings.")
+    return channel_id
+
+
+async def _build_product_broadcast():
+    products = await db.products.find({"active": True}).sort("created_at", 1).to_list(500)
+    digital_lines = []
+    service_lines = []
+    for p in products:
+        kind = _normalized_product_kind(p)
+        if kind == "digital":
+            stock = await available_count(p["_id"])
+            if stock > 0:
+                digital_lines.append(f"▫️ <b>{escape(str(p.get('name') or 'Product'))}</b> → <b>{stock}</b>")
+        else:
+            service_lines.append(f"▫️ <b>{escape(str(p.get('name') or 'Jasa'))}</b>")
+    lines = [
+        "📢 <b>PRODUCT UPDATE — IDSE NETWORK CONNECT HUB</b>",
+        "",
+    ]
+    if digital_lines:
+        lines += ["💻 <b>PRODUCT DIGITAL TERSEDIA • AVAILABLE STOCK</b>", *digital_lines, ""]
+    if service_lines:
+        lines += ["🛠️ <b>PRODUCT JASA TERSEDIA</b>", "✨ Tersedia sesuai permintaan • Unlimited", *service_lines, ""]
+    if not digital_lines and not service_lines:
+        lines += ["⚠️ <b>Saat ini belum ada product aktif yang tersedia.</b>", ""]
+    lines += [
+        "🚀 <b>Siap diproses • Cepat • Profesional</b>",
+        "🛒 Silakan order melalui bot:",
+        "🤖 @Idse_MarketBot",
+    ]
+    return "
+".join(lines).strip()
+
+
+@router.get("/broadcasts/channel-product-preview")
+async def broadcast_channel_product_preview():
+    return {"text": await _build_product_broadcast()}
+
+
+@router.post("/broadcasts/channel")
+async def broadcast_channel(
+    mode: str = Form(...),
+    text: str = Form(""),
+):
+    channel_id = await _broadcast_channel_target()
+    mode = (mode or "").strip().lower()
+    if mode == "manual":
+        if not text.strip():
+            raise HTTPException(400, "Pesan manual wajib diisi.")
+        body = text.strip()
+    elif mode == "products":
+        body = await _build_product_broadcast()
+    else:
+        raise HTTPException(400, "Mode broadcast channel tidak valid.")
+
+    result = await send_message(channel_id, body)
+    if not result.get("ok"):
+        raise HTTPException(502, f"Telegram gagal mengirim ke channel: {result.get('description', 'unknown error')}")
+    return {"ok": True, "mode": mode, "channel_id": channel_id, "text": body}
+
 
 
 @router.get("/broadcasts")
