@@ -11,6 +11,9 @@ export default function Broadcasts() {
   const [channelMode, setChannelMode] = useState("manual");
   const [channelText, setChannelText] = useState("");
   const [productPreview, setProductPreview] = useState("");
+  const [autoTarget, setAutoTarget] = useState("channel");
+  const [autoContent, setAutoContent] = useState("both");
+  const [autoPreview, setAutoPreview] = useState("");
 
   const load = () => api.get("/admin/broadcasts").then(({ data }) => setHistory(data));
   const loadProductPreview = async () => {
@@ -22,9 +25,19 @@ export default function Broadcasts() {
     }
   };
 
+  const loadAutoPreview = async () => {
+    try {
+      const { data } = await api.get("/admin/broadcasts/auto-preview", { params: { content: autoContent } });
+      setAutoPreview(data.text || "");
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+
   useEffect(() => {
     if (channelMode === "products") loadProductPreview();
-  }, [channelMode]);
+    if (channelMode === "auto") loadAutoPreview();
+  }, [channelMode, autoContent]);
 
   useEffect(() => { load(); }, []);
 
@@ -72,20 +85,46 @@ export default function Broadcasts() {
         <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
           <div className="flex items-center gap-2">
             <Megaphone size={18} className="text-cyan-400" />
-            <h2 className="font-heading font-semibold">Broadcast ke Channel</h2>
+            <h2 className="font-heading font-semibold">Broadcast ke Channel / Pengguna</h2>
           </div>
-          <p className="text-xs text-slate-500">Mengirim ke channel yang sudah diberi akses ke bot. Jika BROADCAST_CHANNEL_ID belum diisi, sistem menggunakan required channel dari Join Gate.</p>
+          <p className="text-xs text-slate-500">Manual dan Product Aktif / Tersedia tetap dikirim ke channel. Broadcast otomatis dapat dikirim ke channel atau semua pengguna bot.</p>
           <select className={cls} value={channelMode} onChange={(e) => setChannelMode(e.target.value)}>
             <option value="manual">1. Manual</option>
             <option value="products">2. Broadcast Product Aktif / Tersedia</option>
+            <option value="auto">3. Broadcast Otomatis</option>
           </select>
           {channelMode === "manual" ? (
             <textarea rows={8} className={cls} placeholder="Tulis pesan untuk channel..." value={channelText} onChange={(e) => setChannelText(e.target.value)} />
-          ) : (
+          ) : channelMode === "products" ? (
             <div>
               <p className="text-xs text-slate-400 mb-2">Preview pesan otomatis:</p>
               <pre className="whitespace-pre-wrap text-sm text-slate-200 bg-slate-950 border border-slate-800 rounded-lg p-4 max-h-80 overflow-auto">{productPreview}</pre>
-              <p className="text-xs text-slate-500 mt-2">Hanya product aktif yang ditampilkan. Digital hanya ditampilkan jika stock inventory &gt; 0. Produk jasa tidak menampilkan angka stock.</p>
+              <p className="text-xs text-slate-500 mt-2">Digital hanya ditampilkan jika stock &gt; 0. Produk jasa ditampilkan sebagai Unlimited.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-slate-400">Kirim ke</label>
+                  <select className={cls} value={autoTarget} onChange={(e) => setAutoTarget(e.target.value)}>
+                    <option value="channel">📢 Channel</option>
+                    <option value="users">👥 Semua Pengguna</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400">Yang dibroadcast</label>
+                  <select className={cls} value={autoContent} onChange={(e) => setAutoContent(e.target.value)}>
+                    <option value="discount">🏷️ Harga Diskon</option>
+                    <option value="stock">📦 Stock Tersedia</option>
+                    <option value="both">🏷️ Harga Diskon + 📦 Stock Tersedia</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <p className="text-xs text-slate-400 mb-2">Preview pesan:</p>
+                <pre className="whitespace-pre-wrap text-sm text-slate-200 bg-slate-950 border border-slate-800 rounded-lg p-4 max-h-80 overflow-auto">{autoPreview}</pre>
+                <p className="text-xs text-slate-500 mt-2">Harga diskon dihitung dari harga aktif saat broadcast. Untuk pengguna, broadcast masuk queue dan pengguna yang sudah memblokir bot dilewati.</p>
+              </div>
             </div>
           )}
           <button
@@ -96,11 +135,20 @@ export default function Broadcasts() {
               try {
                 const fd = new FormData();
                 fd.append("mode", channelMode);
-                if (channelMode === "manual") fd.append("text", channelText);
+                if (channelMode === "manual") {
+                  fd.append("text", channelText);
+                } else if (channelMode === "auto") {
+                  fd.append("target", autoTarget);
+                  fd.append("content", autoContent);
+                }
                 await api.post("/admin/broadcasts/channel", fd);
-                toast.success("Broadcast ke channel berhasil dikirim.");
+                toast.success(channelMode === "auto" && autoTarget === "users"
+                  ? "Broadcast ke semua pengguna masuk antrian."
+                  : "Broadcast berhasil dikirim.");
                 if (channelMode === "manual") setChannelText("");
-                else await loadProductPreview();
+                else if (channelMode === "products") await loadProductPreview();
+                else await loadAutoPreview();
+                load();
               } catch (err) {
                 toast.error(formatApiErrorDetail(err.response?.data?.detail));
               } finally {
@@ -109,7 +157,7 @@ export default function Broadcasts() {
             }}
             className="w-full bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5"
           >
-            {busy ? "Mengirim..." : "📢 Kirim ke Channel"}
+            {busy ? "Mengirim..." : "📢 Kirim Broadcast"}
           </button>
         </div>
         <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5">
