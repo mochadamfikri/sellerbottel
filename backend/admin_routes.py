@@ -3,6 +3,8 @@ import csv
 import uuid
 import asyncio
 import re
+import zipfile
+import xml.etree.ElementTree as ET
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response
 from pydantic import BaseModel
@@ -361,6 +363,117 @@ def _detect_delimiter(line: str):
     return max(candidates, key=lambda d: line.count("\t" if d == "\\t" else d))
 
 
+def _xlsx_col_index(cell_ref: str) -> int:
+    letters = "".join(ch for ch in cell_ref if ch.isalpha()).upper()
+    index = 0
+    for char in letters:
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return max(0, index - 1)
+
+
+def _xlsx_text(element):
+    return "".join(element.itertext()) if element is not None else ""
+
+
+def _read_xlsx_rows_fallback(data: bytes):
+    """Read the first worksheet without parsing styles.
+
+    Some XLSX files produced by spreadsheet/mobile apps contain a broken or
+    missing styles.xml. openpyxl rejects those files even when the worksheet
+    data itself is readable. XLSX is a ZIP of XML parts, so we can safely
+    recover the cell values without loading the style information.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            names = set(archive.namelist())
+            if "xl/workbook.xml" not in names:
+                raise ValueError("workbook.xml tidak ditemukan")
+
+            main_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+            rel_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            package_rel_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+            workbook_root = ET.fromstring(archive.read("xl/workbook.xml"))
+            rels = {}
+            if "xl/_rels/workbook.xml.rels" in names:
+                rels_root = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+                for rel in rels_root:
+                    rel_id = rel.attrib.get("Id")
+                    target = rel.attrib.get("Target")
+                    if rel_id and target:
+                        rels[rel_id] = target
+
+            sheets = workbook_root.find(f"{{{main_ns}}}sheets")
+            if sheets is None:
+                raise ValueError("Tidak ada worksheet di workbook")
+
+            first_sheet = next(iter(sheets), None)
+            if first_sheet is None:
+                raise ValueError("Worksheet kosong")
+
+            rel_id = first_sheet.attrib.get(f"{{{rel_ns}}}id")
+            target = rels.get(rel_id) if rel_id else None
+            if target:
+                target = target.lstrip("/")
+                if not target.startswith("xl/"):
+                    target = f"xl/{target}"
+            else:
+                target = "xl/worksheets/sheet1.xml"
+
+            if target not in names:
+                raise ValueError(f"Worksheet XML tidak ditemukan: {target}")
+
+            shared_strings = []
+            if "xl/sharedStrings.xml" in names:
+                shared_root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+                for item in shared_root.findall(f"{{{main_ns}}}si"):
+                    shared_strings.append(_xlsx_text(item))
+
+            sheet_root = ET.fromstring(archive.read(target))
+            sheet_data = sheet_root.find(f"{{{main_ns}}}sheetData")
+            if sheet_data is None:
+                return []
+
+            parsed_rows = []
+            for row_node in sheet_data.findall(f"{{{main_ns}}}row"):
+                cells = {}
+                max_col = -1
+                for cell in row_node.findall(f"{{{main_ns}}}c"):
+                    ref = cell.attrib.get("r", "")
+                    col = _xlsx_col_index(ref)
+                    if col < 0:
+                        continue
+
+                    cell_type = cell.attrib.get("t")
+                    value = ""
+                    if cell_type == "inlineStr":
+                        inline = cell.find(f"{{{main_ns}}}is")
+                        value = _xlsx_text(inline)
+                    else:
+                        value_node = cell.find(f"{{{main_ns}}}v")
+                        raw = _xlsx_text(value_node)
+                        if cell_type == "s" and raw:
+                            try:
+                                value = shared_strings[int(raw)]
+                            except (ValueError, IndexError):
+                                value = raw
+                        elif cell_type == "b":
+                            value = "TRUE" if raw == "1" else "FALSE"
+                        else:
+                            value = raw
+
+                    cells[col] = value
+                    max_col = max(max_col, col)
+
+                parsed_rows.append([cells.get(i, "") for i in range(max_col + 1)])
+
+            return parsed_rows
+    except zipfile.BadZipFile as exc:
+        raise ValueError("File bukan XLSX/ZIP yang valid") from exc
+    except ET.ParseError as exc:
+        raise ValueError("XML workbook/worksheet rusak") from exc
+
+
 async def _parse_inventory_input(file: Optional[UploadFile], content: str, product: dict):
     schema = [str(x).strip() for x in (product.get("inventory_schema") or []) if str(x).strip()]
     records = []
@@ -369,25 +482,38 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
     if file:
         data = await file.read()
         if source_name.endswith(".xlsx"):
+            rows = None
+            openpyxl_error = None
             try:
                 import openpyxl
                 wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
                 rows = [list(row) for row in wb.active.iter_rows(values_only=True)]
-                rows = [row for row in rows if any(value not in (None, "") for value in row)]
-                if not rows:
-                    raise HTTPException(400, "File inventory kosong.")
-                headers = [_stringify_cell(v) for v in rows[0]]
-                if not all(headers) or len(set(headers)) != len(headers):
-                    raise HTTPException(400, "Header inventory tidak boleh kosong atau duplikat.")
-                schema_from_file = headers
-                for row in rows[1:]:
-                    record = {headers[i]: _stringify_cell(row[i] if i < len(row) else "") for i in range(len(headers))}
-                    if any(record.values()):
-                        records.append(record)
-            except HTTPException:
-                raise
             except Exception as exc:
-                raise HTTPException(400, f"File XLSX inventory tidak valid: {exc}")
+                openpyxl_error = exc
+
+            # Fallback for valid XLSX files whose styles.xml is malformed or
+            # unsupported by openpyxl. This reads worksheet values directly.
+            if rows is None:
+                try:
+                    rows = _read_xlsx_rows_fallback(data)
+                except Exception as fallback_exc:
+                    raise HTTPException(
+                        400,
+                        f"File XLSX inventory tidak valid: {fallback_exc}. "
+                        f"openpyxl: {openpyxl_error}",
+                    )
+
+            rows = [row for row in rows if any(value not in (None, "") for value in row)]
+            if not rows:
+                raise HTTPException(400, "File inventory kosong.")
+            headers = [_stringify_cell(v) for v in rows[0]]
+            if not all(headers) or len(set(headers)) != len(headers):
+                raise HTTPException(400, "Header inventory tidak boleh kosong atau duplikat.")
+            schema_from_file = headers
+            for row in rows[1:]:
+                record = {headers[i]: _stringify_cell(row[i] if i < len(row) else "") for i in range(len(headers))}
+                if any(record.values()):
+                    records.append(record)
         elif source_name.endswith(".csv"):
             text_data = data.decode("utf-8-sig", errors="ignore")
             rows = list(csv.reader(io.StringIO(text_data), delimiter=_detect_delimiter(text_data.splitlines()[0] if text_data.splitlines() else "")))
