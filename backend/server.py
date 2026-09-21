@@ -7,14 +7,16 @@ load_dotenv(ROOT_DIR / '.env')
 import os
 import asyncio
 import logging
-from fastapi import FastAPI, APIRouter, Request, HTTPException
+from fastapi import FastAPI, APIRouter, Request, HTTPException, Depends
 from starlette.middleware.cors import CORSMiddleware
 
 from db import client, db, ensure_settings, ensure_indexes
+from auth import get_current_admin
 from auth import router as auth_router, seed_admin
 from admin_routes import router as admin_router
 from admin_user_routes import router as admin_user_router
 from promo_routes import router as promo_router
+from promo_routes_accounts import router as promo_accounts_router
 from error_handlers import register_error_handlers
 from inventory import encryption_status
 from bot import process_update, resume_service_waiters
@@ -65,6 +67,7 @@ app.include_router(admin_user_router)
 app.include_router(admin_router)
 if os.environ.get("PROMOTION_ENABLED", "").lower() in {"1", "true", "yes"}:
     app.include_router(promo_router)
+    app.include_router(promo_accounts_router, prefix="/api/admin/promo", dependencies=[Depends(get_current_admin)])
 
 # Harus didaftarkan sebelum CORSMiddleware agar respons error tetap membawa header CORS.
 register_error_handlers(app)
