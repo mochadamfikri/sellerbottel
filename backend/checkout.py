@@ -86,7 +86,36 @@ async def _fail_checkout(order_id, allocations, reservation_id, error, message, 
     )
     return {"ok": False, "error": error, "message": message}
 
-async def execute_checkout(user, cart_items):
+def _cart_after_purchase(cart, purchased_items):
+    remaining = []
+    purchase_map = {}
+    for item in purchased_items or []:
+        pid = str(item.get("pid") or "")
+        if pid:
+            purchase_map[pid] = purchase_map.get(pid, 0) + max(1, int(item.get("qty", 1)))
+
+    for raw in cart or []:
+        if isinstance(raw, str):
+            item = {"pid": raw, "qty": 1}
+        elif isinstance(raw, dict) and raw.get("pid"):
+            item = {"pid": raw["pid"], "qty": max(1, int(raw.get("qty", 1)))}
+        else:
+            continue
+
+        pid = item["pid"]
+        deduct = purchase_map.get(pid, 0)
+        if deduct:
+            left = item["qty"] - deduct
+            purchase_map[pid] = max(0, deduct - item["qty"])
+            if left > 0:
+                remaining.append({"pid": pid, "qty": left})
+        else:
+            remaining.append(item)
+
+    return remaining
+
+
+async def execute_checkout(user, cart_items, preserve_cart=False):
     currency = user["currency"]
     field = CUR_FIELD[currency]
     order_id = str(uuid.uuid4())
@@ -199,16 +228,30 @@ async def execute_checkout(user, cart_items):
                     "qty": qty,
                 })
 
+        update = {
+            "$inc": {field: -total},
+        }
+        if preserve_cart:
+            fresh_cart_user = await db.bot_users.find_one(
+                {"telegram_id": user["telegram_id"]},
+                {"cart": 1},
+            )
+            update["$set"] = {
+                "cart": _cart_after_purchase(
+                    (fresh_cart_user or {}).get("cart", []),
+                    cart_items,
+                ),
+            }
+        else:
+            update["$set"] = {"cart": []}
+
         balance_result = await db.bot_users.update_one(
             {
                 "telegram_id": user["telegram_id"],
                 field: {"$gte": total},
                 "frozen": {"$ne": True},
             },
-            {
-                "$inc": {field: -total},
-                "$set": {"cart": []},
-            },
+            update,
         )
         if balance_result.modified_count != 1:
             return await _fail_checkout(
