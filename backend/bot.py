@@ -865,7 +865,9 @@ async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
             for item in cart_items:
                 p = await db.products.find_one({"_id": item["pid"], "active": True})
                 if p:
-                    ptotal += await product_price(p, user["currency"]) * max(1, int(item.get("qty", 1)))
+                    qty = max(1, int(item.get("qty", 1)))
+                    pricing = await price_for_product(p, user["currency"], qty)
+                    ptotal += pricing["unit_price"] * qty
             balance = float(user.get(CUR_FIELD[user["currency"]], 0))
             await send_message(
                 chat_id,
