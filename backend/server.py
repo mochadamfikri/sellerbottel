@@ -17,6 +17,9 @@ from admin_routes import router as admin_router
 from admin_user_routes import router as admin_user_router
 from promo_routes import router as promo_router
 from promo_routes_accounts import router as promo_accounts_router
+from promo_campaign_routes import router as promo_campaign_router
+from promo_reply_routes import router as promo_reply_router
+from promo_runtime import start_promo_runtime, stop_promo_runtime
 from error_handlers import register_error_handlers
 from inventory import encryption_status
 from bot import process_update, resume_service_waiters
@@ -68,6 +71,8 @@ app.include_router(admin_router)
 if os.environ.get("PROMOTION_ENABLED", "").lower() in {"1", "true", "yes"}:
     app.include_router(promo_router)
     app.include_router(promo_accounts_router, prefix="/api/admin/promo", dependencies=[Depends(get_current_admin)])
+    app.include_router(promo_campaign_router, prefix="/api/admin/promo", dependencies=[Depends(get_current_admin)])
+    app.include_router(promo_reply_router, prefix="/api/admin/promo", dependencies=[Depends(get_current_admin)])
 
 # Harus didaftarkan sebelum CORSMiddleware agar respons error tetap membawa header CORS.
 register_error_handlers(app)
@@ -104,7 +109,7 @@ async def startup():
         app.state.gopay_stop = asyncio.Event()
         app.state.gopay_task = asyncio.create_task(run_gopay_monitor(app.state.gopay_stop))
 
-    await resume_service_waiters()
+    await resume_service_waiters()\n    await start_promo_runtime()
 
     if base and os.environ.get("TELEGRAM_TOKEN"):
         try:
@@ -120,7 +125,7 @@ async def startup():
 
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
+async def shutdown_db_client():\n    await stop_promo_runtime()
     stop = getattr(app.state, "gopay_stop", None)
     task = getattr(app.state, "gopay_task", None)
     if stop:
