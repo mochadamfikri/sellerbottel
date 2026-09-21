@@ -14,6 +14,8 @@ from db import client, db, ensure_settings, ensure_indexes
 from auth import router as auth_router, seed_admin
 from admin_routes import router as admin_router
 from admin_user_routes import router as admin_user_router
+from error_handlers import register_error_handlers
+from inventory import encryption_status
 from bot import process_update
 from i18n import load_overrides
 from tgapi import tg
@@ -61,6 +63,9 @@ app.include_router(auth_router)
 app.include_router(admin_user_router)
 app.include_router(admin_router)
 
+# Harus didaftarkan sebelum CORSMiddleware agar respons error tetap membawa header CORS.
+register_error_handlers(app)
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -81,6 +86,12 @@ async def startup():
     await ensure_indexes()
     await load_overrides(db.bot_messages)
     await seed_admin()
+    try:
+        inv = await encryption_status()
+        if not inv["valid"] or inv["data_readable"] is False:
+            logger.error("INVENTORY: %s", inv["message"])
+    except Exception as e:
+        logger.error(f"INVENTORY: gagal mengecek konfigurasi enkripsi: {e}")
     base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
     if os.environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}:
         app.state.gopay_stop = asyncio.Event()
