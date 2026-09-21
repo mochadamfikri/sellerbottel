@@ -14,7 +14,8 @@ const empty = {
   stock_mode: "auto",
   stock: "",
   delivery_type: "link",
-  content: "",
+  content: "Jasa {product_name} sedang dalam antrean, harap tunggu {wait_minutes} untuk dapat menghubungi admin.",
+  wait_minutes: 5,
   active: true,
 };
 
@@ -25,12 +26,10 @@ export default function Products() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(empty);
   const [editId, setEditId] = useState(null);
-  const [file, setFile] = useState(null);
   const [saving, setSaving] = useState(false);
 
   const [importOpen, setImportOpen] = useState(false);
   const [importFile, setImportFile] = useState(null);
-  const [importCurrency, setImportCurrency] = useState("USD");
   const [importKind, setImportKind] = useState("digital");
   const [importing, setImporting] = useState(false);
 
@@ -54,7 +53,6 @@ export default function Products() {
   const openCreate = () => {
     setForm(empty);
     setEditId(null);
-    setFile(null);
     setOpen(true);
   };
 
@@ -69,7 +67,8 @@ export default function Products() {
       stock_mode: p.stock_mode === "manual" ? "manual" : "auto",
       stock: p.manual_stock ?? p.stock ?? "",
       delivery_type: p.delivery_type || "link",
-      content: p.content || "",
+      content: p.service_message_template || p.content || "",
+      wait_minutes: p.service_wait_minutes || 5,
       active: p.active !== false,
     });
     setEditId(p._id);
@@ -88,10 +87,11 @@ export default function Products() {
       fd.append("product_kind", form.product_kind);
       fd.append("stock_mode", form.product_kind === "digital" ? form.stock_mode : "unlimited");
       fd.append("stock", form.product_kind === "digital" && form.stock_mode === "manual" ? (form.stock || "0") : "");
-      fd.append("delivery_type", form.product_kind === "digital" ? "inventory" : form.delivery_type);
-      fd.append("content", form.product_kind === "service" ? form.content : "");
+      fd.append("delivery_type", form.product_kind === "digital" ? "inventory" : "service");
+      fd.append("content", "");
+      fd.append("service_wait_minutes", form.product_kind === "service" ? String(form.wait_minutes || 5) : "");
+      fd.append("service_message_template", form.product_kind === "service" ? form.content : "");
       fd.append("active", form.active);
-      if (file) fd.append("file", file, file.name);
 
       if (editId) {
         await api.put("/admin/products/" + editId, fd);
@@ -108,6 +108,22 @@ export default function Products() {
     }
   };
 
+  const downloadImportTemplate = async () => {
+    try {
+      const response = await api.get("/admin/products/import-template", { responseType: "blob" });
+      const url = window.URL.createObjectURL(response.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "template-bulk-product.xlsx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Template gagal dibuat.");
+    }
+  };
+
   const importProducts = async () => {
     if (!importFile) {
       toast.error("File Excel/CSV belum dipilih.");
@@ -116,8 +132,6 @@ export default function Products() {
     setImporting(true);
     try {
       const fd = new FormData();
-      fd.append("currency", importCurrency);
-      fd.append("product_kind", importKind);
       fd.append("file", importFile, importFile.name);
       const { data } = await api.post("/admin/products/import", fd);
       toast.success("Import selesai: " + (data.imported ?? 0) + " produk masuk, " + (data.skipped ?? 0) + " dilewati.");
@@ -236,7 +250,7 @@ export default function Products() {
         <div className="flex items-center gap-2">
           <button
             data-testid="import-products-button"
-            onClick={() => { setImportFile(null); setImportCurrency("USD"); setImportKind("digital"); setImportOpen(true); }}
+            onClick={() => { setImportFile(null); setImportOpen(true); }}
             className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2"
           >
             <Upload size={16} /> Import Excel
@@ -325,27 +339,18 @@ export default function Products() {
         <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-lg">
           <DialogHeader><DialogTitle>Import Produk dari Excel</DialogTitle></DialogHeader>
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3">
               <div>
-                <label className="text-xs text-slate-400">Mata Uang Harga</label>
-                <select className={cls} value={importCurrency} onChange={(e) => setImportCurrency(e.target.value)}>
-                  <option value="USD">USD</option>
-                  <option value="IDR">IDR</option>
-                </select>
+                <p className="text-sm text-slate-200 font-semibold">Template Excel Bulk Product</p>
+                <p className="text-xs text-slate-500 mt-1">Kolom Jenis Product memiliki pilihan A/B dan menentukan proses upload per baris.</p>
               </div>
-              <div>
-                <label className="text-xs text-slate-400">Jenis product</label>
-                <select className={cls} value={importKind} onChange={(e) => setImportKind(e.target.value)}>
-                  <option value="digital">A. Produk Digital / Data</option>
-                  <option value="service">B. Produk Jasa</option>
-                </select>
-              </div>
+              <button type="button" onClick={downloadImportTemplate} className="shrink-0 bg-slate-800 hover:bg-slate-700 rounded-lg px-3 py-2 text-xs font-semibold">Download Template</button>
             </div>
             <div>
               <label className="text-xs text-slate-400">File Product</label>
               <input type="file" accept=".xlsx,.csv,.txt" className={cls} onChange={(e) => setImportFile(e.target.files?.[0] || null)} />
-              <p className="text-xs text-slate-500 mt-2">Header: product | stock | harga | deskripsi</p>
-              <p className="text-xs text-slate-600 mt-1">Untuk jenis jasa, kolom stock diabaikan dan product menjadi Unlimited.</p>
+              <p className="text-xs text-slate-500 mt-2">Header: Nama Product | Deskripsi | Harga USD | Harga IDR | Jenis Product | Waktu Tunggu (menit) | Pesan Jasa</p>
+              <p className="text-xs text-slate-600 mt-1">Jenis Product wajib diisi per baris. A = inventory/data, B = jasa + Unlimited.</p>
             </div>
             <button onClick={importProducts} disabled={importing || !importFile} className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5">
               {importing ? "Mengimport..." : "Import Produk"}
@@ -429,22 +434,7 @@ export default function Products() {
 
             {form.product_kind === "digital" ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-4 space-y-3">
-                <div>
-                  <label className="text-xs text-slate-400">Sumber Stok</label>
-                  <select className={cls} value={form.stock_mode} onChange={(e) => setForm({ ...form, stock_mode: e.target.value })}>
-                    <option value="auto">Otomatis mengikuti jumlah data/inventory</option>
-                    <option value="manual">Manual / batas stok</option>
-                  </select>
-                </div>
-                {form.stock_mode === "manual" ? (
-                  <div>
-                    <label className="text-xs text-slate-400">Stok manual / batas maksimum</label>
-                    <input type="number" min="0" className={cls} value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} />
-                    <p className="text-xs text-slate-600 mt-1">Pembelian tetap tidak akan bisa mengambil data melebihi inventory yang benar-benar tersedia.</p>
-                  </div>
-                ) : (
-                  <p className="text-xs text-slate-500">Stok diambil otomatis dari jumlah inventory yang tersedia.</p>
-                )}
+                <p className="text-xs text-slate-500">Produk digital menggunakan inventory. Stok mengikuti data inventory.</p>
               </div>
             ) : (
               <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-950/50 p-4">
@@ -453,24 +443,25 @@ export default function Products() {
                   <span className="font-mono text-cyan-400">Unlimited</span>
                 </div>
                 <div>
-                  <label className="text-xs text-slate-400">Tipe Pengiriman Jasa</label>
-                  <select className={cls} value={form.delivery_type} onChange={(e) => setForm({ ...form, delivery_type: e.target.value })}>
-                    <option value="link">Link</option>
-                    <option value="license">Kode Lisensi</option>
-                    <option value="file">File</option>
+                  <label className="text-xs text-slate-400">Waktu tunggu untuk dapat menghubungi admin</label>
+                  <select className={cls} value={form.wait_minutes || 5} onChange={(e) => setForm({ ...form, wait_minutes: Number(e.target.value) })}>
+                    <option value={1}>1 menit</option>
+                    <option value={5}>5 menit</option>
+                    <option value={10}>10 menit</option>
+                    <option value={25}>25 menit</option>
+                    <option value={60}>60 menit</option>
                   </select>
                 </div>
-                {form.delivery_type === "file" ? (
-                  <div>
-                    <label className="text-xs text-slate-400">File Produk</label>
-                    <input type="file" className={cls} onChange={(e) => setFile(e.target.files?.[0] || null)} />
-                  </div>
-                ) : (
-                  <div>
-                    <label className="text-xs text-slate-400">Konten / Link / Template</label>
-                    <textarea rows={3} className={cls} value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} />
-                  </div>
-                )}
+                <div>
+                  <label className="text-xs text-slate-400">Pesan antrean jasa</label>
+                  <textarea
+                    rows={4}
+                    className={cls}
+                    value={form.content}
+                    onChange={(e) => setForm({ ...form, content: e.target.value })}
+                  />
+                  <p className="text-[11px] text-slate-500 mt-1">Placeholder: {"{product_name}"} dan {"{wait_minutes}"}.</p>
+                </div>
               </div>
             )}
 
