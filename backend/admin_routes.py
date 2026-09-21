@@ -1745,20 +1745,6 @@ async def _broadcast_channel_target():
     return channel_id
 
 
-def _product_broadcast_text(products):
-    digital = []
-    services = []
-    for p in products:
-        kind = _normalized_product_kind(p)
-        if not p.get("active", True):
-            continue
-        if kind == "digital":
-            stock = awaitable_stock_placeholder
-        if kind == "service":
-            services.append(p["name"])
-    return digital, services
-
-
 async def _build_product_broadcast():
     products = await db.products.find({"active": True}).sort("created_at", 1).to_list(500)
     digital_lines = []
