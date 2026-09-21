@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Upload, Plus, Trash2, RefreshCw, Database, PackageCheck } from "lucide-react";
-import api, { formatApiErrorDetail } from "../lib/api";
+import api, { formatApiErrorDetail, postMultipart } from "../lib/api";
 
 const cls = "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
 
@@ -14,6 +14,7 @@ export default function Inventory() {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [manualData, setManualData] = useState({});
+  const [fileName, setFileName] = useState("");
 
   const selectedProduct = useMemo(() => products.find((p) => p._id === pid) || null, [products, pid]);
 
@@ -51,6 +52,7 @@ export default function Inventory() {
   const selectProduct = (value) => {
     setPid(value);
     setFile(null);
+    setFileName("");
     setPreview(null);
     setManualData({});
   };
@@ -62,7 +64,7 @@ export default function Inventory() {
       const fd = new FormData();
       fd.append("content", "");
       fd.append("file", file, file.name);
-      const { data } = await api.post("/admin/products/" + pid + "/inventory/validate", fd);
+      const data = await postMultipart("/admin/products/" + pid + "/inventory/validate", fd);
       setPreview(data);
       const next = {};
       (data.schema || []).forEach((field) => { next[field] = ""; });
@@ -82,9 +84,10 @@ export default function Inventory() {
       const fd = new FormData();
       fd.append("content", "");
       fd.append("file", file, file.name);
-      const { data } = await api.post("/admin/products/" + pid + "/inventory/import", fd);
+      const data = await postMultipart("/admin/products/" + pid + "/inventory/import", fd);
       toast.success("Inventory masuk: " + data.created + " item · dilewati: " + data.skipped);
       setFile(null);
+      setFileName("");
       setPreview(null);
       await loadProducts();
       await loadInventory();
@@ -169,10 +172,21 @@ export default function Inventory() {
             <h2 className="font-heading font-semibold flex items-center gap-2"><Upload size={17} className="text-emerald-400" /> Upload Bulk Inventory</h2>
             <p className="text-xs text-slate-500 mt-1">Pilih product dulu, lalu upload file. XLSX/CSV memakai baris pertama sebagai nama field.</p>
           </div>
-          <input type="file" accept=".xlsx,.csv,.txt" className={cls} onChange={(e) => { setFile(e.target.files?.[0] || null); setPreview(null); }} />
+          <input
+            type="file"
+            accept=".xlsx,.csv,.txt"
+            className={cls}
+            onChange={(e) => {
+              const selected = e.target.files?.[0] || null;
+              setFile(selected);
+              setFileName(selected?.name || "");
+              setPreview(null);
+            }}
+          />
+          {fileName && <p className="text-xs text-cyan-400 mt-2 break-all">File dipilih: {fileName}</p>}
           <div className="flex gap-2">
-            <button disabled={!pid || !file || busy} onClick={validateFile} className="flex-1 px-4 py-2.5 rounded-lg border border-slate-700 text-slate-200 disabled:opacity-40">Validasi</button>
-            <button disabled={!pid || !file || busy} onClick={importFile} className="flex-1 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-40">Import Bulk</button>
+            <button type="button" disabled={!pid || !file || busy} onClick={validateFile} className="flex-1 px-4 py-2.5 rounded-lg border border-slate-700 text-slate-200 disabled:opacity-40">Validasi</button>
+            <button type="button" disabled={!pid || !file || busy} onClick={importFile} className="flex-1 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-40">Import Bulk</button>
           </div>
           {preview && (
             <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-300 space-y-1">
@@ -205,7 +219,7 @@ export default function Inventory() {
                   </div>
                 ))}
               </div>
-              <button disabled={!pid || busy || !Object.values(manualData).some((v) => String(v || "").trim())} onClick={addManual} className="w-full px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold disabled:opacity-40">Simpan 1 Data</button>
+              <button type="button" disabled={!pid || busy || !Object.values(manualData).some((v) => String(v || "").trim())} onClick={addManual} className="w-full px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold disabled:opacity-40">Simpan 1 Data</button>
             </>
           )}
         </div>
@@ -224,7 +238,7 @@ export default function Inventory() {
               <option value="sold">Sold</option>
               <option value="all">Semua</option>
             </select>
-            <button onClick={loadInventory} className="p-2 rounded-lg border border-slate-800 text-slate-400 hover:text-cyan-400" title="Refresh"><RefreshCw size={16} /></button>
+            <button type="button" onClick={loadInventory} className="p-2 rounded-lg border border-slate-800 text-slate-400 hover:text-cyan-400" title="Refresh"><RefreshCw size={16} /></button>
           </div>
         </div>
 
@@ -265,7 +279,7 @@ export default function Inventory() {
                   <td className="px-5 py-3 text-xs text-slate-500">{item.sold_at || item.created_at}</td>
                   <td className="px-5 py-3 text-right">
                     {item.status === "available" && (
-                      <button onClick={() => removeItem(item._id)} className="p-2 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10" title="Hapus item"><Trash2 size={15} /></button>
+                      <button type="button" onClick={() => removeItem(item._id)} className="p-2 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10" title="Hapus item"><Trash2 size={15} /></button>
                     )}
                   </td>
                 </tr>
