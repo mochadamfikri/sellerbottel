@@ -1,5 +1,6 @@
 import io
 import csv
+import logging
 import uuid
 import asyncio
 import re
@@ -15,8 +16,17 @@ from rates import get_rate
 from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso
 from storage import put_object
 from tgapi import download_telegram_file, send_message, send_photo_bytes, tg
-from inventory import validate_records, add_records, available_count, decrypt_items
+from inventory import (
+    validate_records,
+    add_records,
+    available_count,
+    decrypt_items,
+    encryption_status,
+    InventoryError,
+)
 from reporting import router as reports_router
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(get_current_admin)])
 
@@ -575,7 +585,13 @@ async def validate_inventory(
         raise HTTPException(400, "Produk jasa tidak memiliki inventory.")
 
     schema, records = await _parse_inventory_input(file, content, product)
-    check = await validate_records(pid, records, schema)
+    try:
+        check = await validate_records(pid, records, schema)
+    except InventoryError:
+        raise
+    except Exception as exc:
+        logger.exception("Validasi inventory gagal untuk produk %s", pid)
+        raise InventoryError(f"Validasi inventory gagal ({type(exc).__name__}). Lihat log backend.") from exc
     return {
         "schema": schema,
         "valid_count": check["valid_count"],
@@ -598,12 +614,24 @@ async def import_inventory(
         raise HTTPException(400, "Produk jasa tidak memiliki inventory.")
 
     schema, records = await _parse_inventory_input(file, content, product)
-    result = await add_records(pid, records, schema)
+    try:
+        result = await add_records(pid, records, schema)
+    except InventoryError:
+        raise
+    except Exception as exc:
+        logger.exception("Import inventory gagal untuk produk %s", pid)
+        raise InventoryError(f"Import inventory gagal ({type(exc).__name__}). Lihat log backend.") from exc
     result.pop("valid", None)
     result.pop("duplicates", None)
     result["stock"] = await available_count(pid)
     result["schema"] = schema
     return result
+
+
+@router.get("/inventory/status")
+async def inventory_status():
+    """Diagnosa konfigurasi enkripsi inventory (tanpa membocorkan key)."""
+    return {"encryption": await encryption_status()}
 
 
 class InventoryManualBody(BaseModel):
@@ -620,7 +648,13 @@ async def add_inventory_manual(pid: str, body: InventoryManualBody):
     schema = [str(x).strip() for x in (product.get("inventory_schema") or []) if str(x).strip()]
     if not schema:
         raise HTTPException(400, "Schema inventory belum tersedia. Upload file XLSX/CSV pertama kali untuk menentukan header.")
-    result = await add_records(pid, [body.data], schema)
+    try:
+        result = await add_records(pid, [body.data], schema)
+    except InventoryError:
+        raise
+    except Exception as exc:
+        logger.exception("Input manual inventory gagal untuk produk %s", pid)
+        raise InventoryError(f"Simpan data inventory gagal ({type(exc).__name__}). Lihat log backend.") from exc
     if result["created"] != 1:
         raise HTTPException(409, "Data inventory sudah ada atau tidak valid.")
     return {
