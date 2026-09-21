@@ -5,6 +5,30 @@ const api = axios.create({
   withCredentials: true,
 });
 
+export async function postMultipart(path, formData) {
+  const base = api.defaults.baseURL || "/api";
+  const url = /^https?:\\/\\//i.test(path)
+    ? path
+    : base.replace(/\\/$/, "") + (path.startsWith("/") ? path : "/" + path);
+  const response = await fetch(url, {
+    method: "POST",
+    body: formData,
+    credentials: "include",
+  });
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (_) {
+    data = null;
+  }
+  if (!response.ok) {
+    const error = new Error(formatApiErrorDetail(data?.detail) || "Request gagal.");
+    error.response = { status: response.status, data };
+    throw error;
+  }
+  return data;
+}
+
 export function formatApiErrorDetail(detail) {
   if (detail == null) return "Terjadi kesalahan. Coba lagi.";
   if (typeof detail === "string") return detail;
