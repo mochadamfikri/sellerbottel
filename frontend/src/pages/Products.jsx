@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Plus, Pencil, Trash2, Upload, Database, Boxes, BriefcaseBusiness } from "lucide-react";
-import api, { fmtUSD, fmtIDR, formatApiErrorDetail, postMultipart } from "../lib/api";
+import api, { fmtUSD, fmtIDR, formatApiErrorDetail } from "../lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Switch } from "../components/ui/switch";
 
@@ -39,7 +39,6 @@ export default function Products() {
   const [inventoryFile, setInventoryFile] = useState(null);
   const [inventoryBusy, setInventoryBusy] = useState(false);
   const [inventoryResult, setInventoryResult] = useState(null);
-  const [inventoryFileName, setInventoryFileName] = useState("");
 
   const load = async () => {
     try {
@@ -135,7 +134,6 @@ export default function Products() {
   const openInventory = (p) => {
     setInventoryProduct(p);
     setInventoryFile(null);
-    setInventoryFileName("");
     setInventoryResult(null);
     setInventoryOpen(true);
   };
@@ -150,7 +148,7 @@ export default function Products() {
       const fd = new FormData();
       fd.append("content", "");
       fd.append("file", inventoryFile, inventoryFile.name);
-      const data = await postMultipart(
+      const { data } = await api.post(
         "/admin/products/" + inventoryProduct._id + "/inventory/validate",
         fd
       );
@@ -173,14 +171,13 @@ export default function Products() {
       const fd = new FormData();
       fd.append("content", "");
       fd.append("file", inventoryFile, inventoryFile.name);
-      const data = await postMultipart(
+      const { data } = await api.post(
         "/admin/products/" + inventoryProduct._id + "/inventory/import",
         fd
       );
       toast.success("Inventory masuk: " + (data.created ?? 0) + " item · dilewati: " + (data.skipped ?? 0));
       setInventoryOpen(false);
       setInventoryFile(null);
-      setInventoryFileName("");
       setInventoryResult(null);
       setInventoryProduct(null);
       await load();
@@ -238,7 +235,6 @@ export default function Products() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            type="button"
             data-testid="import-products-button"
             onClick={() => { setImportFile(null); setImportCurrency("USD"); setImportKind("digital"); setImportOpen(true); }}
             className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2"
@@ -246,7 +242,6 @@ export default function Products() {
             <Upload size={16} /> Import Excel
           </button>
           <button
-            type="button"
             data-testid="add-product-button"
             onClick={openCreate}
             className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg px-4 py-2"
@@ -292,7 +287,6 @@ export default function Products() {
                   <div className="flex items-center justify-end gap-1.5">
                     {p.product_kind !== "service" && (
                       <button
-                        type="button"
                         data-testid={"input-inventory-btn-" + p._id}
                         onClick={() => openInventory(p)}
                         title="Input Data / Inventory"
@@ -301,8 +295,8 @@ export default function Products() {
                         <Database size={14} /> Input Data
                       </button>
                     )}
-                    <button type="button" onClick={() => openEdit(p)} title="Edit" className="p-2 rounded-lg text-slate-400 hover:text-cyan-400 hover:bg-slate-800"><Pencil size={15} /></button>
-                    <button type="button" onClick={() => remove(p)} title="Hapus" className="p-2 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800"><Trash2 size={15} /></button>
+                    <button onClick={() => openEdit(p)} title="Edit" className="p-2 rounded-lg text-slate-400 hover:text-cyan-400 hover:bg-slate-800"><Pencil size={15} /></button>
+                    <button onClick={() => remove(p)} title="Hapus" className="p-2 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800"><Trash2 size={15} /></button>
                   </div>
                 </td>
               </tr>
@@ -338,7 +332,7 @@ export default function Products() {
               <p className="text-xs text-slate-500 mt-2">Header: product | stock | harga | deskripsi</p>
               <p className="text-xs text-slate-600 mt-1">Untuk jenis jasa, kolom stock diabaikan dan product menjadi Unlimited.</p>
             </div>
-            <button type="button" onClick={importProducts} disabled={importing || !importFile} className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5">
+            <button onClick={importProducts} disabled={importing || !importFile} className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5">
               {importing ? "Mengimport..." : "Import Produk"}
             </button>
           </div>
@@ -355,18 +349,7 @@ export default function Products() {
             </div>
             <div>
               <label className="text-xs text-slate-400">File Data / Inventory</label>
-              <input
-                type="file"
-                accept=".xlsx,.csv,.txt"
-                className={cls}
-                onChange={(e) => {
-                  const selected = e.target.files?.[0] || null;
-                  setInventoryFile(selected);
-                  setInventoryFileName(selected?.name || "");
-                  setInventoryResult(null);
-                }}
-              />
-              {inventoryFileName && <p className="text-xs text-cyan-400 mt-2 break-all">File dipilih: {inventoryFileName}</p>}
+              <input type="file" accept=".xlsx,.csv,.txt" className={cls} onChange={(e) => { setInventoryFile(e.target.files?.[0] || null); setInventoryResult(null); }} />
             </div>
             {inventoryResult && (
               <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-300 space-y-1">
@@ -376,10 +359,10 @@ export default function Products() {
               </div>
             )}
             <div className="grid grid-cols-2 gap-2">
-              <button type="button" onClick={validateInventory} disabled={inventoryBusy || !inventoryFile} className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 rounded-lg py-2.5 font-semibold">
+              <button onClick={validateInventory} disabled={inventoryBusy || !inventoryFile} className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 rounded-lg py-2.5 font-semibold">
                 {inventoryBusy ? "Memproses..." : "Validasi"}
               </button>
-              <button type="button" onClick={importInventory} disabled={inventoryBusy || !inventoryFile} className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 rounded-lg py-2.5 font-semibold">
+              <button onClick={importInventory} disabled={inventoryBusy || !inventoryFile} className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 rounded-lg py-2.5 font-semibold">
                 Import Data
               </button>
             </div>
@@ -476,7 +459,7 @@ export default function Products() {
               <span className="text-sm text-slate-300">Produk aktif</span>
             </div>
 
-            <button type="button" onClick={save} disabled={saving || !form.name || !form.price_usd} className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5">
+            <button onClick={save} disabled={saving || !form.name || !form.price_usd} className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5">
               {saving ? "Menyimpan..." : "Simpan Produk"}
             </button>
           </div>

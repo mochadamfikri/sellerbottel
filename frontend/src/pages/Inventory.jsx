@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Upload, Plus, Trash2, RefreshCw, Database, PackageCheck } from "lucide-react";
-import api, { formatApiErrorDetail, postMultipart } from "../lib/api";
+import api, { formatApiErrorDetail } from "../lib/api";
 
 const cls = "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
 
@@ -64,7 +64,7 @@ export default function Inventory() {
       const fd = new FormData();
       fd.append("content", "");
       fd.append("file", file, file.name);
-      const data = await postMultipart("/admin/products/" + pid + "/inventory/validate", fd);
+      const { data } = await api.post("/admin/products/" + pid + "/inventory/validate", fd);
       setPreview(data);
       const next = {};
       (data.schema || []).forEach((field) => { next[field] = ""; });
@@ -84,7 +84,7 @@ export default function Inventory() {
       const fd = new FormData();
       fd.append("content", "");
       fd.append("file", file, file.name);
-      const data = await postMultipart("/admin/products/" + pid + "/inventory/import", fd);
+      const { data } = await api.post("/admin/products/" + pid + "/inventory/import", fd);
       toast.success("Inventory masuk: " + data.created + " item · dilewati: " + data.skipped);
       setFile(null);
       setFileName("");
