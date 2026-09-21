@@ -70,6 +70,13 @@ async def groups_sync(account_id: str):
 async def groups():
     return await db.tg_groups.find({}).sort("title", 1).to_list(500)
 
+@router.get("/results/sources")
+async def result_sources():
+    rows = []
+    async for row in db.purchases.aggregate([{"$match": {"source_code": {"$nin": [None, ""]}}}, {"$group": {"_id": "$source_code", "orders": {"$sum": 1}, "revenue": {"$sum": "$total"}}}, {"$sort": {"orders": -1}}]):
+        rows.append(row)
+    return rows
+
 @router.get("/results")
 async def results():
     return {
