@@ -9,7 +9,7 @@ const tabs = [["overview","Ringkasan"],["coupons","Kupon"],["campaigns","Kampany
 export default function Promotions() {
   const [tab,setTab]=useState("overview"); const [summary,setSummary]=useState({}); const [coupons,setCoupons]=useState([]);
   const [accounts,setAccounts]=useState([]); const [prospects,setProspects]=useState([]); const [campaigns,setCampaigns]=useState([]);
-  const [jobs,setJobs]=useState([]); const [groups,setGroups]=useState([]); const [results,setResults]=useState({});
+  const [jobs,setJobs]=useState([]); const [groups,setGroups]=useState([]); const [results,setResults]=useState({}); const [sourceResults,setSourceResults]=useState([]);
   const [busy,setBusy]=useState(false);
   const [phone,setPhone]=useState(""); const [pending,setPending]=useState(""); const [otp,setOtp]=useState(""); const [twofa,setTwofa]=useState("");
   const [coupon,setCoupon]=useState({code:"",type:"percent",value:"",currency:"IDR",quota_total:"",per_user_limit:1,min_purchase:0,starts_at:"",ends_at:""});
@@ -20,12 +20,12 @@ export default function Promotions() {
 
   const load=async()=>{
     try {
-      const [s,c,a,p,ca,j,g,res]=await Promise.all([
+      const [s,c,a,p,ca,j,g,res,sources]=await Promise.all([
         api.get("/admin/promo/summary"),api.get("/admin/promo/coupons"),api.get("/admin/promo/accounts"),
         api.get("/admin/promo/prospects"),api.get("/admin/promo/campaigns"),api.get("/admin/promo/jobs"),
-        api.get("/admin/promo/groups"),api.get("/admin/promo/results")
+        api.get("/admin/promo/groups"),api.get("/admin/promo/results"),api.get("/admin/promo/results/sources")
       ]);
-      setSummary(s.data);setCoupons(c.data);setAccounts(a.data);setProspects(p.data);setCampaigns(ca.data);setJobs(j.data);setGroups(g.data);setResults(res.data);
+      setSummary(s.data);setCoupons(c.data);setAccounts(a.data);setProspects(p.data);setCampaigns(ca.data);setJobs(j.data);setGroups(g.data);setResults(res.data);setSourceResults(sources.data);
     } catch(e){err(e)}
   };
   useEffect(()=>{load()},[]);
@@ -61,7 +61,7 @@ export default function Promotions() {
 
     {tab==="groups"&&<div className="space-y-5"><div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-3"><h2 className="font-semibold">Posting Grup — manual approval</h2><select className={cls} value={post.account_id} onChange={e=>setPost({...post,account_id:e.target.value})}><option value="">Pilih akun</option>{accounts.filter(a=>a.status==="active").map(a=><option key={a._id} value={a._id}>{a.name||a.username||a.tg_user_id}</option>)}</select><select className={cls} value={post.group_id} onChange={e=>setPost({...post,group_id:e.target.value})}><option value="">Pilih grup</option>{groups.map(g=><option key={g._id} value={g.chat_id}>{g.title}</option>)}</select><textarea className={cls} rows="5" placeholder="Pesan grup" value={post.message} onChange={e=>setPost({...post,message:e.target.value})}/><button onClick={postGroup} className="bg-cyan-600 rounded-lg py-2">Posting</button></div><div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4">{groups.length} grup tersinkron.</div></div>}
 
-    {tab==="results"&&<div className="grid grid-cols-2 lg:grid-cols-4 gap-3">{Object.entries(results).map(([k,v])=><div key={k} className="bg-slate-900/80 border border-slate-800 rounded-xl p-5"><p className="text-2xl font-semibold">{v}</p><p className="text-xs text-slate-500 mt-1">{k}</p></div>)}</div>}
+    {tab==="results"&&<div className="space-y-5"><div className="grid grid-cols-2 lg:grid-cols-4 gap-3">{Object.entries(results).map(([k,v])=><div key={k} className="bg-slate-900/80 border border-slate-800 rounded-xl p-5"><p className="text-2xl font-semibold">{v}</p><p className="text-xs text-slate-500 mt-1">{k}</p></div>)}</div><div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5"><h2 className="font-semibold mb-3">Pembelian per Source</h2>{sourceResults.map(x=><div key={x._id} className="flex justify-between border-b border-slate-800 py-2 text-sm"><span>{x._id}</span><span>{x.orders} order · {x.revenue}</span></div>)}{!sourceResults.length&&<p className="text-sm text-slate-500">Belum ada transaksi beratribusi.</p>}</div></div>}
 
     {tab!=="overview"&&<div className="flex justify-end"><button onClick={load} className="text-slate-400 flex items-center gap-2"><RefreshCw size={15}/> Refresh</button></div>}
   </div>;
