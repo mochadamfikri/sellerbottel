@@ -16,6 +16,7 @@ export default function Inventory() {
   const [manualData, setManualData] = useState({});
   const [fileName, setFileName] = useState("");
   const actionLock = useRef(false);
+  const fileInputRef = useRef(null);
 
   const selectedProduct = useMemo(() => products.find((p) => p._id === pid) || null, [products, pid]);
 
@@ -59,6 +60,8 @@ export default function Inventory() {
   };
 
   const validateFile = async (selectedFile = file, selectedPid = pid) => {
+    if (!selectedFile && fileInputRef.current?.files?.[0]) selectedFile = fileInputRef.current.files[0];
+    if (!selectedFile && fileInputRef.current?.files?.[0]) selectedFile = fileInputRef.current.files[0];
     if (!selectedPid || !selectedFile) {
       toast.error("Pilih product dan file inventory terlebih dahulu.");
       return;
@@ -182,6 +185,7 @@ export default function Inventory() {
           <input
             type="file"
             accept=".xlsx,.csv,.txt"
+            ref={fileInputRef}
             className={cls}
             onChange={(e) => {
               const selected = e.target.files?.[0] || null;
@@ -194,11 +198,11 @@ export default function Inventory() {
           <div className="flex gap-2">
             <button
               type="button"
-              disabled={!pid || !file || busy}
+              disabled={busy}
               onClick={() => {
-                if (actionLock.current || !pid || !file || busy) return;
+                if (actionLock.current || busy) return;
                 actionLock.current = true;
-                Promise.resolve(validateFile()).finally(() => { actionLock.current = false; });
+                Promise.resolve(validateFile(file, pid)).finally(() => { actionLock.current = false; });
               }}
               className="flex-1 px-4 py-2.5 rounded-lg border border-slate-700 text-slate-200 disabled:opacity-40"
             >
@@ -206,11 +210,11 @@ export default function Inventory() {
             </button>
             <button
               type="button"
-              disabled={!pid || !file || busy}
+              disabled={busy}
               onClick={() => {
-                if (actionLock.current || !pid || !file || busy) return;
+                if (actionLock.current || busy) return;
                 actionLock.current = true;
-                Promise.resolve(importFile()).finally(() => { actionLock.current = false; });
+                Promise.resolve(importFile(file, pid)).finally(() => { actionLock.current = false; });
               }}
               className="flex-1 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-40"
             >
