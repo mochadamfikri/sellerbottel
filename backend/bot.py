@@ -1874,7 +1874,21 @@ async def handle_message(message):
     lang = user.get("lang", "id")
     text = (message.get("text") or "").strip()
 
-    if text.startswith("/start"):\n        payload = text.split(" ", 1)[1].strip().lower() if " " in text else ""\n        if payload:\n            source = await db.traffic_sources.find_one({"code": payload})\n            if source:\n                await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$set": {"traffic_source_code": payload, "traffic_source_kind": source.get("kind"), "traffic_source_label": source.get("label")}})\n                user["traffic_source_code"] = payload\n        
+    if text.startswith("/start"):
+        payload = text.split(" ", 1)[1].strip().lower() if " " in text else ""
+        if payload:
+            source = await db.traffic_sources.find_one({"code": payload})
+            if source:
+                await db.bot_users.update_one(
+                    {"telegram_id": user["telegram_id"]},
+                    {"$set": {
+                        "traffic_source_code": payload,
+                        "traffic_source_kind": source.get("kind"),
+                        "traffic_source_label": source.get("label"),
+                    }},
+                )
+                user["traffic_source_code"] = payload
+
         if not await ensure_join_gate(chat_id, user):
             return
         await set_state(user["telegram_id"], None)
