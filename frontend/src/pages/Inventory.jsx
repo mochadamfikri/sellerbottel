@@ -57,14 +57,17 @@ export default function Inventory() {
     setManualData({});
   };
 
-  const validateFile = async () => {
-    if (!pid || !file) return;
+  const validateFile = async (selectedFile = file, selectedPid = pid) => {
+    if (!selectedPid || !selectedFile) {
+      toast.error("Pilih product dan file inventory terlebih dahulu.");
+      return;
+    }
     setBusy(true);
     try {
       const fd = new FormData();
       fd.append("content", "");
-      fd.append("file", file, file.name);
-      const { data } = await api.post("/admin/products/" + pid + "/inventory/validate", fd);
+      fd.append("file", selectedFile, selectedFile.name);
+      const { data } = await api.post("/admin/products/" + selectedPid + "/inventory/validate", fd);
       setPreview(data);
       const next = {};
       (data.schema || []).forEach((field) => { next[field] = ""; });
@@ -77,14 +80,17 @@ export default function Inventory() {
     }
   };
 
-  const importFile = async () => {
-    if (!pid || !file) return;
+  const importFile = async (selectedFile = file, selectedPid = pid) => {
+    if (!selectedPid || !selectedFile) {
+      toast.error("Pilih product dan file inventory terlebih dahulu.");
+      return;
+    }
     setBusy(true);
     try {
       const fd = new FormData();
       fd.append("content", "");
-      fd.append("file", file, file.name);
-      const { data } = await api.post("/admin/products/" + pid + "/inventory/import", fd);
+      fd.append("file", selectedFile, selectedFile.name);
+      const { data } = await api.post("/admin/products/" + selectedPid + "/inventory/import", fd);
       toast.success("Inventory masuk: " + data.created + " item · dilewati: " + data.skipped);
       setFile(null);
       setFileName("");
@@ -185,8 +191,24 @@ export default function Inventory() {
           />
           {fileName && <p className="text-xs text-cyan-400 mt-2 break-all">File dipilih: {fileName}</p>}
           <div className="flex gap-2">
-            <button type="button" disabled={!pid || !file || busy} onClick={validateFile} className="flex-1 px-4 py-2.5 rounded-lg border border-slate-700 text-slate-200 disabled:opacity-40">Validasi</button>
-            <button type="button" disabled={!pid || !file || busy} onClick={importFile} className="flex-1 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-40">Import Bulk</button>
+            <button
+              type="button"
+              disabled={!pid || !file || busy}
+              onPointerUp={(e) => { if (!e.currentTarget.disabled) validateFile(); }}
+              onKeyUp={(e) => { if ((e.key === "Enter" || e.key === " ") && !e.currentTarget.disabled) validateFile(); }}
+              className="flex-1 px-4 py-2.5 rounded-lg border border-slate-700 text-slate-200 disabled:opacity-40"
+            >
+              Validasi
+            </button>
+            <button
+              type="button"
+              disabled={!pid || !file || busy}
+              onPointerUp={(e) => { if (!e.currentTarget.disabled) importFile(); }}
+              onKeyUp={(e) => { if ((e.key === "Enter" || e.key === " ") && !e.currentTarget.disabled) importFile(); }}
+              className="flex-1 px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-40"
+            >
+              Import Bulk
+            </button>
           </div>
           {preview && (
             <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-300 space-y-1">
