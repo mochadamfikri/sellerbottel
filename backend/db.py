@@ -77,6 +77,26 @@ async def ensure_indexes():
         partialFilterExpression={"tx_id": {"$type": "string"}},
     )
 
+    # Promotion / CRM module.
+    await db.promo_coupons.create_index("code", unique=True)
+    await db.promo_coupon_redemptions.create_index(
+        [("coupon_id", 1), ("order_id", 1)],
+        unique=True,
+    )
+    await db.promo_coupon_redemptions.create_index([("coupon_id", 1), ("user_tid", 1)])
+    await db.prospects.create_index(
+        [("owner_account_id", 1), ("tg_user_id", 1)],
+        unique=True,
+    )
+    await db.prospects.create_index([("status", 1), ("created_at", -1)])
+    await db.tg_accounts.create_index("tg_user_id", unique=True, sparse=True)
+    await db.tg_accounts.create_index("status")
+    await db.tg_groups.create_index([("account_id", 1), ("chat_id", 1)], unique=True)
+    await db.outreach_jobs.create_index([("status", 1), ("scheduled_at", 1)])
+    await db.outreach_campaigns.create_index([("status", 1), ("created_at", -1)])
+    await db.traffic_sources.create_index("code", unique=True)
+    await db.promo_campaigns.create_index([("status", 1), ("created_at", -1)])
+
 
 async def get_settings() -> dict:
     s = await db.settings.find_one({"_id": "main"})
