@@ -16,15 +16,20 @@ export default function Promotions() {
   const [coupons, setCoupons] = useState([]);
   const [form, setForm] = useState(emptyCoupon);
   const [busy, setBusy] = useState(false);
+  const [accounts, setAccounts] = useState([]);
+  const [phone, setPhone] = useState("");
+  const [pendingAccountId, setPendingAccountId] = useState("");
+  const [otp, setOtp] = useState("");
+  const [twoFa, setTwoFa] = useState("");
 
-  const load = async () => {
+  const loadAccounts = async () => {\n    try { const r = await api.get("/admin/promo/accounts"); setAccounts(r.data); }\n    catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }\n  };\n\n  const load = async () => {
     try {
       const [s, c] = await Promise.all([
         api.get("/admin/promo/summary"),
         api.get("/admin/promo/coupons"),
       ]);
       setSummary(s.data);
-      setCoupons(c.data);
+      setCoupons(c.data);\n      await loadAccounts();
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
     }
@@ -60,7 +65,7 @@ export default function Promotions() {
     }
   };
 
-  const removeCoupon = async (id) => {
+  const startTelegramLogin = async () => {\n    if (!phone.trim()) return toast.error("Nomor Telegram wajib diisi.");\n    try { const r = await api.post("/admin/promo/accounts/login/start", { phone: phone.trim() }); setPendingAccountId(r.data.account_id || ""); toast.success("OTP dikirim ke Telegram."); }\n    catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }\n  };\n\n  const verifyTelegramLogin = async () => {\n    if (!pendingAccountId || !otp.trim()) return toast.error("OTP wajib diisi.");\n    try { const r = await api.post("/admin/promo/accounts/login/" + pendingAccountId + "/verify", { code: otp.trim(), password: twoFa || null }); if (r.data.status === "password_required") return toast.info("Akun memakai 2FA. Masukkan password 2FA lalu klik verifikasi lagi."); toast.success("Akun Telegram tersambung."); setPhone(""); setOtp(""); setTwoFa(""); setPendingAccountId(""); await loadAccounts(); }\n    catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }\n  };\n\n  const revokeTelegramAccount = async (id) => {\n    if (!window.confirm("Cabut session akun ini?")) return;\n    try { await api.delete("/admin/promo/accounts/" + id); await loadAccounts(); toast.success("Session dicabut."); } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }\n  };\n\n  const removeCoupon = async (id) => {
     if (!window.confirm("Hapus kupon ini?")) return;
     try {
       await api.delete("/admin/promo/coupons/" + id);
@@ -119,7 +124,7 @@ export default function Promotions() {
         </>
       )}
 
-      {tab === "coupons" && (
+      {tab === "accounts" && (\n        <div className="space-y-5">\n          <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5">\n            <h2 className="font-heading font-semibold">Tambah Akun Telegram</h2>\n            <p className="text-xs text-slate-500 mt-1">Session disimpan terenkripsi. Password 2FA hanya dipakai saat proses login dan tidak disimpan.</p>\n            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-4">\n              <input className={cls} placeholder="+62812..." value={phone} onChange={e => setPhone(e.target.value)} />\n              <button onClick={startTelegramLogin} className="bg-cyan-600 rounded-lg py-2 font-semibold">Kirim OTP</button>\n              <input className={cls} placeholder="OTP Telegram" value={otp} onChange={e => setOtp(e.target.value)} />\n            </div>\n            {pendingAccountId && <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">\n              <input className={cls} type="password" placeholder="Password 2FA (jika diminta)" value={twoFa} onChange={e => setTwoFa(e.target.value)} />\n              <button onClick={verifyTelegramLogin} className="bg-emerald-600 rounded-lg py-2 font-semibold">Verifikasi Login</button>\n            </div>}\n          </div>\n          <div className="bg-slate-900/80 border border-slate-800 rounded-xl overflow-x-auto">\n            <div className="px-5 py-4 border-b border-slate-800 flex justify-between"><h2 className="font-heading font-semibold">Akun Telegram</h2><button onClick={loadAccounts}><RefreshCw size={15}/></button></div>\n            <table className="w-full text-left text-sm"><thead><tr className="border-b border-slate-800 text-xs text-slate-500"><th className="px-4 py-3">Akun</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Login terakhir</th><th /></tr></thead><tbody>\n              {accounts.map(a => <tr key={a._id} className="border-b border-slate-800/70"><td className="px-4 py-3">{a.name || a.username || a.tg_user_id || "-"}</td><td className="px-4 py-3">{a.status}</td><td className="px-4 py-3 text-xs text-slate-500">{a.last_login_at || "-"}</td><td className="px-4 py-3 text-right"><button onClick={() => revokeTelegramAccount(a._id)} className="text-rose-400">Cabut</button></td></tr>)}\n            </tbody></table>\n            {!accounts.length && <p className="p-5 text-sm text-slate-500">Belum ada akun Telegram.</p>}\n          </div>\n        </div>\n      )}\n\n      {tab === "coupons" && (
         <div className="grid grid-cols-1 xl:grid-cols-[420px_1fr] gap-5">
           <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
             <div className="flex items-center gap-2"><BadgePercent size={18} className="text-cyan-400" /><h2 className="font-heading font-semibold">Buat Kupon</h2></div>
