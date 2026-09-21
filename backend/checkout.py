@@ -222,7 +222,9 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
         "delivery_error": None,
         "discount_total": sum(item["discount_total"] for item in items) + coupon_discount_amount,
         "coupon_code": coupon["code"] if coupon else None,
-        "coupon_discount": coupon_discount_amount,\n        "source_code": user.get("traffic_source_code"),\n        "source_kind": user.get("traffic_source_kind"),
+        "coupon_discount": coupon_discount_amount,
+        "source_code": user.get("traffic_source_code"),
+        "source_kind": user.get("traffic_source_kind"),
     }
     await db.purchases.insert_one(order)
 
