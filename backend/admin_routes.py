@@ -14,7 +14,6 @@ from db import db, get_settings
 from auth import get_current_admin, verify_password
 from rates import get_rate
 from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso
-from storage import put_object
 from tgapi import download_telegram_file, send_message, send_photo_bytes, tg
 from inventory import (
     validate_records,
@@ -143,14 +142,6 @@ async def list_products():
     return products
 
 
-async def _save_file(file: UploadFile):
-    ext = file.filename.split(".")[-1] if "." in file.filename else "bin"
-    path = f"tokobot/products/{uuid.uuid4()}.{ext}"
-    data = await file.read()
-    result = await put_object(path, data, file.content_type or "application/octet-stream")
-    return result["path"], file.filename
-
-
 def _validate_product_kind(value: str) -> str:
     value = (value or "digital").strip().lower()
     if value not in {"digital", "service"}:
@@ -170,6 +161,8 @@ async def create_product(
     stock: Optional[int] = Form(None),
     product_kind: str = Form("digital"),
     stock_mode: str = Form("auto"),
+    service_wait_minutes: Optional[int] = Form(None),
+    service_message_template: str = Form(""),
     file: Optional[UploadFile] = File(None),
 ):
     product_kind = _validate_product_kind(product_kind)
@@ -178,23 +171,25 @@ async def create_product(
 
     storage_path, original_filename = None, None
     if product_kind == "service":
-        if delivery_type not in {"link", "license", "file"}:
-            raise HTTPException(400, "Tipe pengiriman jasa tidak valid.")
-        if delivery_type == "file":
-            if not file:
-                raise HTTPException(400, "File wajib diupload untuk produk tipe file")
-            storage_path, original_filename = await _save_file(file)
+        wait_minutes = int(service_wait_minutes or 5)
+        if wait_minutes not in {1, 5, 10, 25, 60}:
+            raise HTTPException(400, "Waktu tunggu jasa harus 1, 5, 10, 25, atau 60 menit.")
         manual_stock = None
         stored_stock = None
         inventory_enabled = False
-        stored_delivery = delivery_type
-        stored_content = content
+        stored_delivery = "service"
+        stored_content = ""
+        message_template = (service_message_template or "Jasa {product_name} sedang dalam antrean, harap tunggu {wait_minutes} untuk dapat menghubungi admin.").strip()
+        if not message_template:
+            raise HTTPException(400, "Pesan antrean jasa wajib diisi.")
     else:
         manual_stock = None if stock_mode == "auto" else max(0, int(stock or 0))
         stored_stock = manual_stock
         inventory_enabled = True
         stored_delivery = "inventory"
         stored_content = ""
+        wait_minutes = None
+        message_template = ""
 
     prod = {
         "_id": str(uuid.uuid4()),
@@ -207,6 +202,8 @@ async def create_product(
         "content": stored_content,
         "storage_path": storage_path,
         "original_filename": original_filename,
+        "service_wait_minutes": wait_minutes,
+        "service_message_template": message_template,
         "active": active,
         "stock": stored_stock,
         "stock_mode": stock_mode if product_kind == "digital" else "unlimited",
@@ -232,6 +229,8 @@ async def update_product(
     stock: Optional[int] = Form(None),
     product_kind: str = Form("digital"),
     stock_mode: str = Form("auto"),
+    service_wait_minutes: Optional[int] = Form(None),
+    service_message_template: str = Form(""),
     file: Optional[UploadFile] = File(None),
 ):
     product = await db.products.find_one({"_id": pid})
@@ -253,23 +252,33 @@ async def update_product(
     }
 
     if product_kind == "service":
-        if delivery_type not in {"link", "license", "file"}:
-            raise HTTPException(400, "Tipe pengiriman jasa tidak valid.")
+        wait_minutes = int(service_wait_minutes or 5)
+        if wait_minutes not in {1, 5, 10, 25, 60}:
+            raise HTTPException(400, "Waktu tunggu jasa harus 1, 5, 10, 25, atau 60 menit.")
+        message_template = (service_message_template or "Jasa {product_name} sedang dalam antrean, harap tunggu {wait_minutes} untuk dapat menghubungi admin.").strip()
+        if not message_template:
+            raise HTTPException(400, "Pesan antrean jasa wajib diisi.")
         updates.update({
-            "delivery_type": delivery_type,
-            "content": content,
+            "delivery_type": "service",
+            "content": "",
+            "service_wait_minutes": wait_minutes,
+            "service_message_template": message_template,
+            "storage_path": None,
+            "original_filename": None,
             "stock": None,
             "stock_mode": "unlimited",
             "manual_stock": None,
             "inventory_enabled": False,
         })
-        if file:
-            updates["storage_path"], updates["original_filename"] = await _save_file(file)
     else:
         manual_stock = None if stock_mode == "auto" else max(0, int(stock or 0))
         updates.update({
             "delivery_type": "inventory",
             "content": "",
+            "service_wait_minutes": None,
+            "service_message_template": "",
+            "storage_path": None,
+            "original_filename": None,
             "stock": manual_stock,
             "stock_mode": stock_mode,
             "manual_stock": manual_stock,
@@ -295,13 +304,79 @@ def _parse_num(v, idr: bool):
     return float(s)
 
 
+@router.get("/products/import-template")
+async def product_import_template():
+    try:
+        from openpyxl import Workbook
+        from openpyxl.worksheet.datavalidation import DataValidation
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Products"
+        headers = [
+            "Nama Product",
+            "Deskripsi",
+            "Harga USD",
+            "Harga IDR",
+            "Jenis Product",
+            "Waktu Tunggu (menit)",
+            "Pesan Jasa",
+        ]
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.font = cell.font.copy(bold=True)
+        type_validation = DataValidation(
+            type="list",
+            formula1='"A. Produk Digital / sudah ada datanya,B. Produk Jasa"',
+            allow_blank=False,
+        )
+        wait_validation = DataValidation(
+            type="list",
+            formula1='"1,5,10,25,60"',
+            allow_blank=True,
+        )
+        ws.add_data_validation(type_validation)
+        ws.add_data_validation(wait_validation)
+        type_validation.add("E2:E1000")
+        wait_validation.add("F2:F1000")
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = "A1:G1000"
+        widths = [28, 42, 16, 18, 34, 24, 60]
+        for i, width in enumerate(widths, 1):
+            ws.column_dimensions[chr(64 + i)].width = width
+
+        info = wb.create_sheet("Petunjuk")
+        info_rows = [
+            ["Kolom", "Keterangan"],
+            ["Nama Product", "Wajib."],
+            ["Deskripsi", "Opsional."],
+            ["Harga USD", "Wajib jika Harga IDR kosong."],
+            ["Harga IDR", "Opsional. Jika diisi dan USD kosong, USD dihitung otomatis dari kurs."],
+            ["Jenis Product", "Wajib: A. Produk Digital / sudah ada datanya atau B. Produk Jasa."],
+            ["Waktu Tunggu (menit)", "Untuk B saja: pilih 1, 5, 10, 25, atau 60. Untuk A diabaikan."],
+            ["Pesan Jasa", "Untuk B saja. Placeholder yang tersedia: {product_name} dan {wait_minutes}."],
+        ]
+        for row in info_rows:
+            info.append(row)
+        info.freeze_panes = "A2"
+        info.column_dimensions["A"].width = 28
+        info.column_dimensions["B"].width = 90
+
+        output = io.BytesIO()
+        wb.save(output)
+        return Response(
+            content=output.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": 'attachment; filename="template-bulk-product.xlsx"'},
+        )
+    except Exception as exc:
+        logger.exception("Gagal membuat template bulk product")
+        raise HTTPException(500, f"Gagal membuat template Excel: {type(exc).__name__}")
+
+
 @router.post("/products/import")
 async def import_products(
-    currency: str = Form("IDR"),
-    product_kind: str = Form("digital"),
     file: UploadFile = File(...),
 ):
-    product_kind = _validate_product_kind(product_kind)
     data = await file.read()
     fn = (file.filename or "").lower()
     rows = []
@@ -312,53 +387,122 @@ async def import_products(
         delim = "|" if "|" in first_line else ("," if "," in first_line else ";")
         rows = list(csv.reader(io.StringIO(text_data), delimiter=delim))
     else:
-        import openpyxl
         try:
+            import openpyxl
             wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
-        except Exception:
-            raise HTTPException(400, "File tidak valid. Gunakan .xlsx atau .csv")
-        rows = [list(r) for r in wb.active.iter_rows(values_only=True)]
+            rows = [list(r) for r in wb.active.iter_rows(values_only=True)]
+        except Exception as exc:
+            raise HTTPException(400, f"File tidak valid. Gunakan .xlsx atau .csv ({type(exc).__name__}).")
+
+    rows = [row for row in rows if any(str(v or "").strip() for v in row)]
+    if not rows:
+        raise HTTPException(400, "File bulk product kosong.")
+
+    headers = [str(v or "").strip() for v in rows[0]]
+    normalized = {re.sub(r"\s+", " ", h).strip().casefold(): i for i, h in enumerate(headers)}
+    aliases = {
+        "name": ["nama product", "nama produk", "product", "produk", "name"],
+        "description": ["deskripsi", "description", "desc"],
+        "price_usd": ["harga usd", "price usd", "usd"],
+        "price_idr": ["harga idr", "price idr", "idr"],
+        "kind": ["jenis product", "jenis produk", "product kind", "tipe product", "tipe produk"],
+        "wait": ["waktu tunggu (menit)", "waktu tunggu", "wait minutes", "service wait minutes"],
+        "message": ["pesan jasa", "pesan antrean jasa", "service message", "service message template"],
+    }
+
+    def col_index(key):
+        for alias in aliases[key]:
+            idx = normalized.get(alias.casefold())
+            if idx is not None:
+                return idx
+        return None
+
+    name_i = col_index("name")
+    kind_i = col_index("kind")
+    usd_i = col_index("price_usd")
+    idr_i = col_index("price_idr")
+    if name_i is None or kind_i is None:
+        raise HTTPException(400, "Header wajib: Nama Product dan Jenis Product.")
+    if usd_i is None and idr_i is None:
+        raise HTTPException(400, "Header wajib: Harga USD atau Harga IDR.")
 
     rate = await get_rate()
-    idr = currency == "IDR"
-    docs, skipped = [], 0
-    for row_index, row in enumerate(rows):
-        if row_index == 0 and row and str(row[0] or "").strip().lower() in {"product", "produk", "nama", "nama produk"}:
-            continue
-        if not row or row[0] is None or not str(row[0]).strip():
+    docs, skipped, errors = [], 0, []
+    default_service_message = "Jasa {product_name} sedang dalam antrean, harap tunggu {wait_minutes} untuk dapat menghubungi admin."
+
+    for row_index, row in enumerate(rows[1:], start=2):
+        def cell(idx):
+            return str(row[idx]).strip() if idx is not None and idx < len(row) and row[idx] is not None else ""
+
+        name = cell(name_i)
+        kind_raw = cell(kind_i)
+        if not name:
             skipped += 1
             continue
+
+        kind_key = kind_raw.casefold()
+        if kind_key.startswith("a.") or "digital" in kind_key or "data" in kind_key:
+            product_kind = "digital"
+        elif kind_key.startswith("b.") or "jasa" in kind_key or "service" in kind_key:
+            product_kind = "service"
+        else:
+            skipped += 1
+            errors.append(f"Baris {row_index}: Jenis Product harus A. Produk Digital / sudah ada datanya atau B. Produk Jasa.")
+            continue
+
         try:
-            stock = int(_parse_num(row[1], False))
-            price = _parse_num(row[2], idr)
-        except (ValueError, TypeError, IndexError):
+            usd_text = cell(usd_i)
+            idr_text = cell(idr_i)
+            price_usd = _parse_num(usd_text, False) if usd_text else 0.0
+            price_idr = _parse_num(idr_text, True) if idr_text else None
+            if price_usd <= 0 and (price_idr is None or price_idr <= 0):
+                raise ValueError("harga kosong")
+            if price_usd <= 0:
+                price_usd = round(price_idr / rate, 2)
+            if price_idr is not None and price_idr <= 0:
+                price_idr = None
+        except (ValueError, TypeError):
             skipped += 1
+            errors.append(f"Baris {row_index}: harga tidak valid.")
             continue
-        desc = str(row[3]).strip() if len(row) > 3 and row[3] is not None else ""
-        is_digital = product_kind == "digital"
+
+        description = cell(col_index("description"))
+        wait_minutes = None
+        service_message = ""
+        if product_kind == "service":
+            wait_text = cell(col_index("wait"))
+            wait_minutes = int(float(wait_text)) if wait_text else 5
+            if wait_minutes not in {1, 5, 10, 25, 60}:
+                skipped += 1
+                errors.append(f"Baris {row_index}: Waktu Tunggu harus 1, 5, 10, 25, atau 60 menit.")
+                continue
+            service_message = cell(col_index("message")) or default_service_message
+
         docs.append({
             "_id": str(uuid.uuid4()),
-            "name": str(row[0]).strip(),
-            "description": desc,
-            "price_usd": round(price / rate, 2) if idr else price,
-            "price_idr": price if idr else None,
+            "name": name,
+            "description": description,
+            "price_usd": round(price_usd, 2),
+            "price_idr": price_idr,
             "product_kind": product_kind,
-            "delivery_type": "inventory" if is_digital else "link",
+            "delivery_type": "service" if product_kind == "service" else "inventory",
             "content": "",
             "storage_path": None,
             "original_filename": None,
+            "service_wait_minutes": wait_minutes,
+            "service_message_template": service_message,
             "active": True,
-            "stock": stock if is_digital else None,
-            "stock_mode": "manual" if is_digital else "unlimited",
-            "manual_stock": stock if is_digital else None,
-            "inventory_enabled": is_digital,
+            "stock": None,
+            "stock_mode": "unlimited" if product_kind == "service" else "auto",
+            "manual_stock": None,
+            "inventory_enabled": product_kind == "digital",
             "inventory_schema": [],
             "created_at": now_iso(),
         })
+
     if docs:
         await db.products.insert_many(docs)
-    return {"imported": len(docs), "skipped": skipped}
-
+    return {"imported": len(docs), "skipped": skipped, "errors": errors[:20]}
 
 def _stringify_cell(value):
     if value is None:

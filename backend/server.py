@@ -16,7 +16,7 @@ from admin_routes import router as admin_router
 from admin_user_routes import router as admin_user_router
 from error_handlers import register_error_handlers
 from inventory import encryption_status
-from bot import process_update
+from bot import process_update, resume_service_waiters
 from i18n import load_overrides
 from tgapi import tg
 from gopay_provider import run_gopay_monitor
@@ -96,6 +96,8 @@ async def startup():
     if os.environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"}:
         app.state.gopay_stop = asyncio.Event()
         app.state.gopay_task = asyncio.create_task(run_gopay_monitor(app.state.gopay_stop))
+
+    await resume_service_waiters()
 
     if base and os.environ.get("TELEGRAM_TOKEN"):
         try:
