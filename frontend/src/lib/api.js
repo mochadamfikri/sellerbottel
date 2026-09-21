@@ -7,9 +7,9 @@ const api = axios.create({
 
 export async function postMultipart(path, formData) {
   const base = api.defaults.baseURL || "/api";
-  const url = /^https?:\\/\\//i.test(path)
+  const url = path.startsWith("http://") || path.startsWith("https://")
     ? path
-    : base.replace(/\\/$/, "") + (path.startsWith("/") ? path : "/" + path);
+    : base.replace(/\/$/, "") + (path.startsWith("/") ? path : "/" + path);
   const response = await fetch(url, {
     method: "POST",
     body: formData,
