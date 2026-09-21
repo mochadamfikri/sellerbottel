@@ -13,6 +13,7 @@ from starlette.middleware.cors import CORSMiddleware
 from db import client, db, ensure_settings, ensure_indexes
 from auth import router as auth_router, seed_admin
 from admin_routes import router as admin_router
+from admin_user_routes import router as admin_user_router
 from bot import process_update
 from i18n import load_overrides
 from tgapi import tg
@@ -57,6 +58,7 @@ async def telegram_webhook(request: Request):
 
 app.include_router(api_router)
 app.include_router(auth_router)
+app.include_router(admin_user_router)
 app.include_router(admin_router)
 
 app.add_middleware(
