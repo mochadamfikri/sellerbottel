@@ -250,6 +250,9 @@ async def show_cart(chat_id, user):
             {"text": "➕", "callback_data": f"qtyinc:{item['pid']}"},
             {"text": "🗑", "callback_data": f"cartrm:{item['pid']}"},
         ])
+        rows.append([
+            {"text": "🔢 Masukkan jumlah sendiri", "callback_data": f"qtycustom:{item['pid']}"},
+        ])
     if len(valid_cart) != len(cart):
         await save_cart(user["telegram_id"], valid_cart)
     rows.append([{"text": t(lang, "btn_checkout", total=fmt_amount(total, user["currency"])), "callback_data": "checkout"}])
@@ -276,6 +279,142 @@ async def change_qty(chat_id, user, pid, delta):
     await save_cart(user["telegram_id"], cart)
     user["cart"] = cart
     await show_cart(chat_id, user)
+
+
+async def start_custom_quantity(chat_id, user, pid):
+    lang = user.get("lang", "id")
+    product = await db.products.find_one({"_id": pid, "active": True})
+    if not product:
+        await send_message(chat_id, "❌ Product tidak ditemukan atau sudah tidak aktif.", kb=back_kb(lang))
+        return
+
+    cart = norm_cart(user.get("cart"))
+    if not any(item["pid"] == pid for item in cart):
+        await send_message(chat_id, "⚠️ Product tersebut tidak ada di keranjang.", kb={"inline_keyboard": [
+            [{"text": "🛒 Kembali ke Keranjang", "callback_data": "menu:cart"}],
+            [{"text": "🏠 Menu", "callback_data": "menu:main"}],
+        ]})
+        return
+
+    price = await product_price(product, user["currency"])
+    stock = await stock_for(product)
+    stock_text = "♾️ Unlimited" if stock is None else f"📦 Tersedia: {int(stock)}"
+
+    await set_state(
+        user["telegram_id"],
+        "cart_custom_qty",
+        {"pid": pid},
+    )
+    await send_message(
+        chat_id,
+        f"🔢 <b>Masukkan Jumlah Pembelian</b>\n\n"
+        f"📦 Product: <b>{escape(product['name'])}</b>\n"
+        f"💰 Harga satuan: <b>{fmt_amount(price, user['currency'])}</b>\n"
+        f"{stock_text}\n\n"
+        "Silakan kirim <b>angka total pembelian</b> yang diinginkan.\n"
+        "Contoh: <code>15</code>",
+        kb={"inline_keyboard": [
+            [{"text": "❌ Batal", "callback_data": "menu:cart"}],
+        ]},
+    )
+
+
+async def handle_custom_quantity(chat_id, user, text):
+    lang = user.get("lang", "id")
+    data = user.get("state_data") or {}
+    pid = str(data.get("pid") or "").strip()
+
+    if not pid:
+        await set_state(user["telegram_id"], None)
+        await show_cart(chat_id, user)
+        return
+
+    if not text.isdigit():
+        await send_message(
+            chat_id,
+            "❗ <b>Input tidak valid.</b>\n\nSilakan masukkan angka bulat saja.\nContoh: <code>15</code>",
+            kb={"inline_keyboard": [
+                [{"text": "❌ Batal", "callback_data": "menu:cart"}],
+            ]},
+        )
+        return
+
+    qty = int(text)
+    if qty < 1:
+        await send_message(chat_id, "❗ Jumlah minimal adalah <b>1</b>.", kb={"inline_keyboard": [
+            [{"text": "❌ Batal", "callback_data": "menu:cart"}],
+        ]})
+        return
+
+    if qty > 10000:
+        await send_message(
+            chat_id,
+            "⚠️ Jumlah terlalu besar. Maksimal <b>10.000</b> item per input.",
+            kb={"inline_keyboard": [
+                [{"text": "❌ Batal", "callback_data": "menu:cart"}],
+            ]},
+        )
+        return
+
+    product = await db.products.find_one({"_id": pid, "active": True})
+    if not product:
+        await set_state(user["telegram_id"], None)
+        await send_message(chat_id, "❌ Product sudah tidak tersedia.", kb={"inline_keyboard": [
+            [{"text": "🛒 Keranjang", "callback_data": "menu:cart"}],
+        ]})
+        return
+
+    stock = await stock_for(product)
+    if stock is not None and qty > stock:
+        await send_message(
+            chat_id,
+            f"⚠️ <b>Jumlah melebihi stok.</b>\n\n"
+            f"Product: <b>{escape(product['name'])}</b>\n"
+            f"📦 Stok tersedia: <b>{int(stock)}</b>\n"
+            f"🔢 Anda memasukkan: <b>{qty}</b>\n\n"
+            "Silakan masukkan jumlah yang tidak melebihi stok.",
+            kb={"inline_keyboard": [
+                [{"text": "❌ Batal", "callback_data": "menu:cart"}],
+            ]},
+        )
+        return
+
+    pricing = await price_for_product(product, user["currency"], qty)
+    unit_price = pricing["unit_price"]
+    total = unit_price * qty
+
+    cart = norm_cart(user.get("cart"))
+    updated = False
+    for item in cart:
+        if item["pid"] == pid:
+            item["qty"] = qty
+            updated = True
+            break
+    if not updated:
+        cart.append({"pid": pid, "qty": qty})
+    await save_cart(user["telegram_id"], cart)
+    user["cart"] = cart
+
+    await set_state(
+        user["telegram_id"],
+        "cart_custom_confirm",
+        {"pid": pid, "qty": qty},
+    )
+
+    await send_message(
+        chat_id,
+        "🛒 <b>Konfirmasi Pembelian</b>\n\n"
+        f"📦 Anda akan membeli product: <b>{escape(product['name'])}</b>\n"
+        f"💰 Harga satuan: <b>{fmt_amount(unit_price, user['currency'])}</b>\n"
+        f"🔢 Total pesanan: <b>{qty}</b>\n"
+        f"🧮 Perhitungan: <b>{qty} × {fmt_amount(unit_price, user['currency'])}</b>\n"
+        f"💵 <b>Total harga: {fmt_amount(total, user['currency'])}</b>\n\n"
+        "✅ Silakan klik <b>Bayar</b> untuk melanjutkan proses pembayaran dan pengiriman.",
+        kb={"inline_keyboard": [
+            [{"text": f"💳 Bayar {fmt_amount(total, user['currency'])}", "callback_data": f"custompay:{pid}:{qty}"}],
+            [{"text": "✏️ Ubah Jumlah", "callback_data": f"qtycustom:{pid}"}, {"text": "🛒 Keranjang", "callback_data": "menu:cart"}],
+        ]},
+    )
 
 
 async def add_to_cart(chat_id, user, pid):
@@ -694,10 +833,10 @@ async def resume_service_waiters():
             )
 
 
-async def _do_checkout(chat_id, user, cart_items):
+async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
     lang = user.get("lang", "id")
 
-    result = await execute_checkout(user, cart_items)
+    result = await execute_checkout(user, cart_items, preserve_cart=preserve_cart)
     if not result["ok"]:
         if result["error"] == "stock":
             p = result["product"]
@@ -835,14 +974,14 @@ async def _do_checkout(chat_id, user, cart_items):
     )
 
 
-async def do_checkout(chat_id, user, cart_items):
+async def do_checkout(chat_id, user, cart_items, preserve_cart=False):
     lock = _checkout_lock(user["telegram_id"])
     if lock.locked():
         await send_message(chat_id, t(user.get("lang", "id"), "checkout_in_progress"), kb=back_kb(user.get("lang", "id")))
         return
 
     async with lock:
-        return await _do_checkout(chat_id, user, cart_items)
+        return await _do_checkout(chat_id, user, cart_items, preserve_cart=preserve_cart)
 
 
 # ============ DEPOSIT ============
@@ -1609,6 +1748,19 @@ async def handle_callback(cb):
         await do_checkout(chat_id, user, [{"pid": data.split(":", 1)[1], "qty": 1}])
     elif data.startswith("cartadd:"):
         await add_to_cart(chat_id, user, data.split(":", 1)[1])
+    elif data.startswith("qtycustom:"):
+        await start_custom_quantity(chat_id, user, data.split(":", 1)[1])
+    elif data.startswith("custompay:"):
+        _, pid, qty_raw = data.split(":", 2)
+        try:
+            qty = int(qty_raw)
+        except ValueError:
+            await send_message(chat_id, "❌ Jumlah pembelian tidak valid.", kb={"inline_keyboard": [
+                [{"text": "🛒 Keranjang", "callback_data": "menu:cart"}],
+            ]})
+            return
+        await set_state(user["telegram_id"], None)
+        await do_checkout(chat_id, user, [{"pid": pid, "qty": qty}], preserve_cart=True)
     elif data == "menu:cart":
         await show_cart(chat_id, user)
     elif data.startswith("qtyinc:"):
@@ -1720,7 +1872,17 @@ async def handle_message(message):
         return
 
     state = user.get("state")
-    if state == "dep_usd_amount":
+    if state == "cart_custom_qty":
+        await handle_custom_quantity(chat_id, user, text)
+    elif state == "cart_custom_confirm":
+        await send_message(
+            chat_id,
+            "🛒 Pesanan masih menunggu konfirmasi.\n\nSilakan gunakan tombol <b>Bayar</b> atau <b>Ubah Jumlah</b> pada pesan sebelumnya.",
+            kb={"inline_keyboard": [
+                [{"text": "🛒 Kembali ke Keranjang", "callback_data": "menu:cart"}],
+            ]},
+        )
+    elif state == "dep_usd_amount":
         await handle_dep_usd_amount(chat_id, user, text)
     elif state == "dep_usd_wallet":
         await handle_dep_usd_wallet(chat_id, user, text)
@@ -1735,7 +1897,7 @@ async def handle_message(message):
     else:
         await show_main_menu(chat_id, user)
 
-    if message_id and state in {"dep_usd_amount", "dep_usd_wallet", "dep_usd_proof", "dep_idr_amount", "dep_idr_confirm", "dep_idr_proof"}:
+    if message_id and state in {"cart_custom_qty", "dep_usd_amount", "dep_usd_wallet", "dep_usd_proof", "dep_idr_amount", "dep_idr_confirm", "dep_idr_proof"}:
         try:
             await delete_message(chat_id, message_id)
         except Exception:
