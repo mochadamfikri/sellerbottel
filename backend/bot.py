@@ -542,6 +542,7 @@ async def queue_service_delivery(chat_id: int, user: dict, product: dict, order:
                 "status": "service_waiting",
                 "service_waiting": True,
                 "service_ready_at": ready_at,
+                "service_message_id": message_id,
             },
             "$inc": {"service_pending_count": 1},
         },
@@ -1203,7 +1204,7 @@ async def show_history(chat_id, user):
         return
 
     status_labels = {
-        "pending": "⏳ Pending", "approved": "✅ Disetujui", "rejected": "❌ Ditolak",
+        "pending": "⏳ Pending", "service_waiting": "⏳ Antrean Jasa", "approved": "✅ Disetujui", "rejected": "❌ Ditolak",
         "cancelled": "🚫 Dibatalkan", "expired": "⌛ Kedaluwarsa", "paid": "💳 Dibayar",
         "processing": "⚙️ Diproses", "delivered": "✅ Selesai", "delivery_failed": "⚠️ Gagal Kirim",
         "failed": "❌ Gagal", "refunded": "↩️ Refund",
@@ -1446,6 +1447,9 @@ async def handle_callback(cb):
         return
 
     if not await ensure_join_gate(chat_id, user):
+        return
+
+    if data.startswith("service:wait:"):
         return
 
     if data.startswith("setlang:"):
