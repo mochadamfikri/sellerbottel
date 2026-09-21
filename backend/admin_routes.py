@@ -142,14 +142,6 @@ async def list_products():
     return products
 
 
-async def _save_file(file: UploadFile):
-    ext = file.filename.split(".")[-1] if "." in file.filename else "bin"
-    path = f"tokobot/products/{uuid.uuid4()}.{ext}"
-    data = await file.read()
-    result = await put_object(path, data, file.content_type or "application/octet-stream")
-    return result["path"], file.filename
-
-
 def _validate_product_kind(value: str) -> str:
     value = (value or "digital").strip().lower()
     if value not in {"digital", "service"}:
@@ -407,7 +399,7 @@ async def import_products(
         raise HTTPException(400, "File bulk product kosong.")
 
     headers = [str(v or "").strip() for v in rows[0]]
-    normalized = {re.sub(r"\\s+", " ", h).strip().casefold(): i for i, h in enumerate(headers)}
+    normalized = {re.sub(r"\s+", " ", h).strip().casefold(): i for i, h in enumerate(headers)}
     aliases = {
         "name": ["nama product", "nama produk", "product", "produk", "name"],
         "description": ["deskripsi", "description", "desc"],
