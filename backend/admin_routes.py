@@ -582,7 +582,7 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
         canonical_records = []
         for record in records:
             canonical_records.append({
-                expected_key: record.get(received[expected_key], "")
+                expected[expected_key]: record.get(received[expected_key], "")
                 for expected_key in expected
             })
         records = canonical_records
