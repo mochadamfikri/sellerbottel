@@ -568,8 +568,8 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
     # regardless of column order/case/extra whitespace. The records are
     # remapped to the canonical product schema before validation/import.
     if schema:
-        expected = {re.sub(r"\\s+", " ", field).strip().casefold(): field for field in schema}
-        received = {re.sub(r"\\s+", " ", field).strip().casefold(): field for field in schema_from_file}
+        expected = {re.sub(r"\s+", " ", field).strip().casefold(): field for field in schema}
+        received = {re.sub(r"\s+", " ", field).strip().casefold(): field for field in schema_from_file}
         if set(expected) != set(received):
             expected_text = ", ".join(schema)
             received_text = ", ".join(schema_from_file)
