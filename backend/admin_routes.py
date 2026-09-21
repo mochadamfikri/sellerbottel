@@ -564,11 +564,30 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
             else:
                 raise HTTPException(400, f"Input manual tidak cocok dengan schema inventory ({len(schema_from_file)} kolom).")
 
-    if schema and schema != schema_from_file:
-        raise HTTPException(
-            400,
-            "Header inventory tidak cocok dengan schema product ini. Gunakan header yang sama seperti upload sebelumnya."
-        )
+    # Once a product already has a schema, accept the same field names
+    # regardless of column order/case/extra whitespace. The records are
+    # remapped to the canonical product schema before validation/import.
+    if schema:
+        expected = {re.sub(r"\s+", " ", field).strip().casefold(): field for field in schema}
+        received = {re.sub(r"\s+", " ", field).strip().casefold(): field for field in schema_from_file}
+        if set(expected) != set(received):
+            expected_text = ", ".join(schema)
+            received_text = ", ".join(schema_from_file)
+            raise HTTPException(
+                400,
+                "Header inventory tidak cocok dengan schema product ini. "
+                f"Schema wajib: [{expected_text}]. Header file: [{received_text}]. "
+                "Gunakan nama field yang sama; urutan kolom boleh berbeda."
+            )
+        canonical_records = []
+        for record in records:
+            canonical_records.append({
+                expected[expected_key]: record.get(received[expected_key], "")
+                for expected_key in expected
+            })
+        records = canonical_records
+        schema_from_file = schema
+
     return schema_from_file, records
 
 
@@ -587,6 +606,13 @@ async def validate_inventory(
     schema, records = await _parse_inventory_input(file, content, product)
     try:
         check = await validate_records(pid, records, schema)
+        # Validation is the point where a product's first inventory file
+        # establishes its schema. Existing schemas are never overwritten.
+        if not product.get("inventory_schema") and schema:
+            await db.products.update_one(
+                {"_id": pid},
+                {"$set": {"inventory_schema": schema, "updated_at": now_iso()}},
+            )
     except InventoryError:
         raise
     except Exception as exc:

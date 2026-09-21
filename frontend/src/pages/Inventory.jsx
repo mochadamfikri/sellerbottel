@@ -61,7 +61,6 @@ export default function Inventory() {
 
   const validateFile = async (selectedFile = file, selectedPid = pid) => {
     if (!selectedFile && fileInputRef.current?.files?.[0]) selectedFile = fileInputRef.current.files[0];
-    if (!selectedFile && fileInputRef.current?.files?.[0]) selectedFile = fileInputRef.current.files[0];
     if (!selectedPid || !selectedFile) {
       toast.error("Pilih product dan file inventory terlebih dahulu.");
       return;
@@ -85,6 +84,7 @@ export default function Inventory() {
   };
 
   const importFile = async (selectedFile = file, selectedPid = pid) => {
+    if (!selectedFile && fileInputRef.current?.files?.[0]) selectedFile = fileInputRef.current.files[0];
     if (!selectedPid || !selectedFile) {
       toast.error("Pilih product dan file inventory terlebih dahulu.");
       return;
@@ -172,7 +172,7 @@ export default function Inventory() {
             <div className="flex items-center gap-2 text-slate-200 font-semibold"><Database size={16} className="text-cyan-400" /> {selectedProduct.name}</div>
             <p className="text-xs text-slate-500 mt-1">Semua upload dan input manual di halaman ini hanya masuk ke product yang sedang dipilih.</p>
           </div>
-          <div className="text-xs text-slate-500">Schema: <span className="text-slate-300 font-mono">{(meta.schema || []).join(" · ") || "Belum ada"}</span></div>
+          <div className="text-xs text-slate-500">Schema file wajib: <span className="text-cyan-300 font-mono">{(meta.schema || []).join(" · ") || "Belum ditentukan — header file valid pertama akan menjadi schema product"}</span></div>
         </div>
       )}
 
@@ -180,7 +180,7 @@ export default function Inventory() {
         <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
           <div>
             <h2 className="font-heading font-semibold flex items-center gap-2"><Upload size={17} className="text-emerald-400" /> Upload Bulk Inventory</h2>
-            <p className="text-xs text-slate-500 mt-1">Pilih product dulu, lalu upload file. XLSX/CSV memakai baris pertama sebagai nama field.</p>
+            <p className="text-xs text-slate-500 mt-1">Pilih product dulu, lalu upload file. Header file harus mengikuti schema product yang ditampilkan di atas.</p>
           </div>
           <input
             type="file"

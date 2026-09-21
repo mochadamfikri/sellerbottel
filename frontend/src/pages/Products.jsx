@@ -260,6 +260,7 @@ export default function Products() {
               <th className="px-4 py-3">Harga USD</th>
               <th className="px-4 py-3">Harga IDR</th>
               <th className="px-4 py-3">Stok</th>
+              <th className="px-4 py-3">Schema Inventory</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3 text-right">Aksi</th>
             </tr>
@@ -280,6 +281,20 @@ export default function Products() {
                 <td className="px-4 py-3 font-mono">{fmtUSD(p.price_usd)}</td>
                 <td className="px-4 py-3 font-mono text-slate-400">{p.price_idr ? fmtIDR(p.price_idr) : <span className="text-slate-600 text-xs">auto kurs</span>}</td>
                 <td className="px-4 py-3">{renderStock(p)}</td>
+                <td className="px-4 py-3 min-w-[220px]">
+                  {p.product_kind === "service" ? (
+                    <span className="text-xs text-cyan-400">Tidak menggunakan inventory</span>
+                  ) : (
+                    <div>
+                      <div className="text-xs text-slate-300 font-mono break-words">
+                        {(p.inventory_schema || []).length ? p.inventory_schema.join(" · ") : "Belum ditentukan"}
+                      </div>
+                      <div className="text-[10px] text-slate-600 mt-1">
+                        {(p.inventory_schema || []).length ? "Header file wajib mengikuti schema ini." : "Validasi upload pertama akan menetapkan schema."}
+                      </div>
+                    </div>
+                  )}
+                </td>
                 <td className="px-4 py-3">
                   <Switch checked={p.active !== false} onCheckedChange={() => toggle(p)} />
                 </td>
@@ -301,7 +316,7 @@ export default function Products() {
                 </td>
               </tr>
             ))}
-            {!products.length && <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-500">Belum ada produk.</td></tr>}
+            {!products.length && <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-500">Belum ada produk.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -343,9 +358,14 @@ export default function Products() {
         <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-lg">
           <DialogHeader><DialogTitle>Input Data — {inventoryProduct?.name || "Inventory"}</DialogTitle></DialogHeader>
           <div className="space-y-4">
-            <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-              <p className="text-sm text-slate-300">Upload bulk inventory untuk product ini.</p>
-              <p className="text-xs text-slate-500 mt-1">Baris pertama = header field data. Contoh Gmail: email, password, recovery_email, 2fa.</p>
+            <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3">
+              <p className="text-xs text-slate-400">Schema file yang wajib digunakan</p>
+              <p className="text-sm text-cyan-300 font-mono break-words mt-1">
+                {(inventoryProduct?.inventory_schema || []).length
+                  ? inventoryProduct.inventory_schema.join(" · ")
+                  : "Belum ditentukan — header file valid pertama akan menjadi schema product"}
+              </p>
+              <p className="text-[11px] text-slate-500 mt-1">Nama field harus sama. Urutan kolom boleh berbeda.</p>
             </div>
             <div>
               <label className="text-xs text-slate-400">File Data / Inventory</label>
