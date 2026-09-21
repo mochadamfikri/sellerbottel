@@ -1772,8 +1772,7 @@ async def _build_product_broadcast():
         "🛒 Silakan order melalui bot:",
         "🤖 @Idse_MarketBot",
     ]
-    return "
-".join(lines).strip()
+    return "\n".join(lines).strip()
 
 
 @router.get("/broadcasts/channel-product-preview")
