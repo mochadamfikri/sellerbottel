@@ -13,6 +13,7 @@ from i18n import t, message_catalog, set_override, reset_override, STRINGS
 from db import db, get_settings
 from auth import get_current_admin, verify_password
 from rates import get_rate
+from pricing import price_for_product
 from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso
 from tgapi import download_telegram_file, send_message, send_photo_bytes, tg
 from html import escape
@@ -1757,21 +1758,54 @@ async def _build_product_broadcast():
                 digital_lines.append(f"▫️ <b>{escape(str(p.get('name') or 'Product'))}</b> → <b>{stock}</b>")
         else:
             service_lines.append(f"▫️ <b>{escape(str(p.get('name') or 'Jasa'))}</b>")
-    lines = [
-        "📢 <b>PRODUCT UPDATE — IDSE NETWORK CONNECT HUB</b>",
-        "",
-    ]
+    lines = ["📢 <b>PRODUCT UPDATE — IDSE NETWORK CONNECT HUB</b>", ""]
     if digital_lines:
         lines += ["💻 <b>PRODUCT DIGITAL TERSEDIA • AVAILABLE STOCK</b>", *digital_lines, ""]
     if service_lines:
         lines += ["🛠️ <b>PRODUCT JASA TERSEDIA</b>", "✨ Tersedia sesuai permintaan • Unlimited", *service_lines, ""]
     if not digital_lines and not service_lines:
         lines += ["⚠️ <b>Saat ini belum ada product aktif yang tersedia.</b>", ""]
-    lines += [
-        "🚀 <b>Siap diproses • Cepat • Profesional</b>",
-        "🛒 Silakan order melalui bot:",
-        "🤖 @Idse_MarketBot",
-    ]
+    lines += ["🚀 <b>Siap diproses • Cepat • Profesional</b>", "🛒 Silakan order melalui bot:", "🤖 @Idse_MarketBot"]
+    return "\n".join(lines).strip()
+
+
+async def _build_auto_broadcast(content: str):
+    content = (content or "both").strip().lower()
+    if content not in {"discount", "stock", "both"}:
+        raise HTTPException(400, "Isi broadcast otomatis harus discount, stock, atau both.")
+
+    products = await db.products.find({"active": True}).sort("created_at", 1).to_list(500)
+    discount_lines = []
+    stock_lines = []
+
+    for p in products:
+        name = escape(str(p.get("name") or "Product"))
+        pricing = await price_for_product(p, "USD", 1)
+        has_discount = float(pricing.get("discount_per_unit") or 0) > 0
+        if has_discount:
+            normal = fmt_amount(pricing["base_unit_price"], "USD")
+            sale = fmt_amount(pricing["unit_price"], "USD")
+            saved = fmt_amount(pricing["discount_per_unit"], "USD")
+            discount_lines.append(f"▫️ <b>{name}</b> → {normal} ➜ <b>{sale}</b> (hemat {saved}/unit)")
+
+        kind = _normalized_product_kind(p)
+        if kind == "digital":
+            stock = await available_count(p["_id"])
+            if stock > 0:
+                stock_lines.append(f"▫️ <b>{name}</b> → <b>{stock}</b>")
+        else:
+            stock_lines.append(f"▫️ <b>{name}</b> → <b>Unlimited</b>")
+
+    lines = ["📢 <b>PROMO & STOCK UPDATE — IDSE NETWORK CONNECT HUB</b>", ""]
+    if content in {"discount", "both"}:
+        lines += ["🏷️ <b>HARGA DISKON TERSEDIA</b>"]
+        lines += discount_lines or ["▫️ Belum ada product dengan harga diskon aktif."]
+        lines.append("")
+    if content in {"stock", "both"}:
+        lines += ["📦 <b>STOCK TERSEDIA</b>"]
+        lines += stock_lines or ["▫️ Saat ini belum ada stock tersedia."]
+        lines.append("")
+    lines += ["🚀 <b>Siap diproses • Cepat • Profesional</b>", "🛒 Silakan order melalui bot:", "🤖 @Idse_MarketBot"]
     return "\n".join(lines).strip()
 
 
