@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Send, RefreshCw } from "lucide-react";
+import { Send, RefreshCw, Megaphone } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "../lib/api";
 
@@ -8,8 +8,24 @@ export default function Broadcasts() {
   const [photo, setPhoto] = useState(null);
   const [history, setHistory] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [channelMode, setChannelMode] = useState("manual");
+  const [channelText, setChannelText] = useState("");
+  const [productPreview, setProductPreview] = useState("");
 
   const load = () => api.get("/admin/broadcasts").then(({ data }) => setHistory(data));
+  const loadProductPreview = async () => {
+    try {
+      const { data } = await api.get("/admin/broadcasts/channel-product-preview");
+      setProductPreview(data.text || "");
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+
+  useEffect(() => {
+    if (channelMode === "products") loadProductPreview();
+  }, [channelMode]);
+
   useEffect(() => { load(); }, []);
 
   const submit = async () => {
@@ -52,6 +68,49 @@ export default function Broadcasts() {
             <input className={cls} placeholder="URL tombol" value={form.button_url} onChange={(e) => setForm({ ...form, button_url: e.target.value })} />
           </div>
           <button onClick={submit} disabled={busy || !form.text.trim()} className="w-full bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5">{busy ? "Mengirim..." : "Mulai Broadcast"}</button>
+        </div>
+        <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <Megaphone size={18} className="text-cyan-400" />
+            <h2 className="font-heading font-semibold">Broadcast ke Channel</h2>
+          </div>
+          <p className="text-xs text-slate-500">Mengirim ke channel yang sudah diberi akses ke bot. Jika BROADCAST_CHANNEL_ID belum diisi, sistem menggunakan required channel dari Join Gate.</p>
+          <select className={cls} value={channelMode} onChange={(e) => setChannelMode(e.target.value)}>
+            <option value="manual">1. Manual</option>
+            <option value="products">2. Broadcast Product Aktif / Tersedia</option>
+          </select>
+          {channelMode === "manual" ? (
+            <textarea rows={8} className={cls} placeholder="Tulis pesan untuk channel..." value={channelText} onChange={(e) => setChannelText(e.target.value)} />
+          ) : (
+            <div>
+              <p className="text-xs text-slate-400 mb-2">Preview pesan otomatis:</p>
+              <pre className="whitespace-pre-wrap text-sm text-slate-200 bg-slate-950 border border-slate-800 rounded-lg p-4 max-h-80 overflow-auto">{productPreview}</pre>
+              <p className="text-xs text-slate-500 mt-2">Hanya product aktif yang ditampilkan. Digital hanya ditampilkan jika stock inventory &gt; 0. Produk jasa tidak menampilkan angka stock.</p>
+            </div>
+          )}
+          <button
+            type="button"
+            disabled={busy || (channelMode === "manual" && !channelText.trim())}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                const fd = new FormData();
+                fd.append("mode", channelMode);
+                if (channelMode === "manual") fd.append("text", channelText);
+                await api.post("/admin/broadcasts/channel", fd);
+                toast.success("Broadcast ke channel berhasil dikirim.");
+                if (channelMode === "manual") setChannelText("");
+                else await loadProductPreview();
+              } catch (err) {
+                toast.error(formatApiErrorDetail(err.response?.data?.detail));
+              } finally {
+                setBusy(false);
+              }
+            }}
+            className="w-full bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5"
+          >
+            {busy ? "Mengirim..." : "📢 Kirim ke Channel"}
+          </button>
         </div>
         <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5">
           <div className="flex items-center justify-between mb-4"><h2 className="font-heading font-semibold">Riwayat</h2><button onClick={load} className="p-2 text-slate-400 hover:text-slate-100"><RefreshCw size={15} /></button></div>
