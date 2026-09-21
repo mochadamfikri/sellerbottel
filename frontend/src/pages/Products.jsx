@@ -14,7 +14,7 @@ const empty = {
   stock_mode: "auto",
   stock: "",
   delivery_type: "link",
-  content: "Jasa {product_name} sedang dalam antrean, harap tunggu {wait_minutes} untuk dapat menghubungi admin.",
+  content: "",
   wait_minutes: 5,
   active: true,
 };
@@ -30,7 +30,6 @@ export default function Products() {
 
   const [importOpen, setImportOpen] = useState(false);
   const [importFile, setImportFile] = useState(null);
-  const [importKind, setImportKind] = useState("digital");
   const [importing, setImporting] = useState(false);
 
   const [inventoryOpen, setInventoryOpen] = useState(false);
@@ -72,7 +71,6 @@ export default function Products() {
       active: p.active !== false,
     });
     setEditId(p._id);
-    setFile(null);
     setOpen(true);
   };
 
