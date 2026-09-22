@@ -95,6 +95,28 @@ async def send2(chat_id, text, kb=None, force_new=False):
     return result
 
 
+async def start_loading_message(chat_id, text):
+    """Reuse the existing Bot2 message; for a brand-new chat, also install the
+    persistent six-button reply keyboard without creating a second message."""
+    previous_id = await _get_last_message(chat_id)
+    if previous_id:
+        edited = await edit2(chat_id, previous_id, text)
+        if edited.get("ok"):
+            return edited
+
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+        "reply_markup": menu_keyboard(),
+    }
+    result = await tg2("sendMessage", **payload)
+    if result.get("ok"):
+        await _remember_last_message(chat_id, (result.get("result") or {}).get("message_id"))
+    return result
+
+
 async def edit2(chat_id, message_id, text, kb=None):
     payload = {
         "chat_id": chat_id,
@@ -1058,7 +1080,10 @@ async def handle_message2(message):
 
     if text.startswith("/start"):
         await set_b2_state(user["telegram_id"])
-        loading = await send2(chat_id, "⏳ <b>MEMUAT DATA</b>\n\n▱▱▱▱▱▱▱▱▱▱ <b>0%</b>")
+        loading = await start_loading_message(
+            chat_id,
+            "⏳ <b>MEMUAT DATA</b>\n\n▱▱▱▱▱▱▱▱▱▱ <b>0%</b>",
+        )
         loading_id = (loading.get("result") or {}).get("message_id")
         import random
         step_count = random.randint(7, 15)
