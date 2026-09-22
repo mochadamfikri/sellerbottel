@@ -12,6 +12,7 @@ class CampaignBody(BaseModel):
     template: str = Field(min_length=1, max_length=4000)
     source_code: str = ""
     bot_link: str = ""
+    product_id: str | None = None
     account_ids: list[str] = []
     approval_required: bool = True
     daily_limit: int = Field(default=20, ge=1, le=100)
