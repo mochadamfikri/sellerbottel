@@ -83,6 +83,7 @@ async def send_user_message(prospect_id: str, body: ManualUserMessageBody):
     from promo_telegram import decrypt_session, _api
     from telethon import TelegramClient
     from telethon.sessions import StringSession
+    from telethon.tl.types import InputPeerUser, InputPeerChat, InputPeerChannel
 
     prospect = await db.prospects.find_one({"_id": prospect_id})
     if not prospect:
@@ -109,7 +110,15 @@ async def send_user_message(prospect_id: str, body: ManualUserMessageBody):
     await client.connect()
     sent_at = now_iso()
     try:
-        await client.send_message(int(prospect["tg_user_id"]), body.message)
+        username = (prospect.get("username") or "").strip().lstrip("@")
+        access_hash = prospect.get("access_hash")
+        if username:
+            target = await client.get_entity(username)
+        elif access_hash is not None:
+            target = InputPeerUser(int(prospect["tg_user_id"]), int(access_hash))
+        else:
+            raise ValueError("Prospek belum memiliki access_hash/username. Sinkronkan ulang daftar prospek dari akun Telegram tersebut.")
+        await client.send_message(target, body.message)
     except Exception as exc:
         raise HTTPException(400, str(exc))
     finally:
@@ -176,6 +185,7 @@ async def post_group(body: ManualPostBody, group_id: str):
     from promo_telegram import decrypt_session, _api
     from telethon import TelegramClient
     from telethon.sessions import StringSession
+    from telethon.tl.types import InputPeerChat, InputPeerChannel
     account = await db.tg_accounts.find_one({
         "_id": body.account_id,
         "status": "active",
@@ -194,7 +204,18 @@ async def post_group(body: ManualPostBody, group_id: str):
     client = TelegramClient(StringSession(decrypt_session(account["session_encrypted"])), api_id, api_hash)
     await client.connect()
     try:
-        await client.send_message(int(group_id), body.message)
+        username = (group.get("username") or "").strip().lstrip("@")
+        access_hash = group.get("access_hash")
+        entity_type = group.get("entity_type")
+        if username:
+            target = await client.get_entity(username)
+        elif entity_type == "channel" and access_hash is not None:
+            target = InputPeerChannel(int(group["chat_id"]), int(access_hash))
+        elif entity_type == "chat":
+            target = InputPeerChat(int(group["chat_id"]))
+        else:
+            raise ValueError("Grup belum memiliki access_hash/username yang valid. Klik Grup Sinkronisasi lagi menggunakan akun yang dipilih.")
+        await client.send_message(target, body.message)
     except Exception as exc:
         raise HTTPException(400, str(exc))
     finally:
