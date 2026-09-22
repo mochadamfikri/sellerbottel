@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Send, RefreshCw, Megaphone } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "../lib/api";
@@ -16,7 +16,7 @@ export default function Broadcasts() {
   const [autoPreview, setAutoPreview] = useState("");
 
   const load = () => api.get("/admin/broadcasts").then(({ data }) => setHistory(data));
-  const loadProductPreview = async () => {
+  const loadProductPreview = useCallback(async () => {
     try {
       const { data } = await api.get("/admin/broadcasts/channel-product-preview");
       setProductPreview(data.text || "");
