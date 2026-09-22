@@ -23,21 +23,21 @@ export default function Broadcasts() {
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
     }
-  };
+  }, []);
 
-  const loadAutoPreview = async () => {
+  const loadAutoPreview = useCallback(async () => {
     try {
       const { data } = await api.get("/admin/broadcasts/auto-preview", { params: { content: autoContent } });
       setAutoPreview(data.text || "");
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
     }
-  };
+  }, [autoContent]);
 
   useEffect(() => {
     if (channelMode === "products") loadProductPreview();
     if (channelMode === "auto") loadAutoPreview();
-  }, [channelMode, autoContent]);
+  }, [channelMode, autoContent, loadProductPreview, loadAutoPreview]);
 
   useEffect(() => { load(); }, []);
 
