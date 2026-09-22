@@ -1215,18 +1215,58 @@ async def handle_deposit_callback2(cb):
         )
 
 
+_BOT2_CHAT_LOCKS = {}
+
+
+def _bot2_chat_lock(chat_id):
+    chat_id = int(chat_id)
+    lock = _BOT2_CHAT_LOCKS.get(chat_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _BOT2_CHAT_LOCKS[chat_id] = lock
+    return lock
+
+
 async def process_update2(update):
-    try:
-        if "callback_query" in update:
-            data = update["callback_query"].get("data", "")
-            if data in {"b2:deposit_now", "b2:deposit_manual"}:
-                await handle_deposit_callback2(update["callback_query"])
-            else:
-                await handle_callback2(update["callback_query"])
-        elif "message" in update:
-            await handle_message2(update["message"])
-    except Exception:
-        logger.exception("Bot2 update failed")
+    # Bot2 updates for the same user must be serialized. Without this, two
+    # fast /start messages (or /start + menu tap) race over the same message
+    # id and leave the user stuck at 0% or create duplicate replies.
+    if "callback_query" in update:
+        chat_id = update["callback_query"].get("message", {}).get("chat", {}).get("id")
+        if not chat_id:
+            return
+        lock = _bot2_chat_lock(chat_id)
+        async with lock:
+            try:
+                data = update["callback_query"].get("data", "")
+                if data in {"b2:deposit_now", "b2:deposit_manual"}:
+                    await handle_deposit_callback2(update["callback_query"])
+                else:
+                    await handle_callback2(update["callback_query"])
+            except Exception:
+                logger.exception("Bot2 update failed")
+        return
+
+    if "message" in update:
+        message = update["message"]
+        chat_id = message.get("chat", {}).get("id")
+        if not chat_id:
+            return
+        lock = _bot2_chat_lock(chat_id)
+
+        # Ignore a duplicate /start while another /start or navigation action
+        # is still running. This prevents the loading message from being
+        # overwritten by another concurrent task.
+        text = (message.get("text") or "").strip()
+        if text.startswith("/start") and lock.locked():
+            logger.info("Bot2 duplicate /start ignored for chat %s", chat_id)
+            return
+
+        async with lock:
+            try:
+                await handle_message2(message)
+            except Exception:
+                logger.exception("Bot2 update failed")
 
 
 async def _expire_bot2_orders():
