@@ -1038,7 +1038,8 @@ async def handle_callback2(cb):
         await send2(chat_id, "⚡ <b>FLASH SALE</b>\n\n" + "\n".join(f"• {escape(str(d.get('name','Promo')))}" for d in discounts), kb=menu_keyboard())
 
 
-async def handle_message2(message):    if "from" not in message or message["from"].get("is_bot"):
+async def handle_message2(message):
+    if "from" not in message or message["from"].get("is_bot"):
         return
     chat_id = message["chat"]["id"]
     user = await get_user2(message["from"])
