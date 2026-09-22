@@ -92,7 +92,8 @@ async def login(body: LoginBody, request: Request, response: Response):
         raise HTTPException(status_code=401, detail="Email atau password salah")
     await db.login_attempts.delete_one({"identifier": identifier})
     token = create_access_token(user["_id"], email)
-    response.set_cookie(key="access_token", value=token, httponly=True, secure=True, samesite=os.environ.get("COOKIE_SAMESITE", "lax"), max_age=43200, path="/")
+    secure_cookie = os.environ.get("COOKIE_SECURE", "true").lower() in {"1", "true", "yes"}
+    response.set_cookie(key="access_token", value=token, httponly=True, secure=secure_cookie, samesite=os.environ.get("COOKIE_SAMESITE", "lax"), max_age=43200, path="/")
     return {"id": user["_id"], "email": email, "name": user.get("name", "Admin"), "token": token}
 
 
