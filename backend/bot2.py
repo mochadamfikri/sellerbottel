@@ -151,7 +151,6 @@ async def get_user2(tg_from):
             {"$set": {
                 "username": tg_from.get("username", ""),
                 "first_name": tg_from.get("first_name", ""),
-                "currency": "IDR",
             }},
         )
     return user
@@ -392,7 +391,9 @@ async def confirm_bot2_order(chat_id, user, pid, qty, mode, note=""):
 async def process_confirmed_bot2_order(chat_id, user, pid, qty, mode, note):
     if mode == "balance":
         from checkout import execute_checkout
-        result = await execute_checkout(user, [{"pid": pid, "qty": qty}], preserve_cart=True, coupon_code=user.get("pending_coupon"))
+        bot2_user = dict(user)
+        bot2_user["currency"] = "IDR"
+        result = await execute_checkout(bot2_user, [{"pid": pid, "qty": qty}], preserve_cart=True, coupon_code=user.get("pending_coupon"))
         if not result.get("ok"):
             await send2(chat_id, "❌ Saldo IDR tidak mencukupi." if result.get("error") == "balance" else "❌ Checkout gagal.", kb=menu_keyboard())
             return
