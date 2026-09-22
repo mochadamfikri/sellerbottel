@@ -179,6 +179,16 @@ async def startup():
                 allowed_updates=["message", "callback_query"],
             )
             logger.info("Bot 2 webhook set: %s", res)
+            commands = await tg2(
+                "setMyCommands",
+                commands=[
+                    {"command": "start", "description": "Mulai / buka menu"},
+                    {"command": "stock", "description": "Lihat stok produk"},
+                    {"command": "help", "description": "Cara order"},
+                    {"command": "deposit", "description": "Deposit saldo IDR"},
+                ],
+            )
+            logger.info("Bot 2 commands set: %s", commands)
         except Exception as exc:
             logger.error("Bot 2 webhook setup failed: %s", exc)
 
