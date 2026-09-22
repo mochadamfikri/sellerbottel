@@ -452,7 +452,7 @@ async def deliver_product(chat_id, p, lang, send_message_fn=None, send_document_
     try:
         if p["delivery_type"] == "file" and p.get("storage_path"):
             data, _ = await get_object(p["storage_path"])
-            result = await send_document(
+            result = await send_document_fn(
                 chat_id,
                 data,
                 p.get("original_filename", "produk.bin"),
@@ -460,7 +460,7 @@ async def deliver_product(chat_id, p, lang, send_message_fn=None, send_document_
             )
             return bool(result.get("ok"))
         if p["delivery_type"] == "link":
-            result = await send_message(
+            result = await send_message_fn(
                 chat_id,
                 t(lang, "deliver_link", name=p["name"], content=p.get("content", "")),
             )
@@ -602,7 +602,7 @@ async def deliver_inventory(chat_id, product, records, send_message_fn=None, sen
         filename = (
             f"invoice_{_safe_filename_part(product.get('name'))}_{len(records)}.txt"
         )
-        result = await send_document(
+        result = await send_document_fn(
             chat_id,
             payload_text.encode("utf-8"),
             filename,
@@ -629,7 +629,7 @@ async def deliver_inventory(chat_id, product, records, send_message_fn=None, sen
             )
         blocks.append(f"<b>#{index}</b>\n{body}")
 
-    result = await send_message(
+    result = await send_message_fn(
         chat_id,
         "<b>📦 " + escape(product["name"]) + "</b>\n\n" + "\n\n".join(blocks),
     )
