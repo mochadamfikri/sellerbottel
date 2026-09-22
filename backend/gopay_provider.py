@@ -174,11 +174,11 @@ async def poll_gopay_once():
 
     now = datetime.now(timezone.utc)
     await db.gopay_payments.update_many(
-        {"status": "pending", "expires_at": {"$lte": now.isoformat()}},
+        {"status": "pending", "payment_scope": {"$ne": "bot2"}, "expires_at": {"$lte": now.isoformat()}},
         {"$set": {"status": "expired", "expired_at": now_iso()}, "$unset": {"active_payment_amount": ""}},
     )
     await db.deposits.update_many(
-        {"method": "gopay", "status": "pending", "expires_at": {"$lte": now.isoformat()}},
+        {"method": "gopay", "bot2": {"$ne": True}, "status": "pending", "expires_at": {"$lte": now.isoformat()}},
         {"$set": {"status": "expired", "decided_at": now_iso()}},
     )
 
@@ -200,6 +200,7 @@ async def poll_gopay_once():
         payment = await db.gopay_payments.find_one_and_update(
             {
                 "status": "pending",
+                "payment_scope": {"$ne": "bot2"},
                 "active_payment_amount": tx_amount,
                 "expires_at": {"$gt": now.isoformat()},
             },
