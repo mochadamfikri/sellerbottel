@@ -1,5 +1,6 @@
 import asyncio
 import os
+import random
 from datetime import datetime, timezone
 
 from db import db
@@ -7,6 +8,7 @@ from promo_campaign import send_job, render_message
 from promo_telegram import decrypt_session, _api
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from tgapi import tg
 
 _clients = {}
 _task = None
@@ -31,6 +33,13 @@ async def _reply_listener(account):
         if prospect:
             await db.prospects.update_many({"tg_user_id": tid}, {"$set": {"status": "replied", "last_reply_at": datetime.now(timezone.utc).isoformat()}})
             await db.promo_events.insert_one({"_id": f"reply:{account['_id']}:{event.id}", "type": "reply", "account_id": account["_id"], "tg_user_id": tid, "text_preview": (event.raw_text or "")[:500], "created_at": datetime.now(timezone.utc).isoformat()})
+            admin_tid = os.environ.get("ADMIN_TELEGRAM_ID", "").strip()
+            bot_token = os.environ.get("TELEGRAM_TOKEN", "").strip()
+            if admin_tid and bot_token:
+                try:
+                    await tg("sendMessage", chat_id=int(admin_tid), text=f"📩 Promo reply\nTelegram ID: {tid}\nPesan: {(event.raw_text or '').strip()[:300]}")
+                except Exception:
+                    pass
 
     _clients[account["_id"]] = client
     return client
@@ -53,7 +62,7 @@ async def _queue_loop():
                 result = await send_job(job)
                 if result.get("status") == "sent":
                     interval = int((await db.outreach_campaigns.find_one({"_id": job["campaign_id"]}) or {}).get("min_interval_seconds") or 300)
-                    await asyncio.sleep(max(300, interval))
+                    await asyncio.sleep(random.uniform(max(300, interval), max(300, interval) * 1.5))
                 elif result.get("status") in {"stopped", "cancelled"}:
                     continue
                 else:
