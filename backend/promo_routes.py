@@ -110,6 +110,9 @@ async def prospect_create(body: ProspectBody):
     if existing:
         raise HTTPException(409, "Prospek sudah tercatat.")
     bot_user = await db.bot_users.find_one({"telegram_id": body.tg_user_id})
+    owner = await db.tg_accounts.find_one({"_id": body.owner_account_id})
+    if not owner:
+        raise HTTPException(400, "Akun pemilik prospek tidak ditemukan.")
     doc = {
         "_id": str(uuid.uuid4()),
         "tg_user_id": body.tg_user_id,
@@ -119,6 +122,7 @@ async def prospect_create(body: ProspectBody):
         "source": body.source,
         "status": "customer" if bot_user else "new",
         "bot_user_tid": body.tg_user_id if bot_user else None,
+        "contact_allowed": False,
         "contact_count": 0,
         "last_contacted_at": None,
         "notes": body.notes,
