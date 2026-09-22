@@ -25,8 +25,18 @@ def render_message(template: str, prospect: dict, bot_link: str = ""):
 async def create_campaign(data: dict):
     name = str(data.get("name") or "").strip()
     template = str(data.get("template") or "").strip()
+    account_ids = list(dict.fromkeys(str(x).strip() for x in (data.get("account_ids") or []) if str(x).strip()))
     if not name or not template:
         raise ValueError("Nama campaign dan template wajib diisi.")
+    if not account_ids:
+        raise ValueError("Minimal satu akun Telegram aktif harus dipilih.")
+    active_count = await db.tg_accounts.count_documents({
+        "_id": {"$in": account_ids},
+        "status": "active",
+        "session_encrypted": {"$type": "string"},
+    })
+    if active_count != len(account_ids):
+        raise ValueError("Semua akun pengirim yang dipilih harus aktif dan memiliki session.")
     doc = {
         "_id": str(uuid.uuid4()), "name": name, "template": template,
         "source_code": str(data.get("source_code") or "").strip().lower(),
