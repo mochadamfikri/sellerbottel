@@ -198,6 +198,7 @@ async def import_private_chats(account_id: str, limit: int = 1000):
             name = " ".join(filter(None, [getattr(user, "first_name", ""), getattr(user, "last_name", "")]))
             await db.prospects.insert_one({
                 "_id": str(uuid.uuid4()), "tg_user_id": tid,
+                "access_hash": getattr(user, "access_hash", None),
                 "username": getattr(user, "username", "") or "", "name": name,
                 "owner_account_id": account_id, "source": {"kind": "private_chat", "label": "Telegram"},
                 "status": "new", "bot_user_tid": None, "contact_allowed": False, "contact_count": 0,
@@ -225,7 +226,7 @@ async def sync_groups(account_id: str):
             entity = dialog.entity
             await db.tg_groups.update_one(
                 {"account_id": account_id, "chat_id": int(entity.id)},
-                {"$set": {"account_id": account_id, "chat_id": int(entity.id), "title": dialog.name, "username": getattr(entity, "username", "") or "", "updated_at": now_iso()}, "$setOnInsert": {"_id": str(uuid.uuid4()), "created_at": now_iso()}},
+                {"$set": {"account_id": account_id, "chat_id": int(entity.id), "title": dialog.name, "username": getattr(entity, "username", "") or "", "access_hash": getattr(entity, "access_hash", None), "entity_type": "channel" if getattr(entity, "access_hash", None) is not None else "chat", "updated_at": now_iso()}, "$setOnInsert": {"_id": str(uuid.uuid4()), "created_at": now_iso()}},
                 upsert=True,
             )
             count += 1
