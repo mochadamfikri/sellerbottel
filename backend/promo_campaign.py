@@ -48,7 +48,7 @@ async def enqueue_campaign(campaign_id: str, statuses=("new",)):
         raise ValueError("Campaign tidak ditemukan.")
     if campaign.get("status") in {"stopped", "completed"}:
         raise ValueError("Campaign sudah dihentikan.")
-    query = {"status": {"$in": list(statuses)}, "tg_user_id": {"$exists": True}}
+    query = {"status": {"$in": list(statuses)}, "tg_user_id": {"$exists": True}, "contact_allowed": True}
     count = 0
     account_ids = campaign.get("account_ids") or []
     async for p in db.prospects.find(query).sort("created_at", 1):
@@ -170,7 +170,7 @@ async def import_private_chats(account_id: str, limit: int = 1000):
                 "_id": str(uuid.uuid4()), "tg_user_id": tid,
                 "username": getattr(user, "username", "") or "", "name": name,
                 "owner_account_id": account_id, "source": {"kind": "private_chat", "label": "Telegram"},
-                "status": "new", "bot_user_tid": None, "contact_count": 0,
+                "status": "new", "bot_user_tid": None, "contact_allowed": False, "contact_count": 0,
                 "last_contacted_at": None, "notes": "", "created_at": now_iso(),
             })
             added += 1
