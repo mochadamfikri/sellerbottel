@@ -50,7 +50,8 @@ async def enqueue_campaign(campaign_id: str, statuses=("new",)):
         raise ValueError("Campaign sudah dihentikan.")
     query = {"status": {"$in": list(statuses)}, "tg_user_id": {"$exists": True}}
     count = 0
-    account_ids = campaign.get("account_ids") or []\n    async for p in db.prospects.find(query).sort("created_at", 1):
+    account_ids = campaign.get("account_ids") or []
+    async for p in db.prospects.find(query).sort("created_at", 1):
         if await db.promo_suppressions.find_one({"tg_user_id": p["tg_user_id"]}):
             continue
         existing = await db.outreach_jobs.find_one({"campaign_id": campaign_id, "prospect_id": p["_id"], "status": {"$in": ["queued","approved","sending","sent"]}})
@@ -95,7 +96,16 @@ async def send_job(job: dict):
     account = await db.tg_accounts.find_one({"_id": job["account_id"]})
     if not campaign or not prospect or not account or account.get("status") != "active":
         return {"status": "skipped", "reason": "missing_or_inactive"}
-    if job.get("scheduled_at"):\n        try:\n            due = datetime.fromisoformat(job["scheduled_at"])\n            if due.tzinfo is None:\n                due = due.replace(tzinfo=timezone.utc)\n            if datetime.now(timezone.utc) < due:\n                return {"status": "deferred", "reason": "scheduled_later"}\n        except (TypeError, ValueError):\n            pass\n    if await db.promo_suppressions.find_one({"tg_user_id": prospect["tg_user_id"]}):
+    if job.get("scheduled_at"):
+        try:
+            due = datetime.fromisoformat(job["scheduled_at"])
+            if due.tzinfo is None:
+                due = due.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) < due:
+                return {"status": "deferred", "reason": "scheduled_later"}
+        except (TypeError, ValueError):
+            pass
+    if await db.promo_suppressions.find_one({"tg_user_id": prospect["tg_user_id"]}):
         await db.outreach_jobs.update_one({"_id": job["_id"]}, {"$set": {"status": "cancelled", "last_error": "opt_out"}})
         return {"status": "cancelled", "reason": "opt_out"}
     limit = int(campaign.get("daily_limit") or DEFAULT_DAILY_LIMIT)
