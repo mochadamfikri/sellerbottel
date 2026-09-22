@@ -174,6 +174,46 @@ async def show_home(chat_id, user, loaded=True):
     )
 
 
+async def show_products(chat_id, page=1):
+    """Bot 2 product list: shared product DB/inventory, IDR display, video-style layout."""
+    page = max(1, int(page or 1))
+    page_size = 8
+    products = await db.products.find({"active": True}).sort("created_at", 1).to_list(500)
+    total_pages = max(1, (len(products) + page_size - 1) // page_size)
+    page = min(page, total_pages)
+    chunk = products[(page - 1) * page_size: page * page_size]
+
+    lines = ["<b>LIST PRODUCT</b>", ""]
+    buttons = []
+    for idx, product in enumerate(chunk, start=(page - 1) * page_size + 1):
+        stock = await stock_for(product)
+        stock_text = "∞" if stock is None else str(int(stock))
+        lines.append(f"[{idx}]. {escape(str(product.get('name') or 'Product'))} ({stock_text})")
+        buttons.append([{
+            "text": f"{idx}. {str(product.get('name') or 'Product')[:34]} ({stock_text})",
+            "callback_data": f"b2:product:{product['_id']}",
+        }])
+
+    if not chunk:
+        lines.append("Belum ada product aktif.")
+
+    lines += ["", f"📄 Halaman {page} / {total_pages}"]
+    nav = []
+    if page > 1:
+        nav.append({"text": "◀️ Back", "callback_data": f"b2:products:{page - 1}"})
+    if page < total_pages:
+        nav.append({"text": "Next ▶️", "callback_data": f"b2:products:{page + 1}"})
+    if nav:
+        buttons.append(nav)
+
+    buttons.append([
+        {"text": "🔥 PRODUK POPULER", "callback_data": "b2:popular"},
+        {"text": "⚡ Flash Sale", "callback_data": "b2:flash"},
+    ])
+    buttons.append([{"text": "Kembali", "callback_data": "b2:home"}])
+    await send2(chat_id, "\n".join(lines), kb={"inline_keyboard": buttons})
+
+
 async def show_product(chat_id, pid):
     product = await db.products.find_one({"_id": pid, "active": True})
     if not product:
@@ -363,7 +403,7 @@ async def begin_bot2_note(chat_id, user, pid, mode):
     if stock is not None and stock < 1:
         await send2(chat_id, "❌ Stok produk sedang kosong.", kb=back_keyboard())
         return
-    await set_b2_state(user["telegram_id"], "note_input", {"pid": pid, "mode": mode})
+    await set_b2_state(user["telegram_id"], "note_input", {"pid": pid, "mode": mode, "qty": 1})
     await send2(chat_id, "📝 <b>Catatan untuk penjual</b>", kb={"inline_keyboard": [
         [{"text": "📝 Isi Catatan", "callback_data": "b2:note_input"}],
         [{"text": "⏭️ Skip", "callback_data": "b2:note_skip"}],
@@ -859,7 +899,7 @@ async def handle_callback2(cb):
     if data == "b2:note_skip":
         state_data = user.get("bot2_state_data") or {}
         await set_b2_state(user["telegram_id"])
-        await confirm_bot2_order(chat_id, user, state_data.get("pid"), 1, state_data.get("mode", "now"), "")
+        await confirm_bot2_order(chat_id, user, state_data.get("pid"), int(state_data.get("qty") or 1), state_data.get("mode", "now"), "")
         return
     if data == "b2:confirm_order":
         state_data = user.get("bot2_state_data") or {}
