@@ -62,9 +62,9 @@ export default function Promotions() {
       setJobs(j.data); setGroups(g.data); setCoupons(co.data); setResults(r.data);
       setSources(src.data); setEvents(ev.data);
     } catch (e) { error(e); }
-  };
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
 
   const startLogin = async () => {
     if (!phone.trim()) return toast.error("Nomor Telegram wajib diisi.");
