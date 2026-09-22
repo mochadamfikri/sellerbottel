@@ -6,6 +6,7 @@ from db import db
 from inventory import commit_items, release_items, reserve_items
 from rates import get_rate
 from pricing import price_for_product
+from promo_service import validate_coupon, coupon_discount, reserve_coupon, release_coupon
 
 
 CUR_FIELD = {"USD": "balance_usd", "IDR": "balance_idr"}
@@ -67,6 +68,7 @@ async def _fail_checkout(order_id, allocations, reservation_id, error, message, 
                 {"$inc": {"stock": allocation["qty"]}},
             )
     await release_items(reservation_id)
+    await release_coupon(order_id)
 
     if user is not None and field and total > 0:
         await db.bot_users.update_one(
@@ -115,7 +117,7 @@ def _cart_after_purchase(cart, purchased_items):
     return remaining
 
 
-async def execute_checkout(user, cart_items, preserve_cart=False):
+async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=None):
     currency = user["currency"]
     field = CUR_FIELD[currency]
     order_id = str(uuid.uuid4())
@@ -160,6 +162,34 @@ async def execute_checkout(user, cart_items, preserve_cart=False):
     if not items:
         return {"ok": False, "error": "empty"}
 
+    # Kupon tidak ditumpuk dengan discount produk.
+    coupon = None
+    coupon_discount_amount = 0.0
+    if coupon_code:
+        base_subtotal = sum(float(item["base_unit_price"]) * item["qty"] for item in items)
+        current_subtotal = sum(float(item["subtotal"]) for item in items)
+        product_ids = [item["product"]["_id"] for item in items]
+        coupon, coupon_error = await validate_coupon(
+            coupon_code, user["telegram_id"], currency, base_subtotal, product_ids
+        )
+        if coupon_error:
+            return {"ok": False, "error": "coupon", "message": coupon_error}
+
+        eligible_ids = set(coupon.get("product_ids") or [])
+        eligible = [
+            item for item in items
+            if not eligible_ids or item["product"]["_id"] in eligible_ids
+        ]
+        eligible_base = sum(float(item["base_unit_price"]) * item["qty"] for item in eligible)
+        eligible_product_discount = sum(float(item["discount_total"]) for item in eligible)
+        candidate_coupon_discount = min(coupon_discount(coupon, eligible_base), eligible_base)
+
+        if candidate_coupon_discount > eligible_product_discount:
+            coupon_discount_amount = round(candidate_coupon_discount, 2)
+            total = round(current_subtotal - coupon_discount_amount, 2)
+        else:
+            coupon = None
+
     invoice_id = await next_invoice_id()
     order = {
         "_id": order_id,
@@ -190,10 +220,23 @@ async def execute_checkout(user, cart_items, preserve_cart=False):
         "paid_at": None,
         "delivered_at": None,
         "delivery_error": None,
-        "discount_total": sum(item["discount_total"] for item in items),
-        "coupon_code": None,
+        "discount_total": sum(item["discount_total"] for item in items) + coupon_discount_amount,
+        "coupon_code": coupon["code"] if coupon else None,
+        "coupon_discount": coupon_discount_amount,
+        "source_code": user.get("traffic_source_code"),
+        "source_kind": user.get("traffic_source_kind"),
     }
     await db.purchases.insert_one(order)
+
+    if coupon:
+        reserved_coupon = await reserve_coupon(
+            coupon, user["telegram_id"], order_id, coupon_discount_amount
+        )
+        if not reserved_coupon:
+            return await _fail_checkout(
+                order_id, [], reservation_id, "coupon",
+                "Kupon baru saja mencapai batas penggunaan. Silakan coba lagi.",
+            )
 
     allocations = []
     balance_debited = False
@@ -272,6 +315,12 @@ async def execute_checkout(user, cart_items, preserve_cart=False):
             {"$set": {"status": "paid", "paid_at": now_iso()}},
         )
 
+        if user.get("traffic_source_code"):
+            await db.prospects.update_many(
+                {"tg_user_id": user["telegram_id"]},
+                {"$set": {"status": "customer", "customer_order_id": order_id, "converted_at": now_iso()}},
+            )
+
         for allocation in allocations:
             if allocation["kind"] == "inventory":
                 await commit_items(reservation_id, order_id, user["telegram_id"])
@@ -299,6 +348,7 @@ async def execute_checkout(user, cart_items, preserve_cart=False):
                 )
 
         await release_items(reservation_id)
+        await release_coupon(order_id)
 
         if balance_debited:
             await db.bot_users.update_one(

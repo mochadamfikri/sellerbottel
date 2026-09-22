@@ -69,13 +69,49 @@ async def ensure_indexes():
     await db.required_channels.create_index("channel_id", unique=True)
     await db.broadcasts.create_index([("created_at", -1)])
     await db.processed_updates.create_index("update_id", unique=True)
-    await db.gopay_payments.create_index("active_payment_amount", unique=True, sparse=True)
+    await db.processed_updates_bot2.create_index("update_id", unique=True)
+    try:
+        await db.gopay_payments.drop_index("active_payment_amount_1")
+    except Exception:
+        pass
+    await db.gopay_payments.create_index(
+        [("payment_scope", 1), ("active_payment_amount", 1)],
+        unique=True,
+        sparse=True,
+    )
+    await db.bot2_restock_requests.create_index(
+        [("user_tid", 1), ("product_id", 1)],
+        unique=True,
+    )
     await db.gopay_payments.create_index([("status", 1), ("expires_at", 1)])
     await db.gopay_payments.create_index(
         "tx_id",
         unique=True,
         partialFilterExpression={"tx_id": {"$type": "string"}},
     )
+
+    # Promotion / CRM module.
+    await db.promo_coupons.create_index("code", unique=True)
+    await db.promo_coupon_redemptions.create_index(
+        [("coupon_id", 1), ("order_id", 1)],
+        unique=True,
+    )
+    await db.promo_coupon_redemptions.create_index([("coupon_id", 1), ("user_tid", 1)])
+    await db.prospects.create_index(
+        [("owner_account_id", 1), ("tg_user_id", 1)],
+        unique=True,
+    )
+    await db.prospects.create_index([("status", 1), ("created_at", -1)])
+    await db.tg_accounts.create_index("tg_user_id", unique=True, sparse=True)
+    await db.tg_accounts.create_index("status")
+    await db.tg_groups.create_index([("account_id", 1), ("chat_id", 1)], unique=True)
+    await db.outreach_jobs.create_index([("status", 1), ("scheduled_at", 1)])
+    await db.outreach_campaigns.create_index([("status", 1), ("created_at", -1)])
+    await db.traffic_sources.create_index("code", unique=True)
+    await db.promo_campaigns.create_index([("status", 1), ("created_at", -1)])
+    await db.promo_suppressions.create_index("tg_user_id", unique=True)
+    await db.promo_events.create_index([("type", 1), ("created_at", -1)])
+    await db.outreach_jobs.create_index([("campaign_id", 1), ("prospect_id", 1), ("status", 1)])
 
 
 async def get_settings() -> dict:

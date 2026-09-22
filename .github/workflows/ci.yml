@@ -24,7 +24,7 @@ jobs:
         run: pip install -r backend/requirements-ci.txt
       - name: Run backend tests (inventory upload)
         working-directory: backend
-        run: python -m pytest tests/test_inventory_upload.py -q
+        run: python -m pytest tests/test_inventory_upload.py tests/test_bot2_flow.py -q
 
   frontend:
     runs-on: ubuntu-latest

@@ -255,6 +255,7 @@ async def show_cart(chat_id, user):
         ])
     if len(valid_cart) != len(cart):
         await save_cart(user["telegram_id"], valid_cart)
+    rows.append([{"text": "🎟️ Gunakan Kupon", "callback_data": "coupon:apply"}])
     rows.append([{"text": t(lang, "btn_checkout", total=fmt_amount(total, user["currency"])), "callback_data": "checkout"}])
     rows.append([{"text": t(lang, "btn_clear"), "callback_data": "cartclear"}, {"text": t(lang, "btn_menu_short"), "callback_data": "menu:main"}])
     text = t(lang, "cart_title") + "\n\n" + "\n".join(lines) + "\n\n" + t(lang, "cart_total", total=fmt_amount(total, user["currency"]))
@@ -445,11 +446,13 @@ async def add_to_cart(chat_id, user, pid):
 
 # ============ CHECKOUT & DELIVERY ============
 
-async def deliver_product(chat_id, p, lang):
+async def deliver_product(chat_id, p, lang, send_message_fn=None, send_document_fn=None):
+    send_message_fn = send_message_fn or send_message
+    send_document_fn = send_document_fn or send_document
     try:
         if p["delivery_type"] == "file" and p.get("storage_path"):
             data, _ = await get_object(p["storage_path"])
-            result = await send_document(
+            result = await send_document_fn(
                 chat_id,
                 data,
                 p.get("original_filename", "produk.bin"),
@@ -457,7 +460,7 @@ async def deliver_product(chat_id, p, lang):
             )
             return bool(result.get("ok"))
         if p["delivery_type"] == "link":
-            result = await send_message(
+            result = await send_message_fn(
                 chat_id,
                 t(lang, "deliver_link", name=p["name"], content=p.get("content", "")),
             )
@@ -565,7 +568,9 @@ def _safe_filename_part(value):
     return value.strip("._") or "product"
 
 
-async def deliver_inventory(chat_id, product, records):
+async def deliver_inventory(chat_id, product, records, send_message_fn=None, send_document_fn=None):
+    send_message_fn = send_message_fn or send_message
+    send_document_fn = send_document_fn or send_document
     if not records:
         return False
 
@@ -597,7 +602,7 @@ async def deliver_inventory(chat_id, product, records):
         filename = (
             f"invoice_{_safe_filename_part(product.get('name'))}_{len(records)}.txt"
         )
-        result = await send_document(
+        result = await send_document_fn(
             chat_id,
             payload_text.encode("utf-8"),
             filename,
@@ -624,7 +629,7 @@ async def deliver_inventory(chat_id, product, records):
             )
         blocks.append(f"<b>#{index}</b>\n{body}")
 
-    result = await send_message(
+    result = await send_message_fn(
         chat_id,
         "<b>📦 " + escape(product["name"]) + "</b>\n\n" + "\n\n".join(blocks),
     )
@@ -840,7 +845,8 @@ async def resume_service_waiters():
 async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
     lang = user.get("lang", "id")
 
-    result = await execute_checkout(user, cart_items, preserve_cart=preserve_cart)
+    coupon_code = str(user.get("pending_coupon") or "").strip() or None
+    result = await execute_checkout(user, cart_items, preserve_cart=preserve_cart, coupon_code=coupon_code)
     if not result["ok"]:
         if result["error"] == "stock":
             p = result["product"]
@@ -891,6 +897,8 @@ async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
         return
 
     order = result["order"]
+    if coupon_code:
+        await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$unset": {"pending_coupon": ""}})
     await send_message(chat_id, build_invoice_text(order))
     await send_message(
         chat_id,
@@ -1870,7 +1878,21 @@ async def handle_message(message):
     lang = user.get("lang", "id")
     text = (message.get("text") or "").strip()
 
-    if text == "/start":
+    if text.startswith("/start"):
+        payload = text.split(" ", 1)[1].strip().lower() if " " in text else ""
+        if payload:
+            source = await db.traffic_sources.find_one({"code": payload})
+            if source:
+                await db.bot_users.update_one(
+                    {"telegram_id": user["telegram_id"]},
+                    {"$set": {
+                        "traffic_source_code": payload,
+                        "traffic_source_kind": source.get("kind"),
+                        "traffic_source_label": source.get("label"),
+                    }},
+                )
+                user["traffic_source_code"] = payload
+
         if not await ensure_join_gate(chat_id, user):
             return
         await set_state(user["telegram_id"], None)
@@ -1893,6 +1915,13 @@ async def handle_message(message):
         await send_message(chat_id, frozen_text(user))
         return
 
+    if text.lower().startswith("/coupon "):
+        code = text.split(" ", 1)[1].strip().upper()
+        await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$set": {"pending_coupon": code}})
+        user["pending_coupon"] = code
+        await send_message(chat_id, f"🎟️ Kupon <code>{escape(code)}</code> disimpan. Silakan buka keranjang dan checkout.")
+        return
+
     if text in ("/batal", "/menu", "/cancel"):
         await set_state(user["telegram_id"], None)
         await show_main_menu(chat_id, user)
@@ -1911,6 +1940,16 @@ async def handle_message(message):
         return
 
     state = user.get("state")
+    if state == "coupon_code":
+        code = text.strip().upper()
+        if not code:
+            await send_message(chat_id, "Kode kupon tidak boleh kosong.")
+            return
+        await db.bot_users.update_one({"telegram_id": user["telegram_id"]}, {"$set": {"pending_coupon": code, "state": None, "state_data": {}}})
+        user["pending_coupon"] = code
+        user["state"] = None
+        await send_message(chat_id, f"🎟️ Kupon <code>{escape(code)}</code> disimpan. Klik Checkout untuk menerapkannya.", kb={"inline_keyboard": [[{"text": "🛒 Keranjang", "callback_data": "menu:cart"}]]})
+        return
     if state == "cart_custom_qty":
         await handle_custom_quantity(chat_id, user, text)
     elif state == "cart_custom_confirm":

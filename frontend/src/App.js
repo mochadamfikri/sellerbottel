@@ -15,6 +15,7 @@ import Messages from "./pages/Messages";
 import Orders from "./pages/Orders";
 import Inventory from "./pages/Inventory";
 import Reports from "./pages/Reports";
+import Promotions from "./pages/Promotions";
 
 function Protected({ children, title }) {
   const { user } = useAuth();
@@ -40,6 +41,7 @@ function App() {
           <Route path="/broadcasts" element={<Protected title="Broadcast"><Broadcasts /></Protected>} />
           <Route path="/discounts" element={<Protected title="Discount"><Discounts /></Protected>} />
           <Route path="/messages" element={<Protected title="Bot Messages"><Messages /></Protected>} />
+          <Route path="/promotions" element={<Protected title="Promosi / Cari Pelanggan"><Promotions /></Protected>} />
         </Routes>
       </BrowserRouter>
       <Toaster position="top-right" theme="dark" richColors />
