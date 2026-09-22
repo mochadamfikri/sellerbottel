@@ -23,6 +23,7 @@ from promo_runtime import start_promo_runtime, stop_promo_runtime
 from error_handlers import register_error_handlers
 from inventory import encryption_status
 from bot import process_update, resume_service_waiters
+from bot2 import process_update2, run_bot2_payment_monitor
 from i18n import load_overrides
 from tgapi import tg
 from gopay_provider import run_gopay_monitor
@@ -134,4 +135,4 @@ async def shutdown_db_client():
         stop.set()
     if task:
         task.cancel()
-    client.close()
+    client.close()\n\n@api_router.post("/telegram/bot2/webhook")\nasync def telegram_webhook_bot2(request: Request):\n    import hmac\n\n    expected = os.environ.get("BOT2_WEBHOOK_SECRET", "")\n    received = request.headers.get("x-telegram-bot-api-secret-token", "")\n    if not expected or not received or not hmac.compare_digest(received, expected):\n        raise HTTPException(status_code=403, detail="Invalid Bot 2 webhook token")\n\n    update = await request.json()\n    update_id = update.get("update_id")\n    if update_id is not None:\n        try:\n            await db.processed_updates_bot2.insert_one({"_id": str(update_id), "update_id": update_id})\n        except Exception:\n            return {"ok": True, "duplicate": True}\n    asyncio.create_task(process_update2(update))\n    return {"ok": True}\n
