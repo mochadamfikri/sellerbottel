@@ -14,7 +14,7 @@ from inventory import commit_items, decrypt_items, release_items, reserve_items
 from pricing import price_for_product
 from services import fmt_amount
 from checkout import next_invoice_id, stock_for
-from bot import deliver_inventory, deliver_product
+from bot import deliver_inventory, deliver_product, build_invoice_text
 from gopay_provider import _run_node
 
 logger = logging.getLogger("bot2")
@@ -151,6 +151,7 @@ async def get_user2(tg_from):
             {"$set": {
                 "username": tg_from.get("username", ""),
                 "first_name": tg_from.get("first_name", ""),
+                "currency": "IDR",
             }},
         )
     return user
@@ -174,43 +175,6 @@ async def show_home(chat_id, user, loaded=True):
     )
 
 
-async def show_products(chat_id, page=1):
-    products = await db.products.find({"active": True}).sort("created_at", -1).to_list(200)
-    if not products:
-        await send2(chat_id, "LIST PRODUCT\n\nBelum ada produk tersedia.", kb=menu_keyboard())
-        return
-
-    page_size = 10
-    total_pages = max(1, (len(products) + page_size - 1) // page_size)
-    page = min(max(1, page), total_pages)
-    current = products[(page - 1) * page_size: page * page_size]
-
-    lines = ["<b>LIST PRODUCT</b>", ""]
-    rows = []
-    for index, product in enumerate(current, (page - 1) * page_size + 1):
-        stock = await stock_for(product)
-        stock_text = "∞" if stock is None else str(int(stock))
-        lines.append(f"[{index}]. {escape(product['name'])} ({stock_text})")
-        rows.append([{
-            "text": f"[{index}] {product['name'][:40]} ({stock_text})",
-            "callback_data": f"b2:product:{product['_id']}",
-        }])
-
-    lines += ["", f"📄 Halaman {page} / {total_pages}"]
-    nav = []
-    if page > 1:
-        nav.append({"text": "⬅️", "callback_data": f"b2:products:{page-1}"})
-    if page < total_pages:
-        nav.append({"text": "➡️", "callback_data": f"b2:products:{page+1}"})
-    if nav:
-        rows.append(nav)
-    rows.append([
-        {"text": "🔥 PRODUK POPULER", "callback_data": "b2:popular"},
-        {"text": "⚡ Flash Sale", "callback_data": "b2:flash"},
-    ])
-    await send2(chat_id, "\n".join(lines), kb={"inline_keyboard": rows})
-
-
 async def show_product(chat_id, pid):
     product = await db.products.find_one({"_id": pid, "active": True})
     if not product:
@@ -220,18 +184,36 @@ async def show_product(chat_id, pid):
     stock = await stock_for(product)
     price = await price_for_product(product, "IDR", 1)
     stock_text = "∞" if stock is None else str(int(stock))
+    rating = product.get("rating") or "Belum ada ulasan"
+    variation = product.get("variation") or product.get("variant") or product.get("sku") or product.get("name")
+    code = product.get("code") or product.get("_id", "")[-4:]
+    desc = product.get("description") or "Tidak ada deskripsi."
     text = (
-        f"<b>📦 {escape(product['name'])}</b>\n\n"
-        f"{escape(product.get('description') or 'Tidak ada deskripsi.')}\n\n"
-        f"💰 Harga: <b>{fmt_amount(price['unit_price'], 'IDR')}</b>\n"
-        f"📦 Stok: <b>{stock_text}</b>"
+        "╭───────────────\n"
+        f"• Produk : {escape(str(product['name']))}\n"
+        f"• Variasi : {escape(str(variation))}\n"
+        f"• Kode : {escape(str(code))}\n"
+        f"• Sisa Produk : {stock_text}\n"
+        f"• Rating : {escape(str(rating))}\n"
+        f"• Desk : {escape(str(desc))}\n"
+        "╰───────────────\n\n"
+        "╭───────────────\n"
+        "• Jumlah : 1\n"
+        f"• Harga : {fmt_amount(price['unit_price'], 'IDR')}\n"
+        f"• Total Harga : {fmt_amount(price['unit_price'], 'IDR')}\n"
+        "╰───────────────\n\n"
+        f"Current Date: {datetime.now().strftime('%I:%M:%S %p')}"
     )
     if stock is not None and stock <= 0:
         await send2(chat_id, text + "\n\n❌ Stok habis.", kb=back_keyboard())
         return
     await send2(chat_id, text, kb={"inline_keyboard": [
-        [{"text": "🛒 Beli", "callback_data": f"b2:buy:{pid}"}],
-        [{"text": "◀️ Kembali", "callback_data": "b2:products:1"}],
+        [
+            {"text": "📝 Buy ( Saldo )", "callback_data": f"b2:buy_balance:{pid}"},
+            {"text": "🔄 Buy ( Now )", "callback_data": f"b2:buy_now:{pid}"},
+        ],
+        [{"text": "Back", "callback_data": "b2:products:1"}],
+        [{"text": "🔔 Notif Restok", "callback_data": f"b2:restock:{pid}"}],
     ]})
 
 
@@ -371,7 +353,81 @@ async def reserve_order_items(order_id, items):
     return allocations, reservation_id
 
 
-async def create_bot2_checkout(chat_id, user, pid, qty):
+async def begin_bot2_note(chat_id, user, pid, mode):
+    product = await db.products.find_one({"_id": pid, "active": True})
+    if not product:
+        await send2(chat_id, "❌ Produk tidak ditemukan.", kb=menu_keyboard())
+        return
+    stock = await stock_for(product)
+    if stock is not None and stock < 1:
+        await send2(chat_id, "❌ Stok produk sedang kosong.", kb=back_keyboard())
+        return
+    await set_b2_state(user["telegram_id"], "note_input", {"pid": pid, "mode": mode})
+    await send2(chat_id, "📝 <b>Catatan untuk penjual</b>", kb={"inline_keyboard": [
+        [{"text": "📝 Isi Catatan", "callback_data": "b2:note_input"}],
+        [{"text": "⏭️ Skip", "callback_data": "b2:note_skip"}],
+        [{"text": "❌ Batal", "callback_data": "b2:cancel"}],
+    ]})
+
+
+async def confirm_bot2_order(chat_id, user, pid, qty, mode, note=""):
+    product = await db.products.find_one({"_id": pid, "active": True})
+    if not product:
+        await send2(chat_id, "❌ Produk sudah tidak tersedia.", kb=menu_keyboard())
+        return
+    pricing = await price_for_product(product, "IDR", qty)
+    total = round(pricing["unit_price"] * qty)
+    await set_b2_state(user["telegram_id"], "confirm", {"pid": pid, "qty": qty, "mode": mode, "note": note})
+    await send2(chat_id, "🧾 <b>Konfirmasi Pesanan</b>\n\n"
+        f"Produk: <b>{escape(product['name'])}</b>\n"
+        f"Qty: <b>{qty}</b>\n"
+        f"Total: <b>{fmt_amount(total, 'IDR')}</b>\n"
+        f"Catatan: <b>{escape(note or 'tidak ada')}</b>",
+        kb={"inline_keyboard": [
+            [{"text": "✅ Konfirmasi & Proses", "callback_data": "b2:confirm_order"}],
+            [{"text": "❌ Batal", "callback_data": "b2:cancel"}],
+        ]})
+
+
+async def process_confirmed_bot2_order(chat_id, user, pid, qty, mode, note):
+    if mode == "balance":
+        from checkout import execute_checkout
+        result = await execute_checkout(user, [{"pid": pid, "qty": qty}], preserve_cart=True, coupon_code=user.get("pending_coupon"))
+        if not result.get("ok"):
+            await send2(chat_id, "❌ Saldo IDR tidak mencukupi." if result.get("error") == "balance" else "❌ Checkout gagal.", kb=menu_keyboard())
+            return
+        order = result["order"]
+        order["note"] = note
+        await send2(chat_id, build_invoice_text(order))
+        allocation_map = {x["product_id"]: x for x in result.get("allocations", [])}
+        all_ok = True
+        for item in result["items"]:
+            product = item["product"]
+            if product.get("product_kind") == "digital" or product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
+                allocation = allocation_map.get(product["_id"], {})
+                ok = await deliver_inventory(
+                    chat_id, product, decrypt_items(allocation.get("items", [])),
+                    send_message_fn=send2, send_document_fn=send_document2
+                )
+            else:
+                ok = True
+                for _ in range(item["qty"]):
+                    ok = (await deliver_product(
+                        chat_id, product, "id",
+                        send_message_fn=send2, send_document_fn=send_document2
+                    )) and ok
+            all_ok = all_ok and ok
+        await db.purchases.update_one({"_id": order["_id"]}, {"$set": {
+            "note": note,
+            "status": "delivered" if all_ok else "delivery_failed",
+            "delivered_at": datetime.now(timezone.utc).isoformat() if all_ok else None,
+        }})
+        await send2(chat_id, "✅ <b>Pesanan berhasil diproses.</b>" if all_ok else "⚠️ Pembayaran berhasil, tetapi pengiriman membutuhkan perhatian admin.", kb=menu_keyboard())
+        return
+    await create_bot2_checkout(chat_id, user, pid, qty, note=note)
+
+
+async def create_bot2_checkout(chat_id, user, pid, qty, note=''):
     product = await db.products.find_one({"_id": pid, "active": True})
     if not product:
         await send2(chat_id, "❌ Produk sudah tidak tersedia.", kb=menu_keyboard())
@@ -441,6 +497,9 @@ async def create_bot2_checkout(chat_id, user, pid, qty):
         "discount_total": pricing["discount_total"],
         "source_code": user.get("traffic_source_code"),
         "source_kind": user.get("traffic_source_kind"),
+        "note": note,
+        "bot2": True,
+        "payment_scope": PAYMENT_SCOPE,
     }
 
     await db.purchases.insert_one(order)
@@ -449,6 +508,7 @@ async def create_bot2_checkout(chat_id, user, pid, qty):
             "_id": payment_id,
             "payment_scope": PAYMENT_SCOPE,
             "payment_type": "checkout",
+            "payment_scope": PAYMENT_SCOPE,
             "order_id": order_id,
             "user_tid": user["telegram_id"],
             "base_amount": subtotal,
@@ -778,18 +838,47 @@ async def handle_callback2(cb):
         await set_b2_state(user["telegram_id"])
         await show_home(chat_id, user, loaded=False)
         return
+    if data == "b2:note_input":
+        await set_b2_state(user["telegram_id"], "note_input", user.get("bot2_state_data") or {})
+        await send2(chat_id, "✍️ Silakan kirim catatan untuk penjual.", kb=cancel_keyboard())
+        return
+    if data == "b2:note_skip":
+        state_data = user.get("bot2_state_data") or {}
+        await set_b2_state(user["telegram_id"])
+        await confirm_bot2_order(chat_id, user, state_data.get("pid"), 1, state_data.get("mode", "now"), "")
+        return
+    if data == "b2:confirm_order":
+        state_data = user.get("bot2_state_data") or {}
+        await set_b2_state(user["telegram_id"])
+        await process_confirmed_bot2_order(
+            chat_id, user, state_data.get("pid"), int(state_data.get("qty") or 1),
+            state_data.get("mode", "now"), state_data.get("note", "")
+        )
+        return
     if data.startswith("b2:products:"):
         await show_products(chat_id, int(data.split(":")[-1]))
         return
     if data.startswith("b2:product:"):
         await show_product(chat_id, data.split(":", 2)[2])
         return
-    if data.startswith("b2:buy:"):
+    if data.startswith("b2:buy_balance:"):
         pid = data.split(":", 2)[2]
-        await set_b2_state(user["telegram_id"], "quantity", {"pid": pid})
-        await ask_quantity(chat_id, pid)
+        await begin_bot2_note(chat_id, user, pid, "balance")
         return
-    if data.startswith("b2:pay:"):
+    if data.startswith("b2:buy_now:"):
+        pid = data.split(":", 2)[2]
+        await begin_bot2_note(chat_id, user, pid, "now")
+        return
+    if data.startswith("b2:restock:"):
+        pid = data.split(":", 2)[2]
+        await db.bot2_restock_requests.update_one(
+            {"user_tid": user["telegram_id"], "product_id": pid},
+            {"$set": {"active": True, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+        await send2(chat_id, "🔔 Notifikasi restok diaktifkan untuk produk ini.", kb=back_keyboard())
+        return
+    if data.startswith("b2:pay:")
         order_id = data.split(":", 2)[2]
         await show_checkout_qr(chat_id, user, order_id)
         return
@@ -842,7 +931,7 @@ async def handle_message2(message):
         await show_how_to_order(chat_id)
         return
 
-    if text in ("🏷️ List Produk", "🛒 List Produk", "/products"):
+    if text in ("🏷️ List Produk", "🛒 List Produk", "/products", "1"):
         await set_b2_state(user["telegram_id"])
         await show_products(chat_id, 1)
         return
@@ -870,16 +959,9 @@ async def handle_message2(message):
     state = user.get("bot2_state")
     data = user.get("bot2_state_data") or {}
 
-    if state == "quantity":
-        if not text.isdigit() or int(text) < 1:
-            await send2(chat_id, "⚠️ Masukkan jumlah berupa angka bulat minimal 1.", kb=cancel_keyboard())
-            return
-        qty = int(text)
-        if qty > 10000:
-            await send2(chat_id, "⚠️ Maksimal 10.000 item per transaksi.", kb=cancel_keyboard())
-            return
+    if state == "note_input":
         await set_b2_state(user["telegram_id"])
-        await create_bot2_checkout(chat_id, user, data["pid"], qty)
+        await confirm_bot2_order(chat_id, user, data.get("pid"), 1, data.get("mode", "now"), text)
         return
 
     if state == "deposit_amount":
@@ -963,7 +1045,7 @@ async def process_update2(update):
 
 async def _expire_bot2_orders():
     now = datetime.now(timezone.utc).isoformat()
-    cursor = db.purchases.find({"status": "pending_payment", "expires_at": {"$lte": now}})
+    cursor = db.purchases.find({"bot2": True, "payment_scope": PAYMENT_SCOPE, "status": "pending_payment", "expires_at": {"$lte": now}})
     async for order in cursor:
         await release_items(f"bot2:{order['_id']}")
         await db.gopay_payments.update_one(
@@ -978,7 +1060,7 @@ async def _expire_bot2_orders():
 
 async def _expire_bot2_deposits():
     now = datetime.now(timezone.utc).isoformat()
-    cursor = db.deposits.find({"method": "gopay", "payment_id": {"$exists": True}, "status": "pending", "expires_at": {"$lte": now}})
+    cursor = db.deposits.find({"bot2": True, "method": "gopay", "payment_id": {"$exists": True}, "status": "pending", "expires_at": {"$lte": now}})
     async for dep in cursor:
         payment = await db.gopay_payments.find_one({"_id": dep.get("payment_id"), "payment_scope": PAYMENT_SCOPE})
         if payment:
