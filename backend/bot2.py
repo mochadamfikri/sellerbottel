@@ -915,7 +915,8 @@ async def create_manual_deposit(user, amount, proof_file_id):
                 {"text": "✅ Setujui", "callback_data": f"b2:adm:approve:{deposit['_id']}"},
                 {"text": "❌ Tolak", "callback_data": f"b2:adm:reject:{deposit['_id']}"},
             ]]},
-        )        if proof_file_id:
+        )
+        if proof_file_id:
             try:
                 await tg2("sendPhoto", chat_id=admin_id, photo=proof_file_id, caption="Bukti transfer deposit Bot 2")
             except Exception:
