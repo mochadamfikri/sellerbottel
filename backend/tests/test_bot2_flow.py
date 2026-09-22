@@ -175,3 +175,32 @@ def test_bot2_balance_checkout_is_idr_only_without_changing_bot1_currency(monkey
     assert order["currency"] == "IDR"
     assert order["bot2"] is True
     assert order["payment_scope"] == "bot2"
+
+
+def test_bot2_product_menu_and_product_detail_are_callable(monkeypatch):
+    sent = []
+
+    async def fake_send(*args, **kwargs):
+        sent.append((args, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(bot2, "send2", fake_send)
+    run(bot2.show_products(123, 1))
+    run(bot2.show_product(123, "p1"))
+
+    assert any("LIST PRODUCT" in (args[1] if len(args) > 1 else "") for args, _ in sent)
+    assert any("EMAIL KAMPUS" in (args[1] if len(args) > 1 else "") for args, _ in sent)
+
+
+def test_bot2_qris_order_isolated_from_bot1_scope():
+    async def seed():
+        await db.gopay_payments.insert_one({
+            "_id": "bot1-payment",
+            "payment_scope": "bot1",
+            "active_payment_amount": 10101,
+            "status": "pending",
+            "expires_at": "2999-01-01T00:00:00+00:00",
+        })
+    run(seed())
+    bot1 = run(db.gopay_payments.find_one({"_id": "bot1-payment"}))
+    assert bot1["payment_scope"] == "bot1"
