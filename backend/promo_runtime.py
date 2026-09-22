@@ -1,7 +1,7 @@
 import asyncio
 import os
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from db import db
 from promo_campaign import send_job, render_message
@@ -76,7 +76,7 @@ async def _queue_loop():
                     # Keep a future schedule intact; if no schedule was supplied, back off
                     # instead of hammering Telegram/Mongo every few seconds.
                     if not job.get("scheduled_at"):
-                        retry_at = datetime.now(timezone.utc) + __import__("datetime").timedelta(minutes=5)
+                        retry_at = datetime.now(timezone.utc) + timedelta(minutes=5)
                         await db.outreach_jobs.update_one(
                             {"_id": job["_id"], "status": "approved"},
                             {"$set": {"scheduled_at": retry_at.isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()}},
