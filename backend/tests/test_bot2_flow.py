@@ -143,3 +143,35 @@ def test_bot2_deposit_qris_is_tagged_and_credits_idr(monkeypatch):
     assert dep["currency"] == "IDR"
     assert payment["payment_scope"] == "bot2"
     assert payment["payment_type"] == "deposit"
+
+
+def test_bot2_balance_checkout_is_idr_only_without_changing_bot1_currency(monkeypatch):
+    monkeypatch.setattr(bot2, "send2", lambda *args, **kwargs: asyncio.sleep(0))
+    monkeypatch.setattr(bot2, "send_document2", lambda *args, **kwargs: asyncio.sleep(0))
+
+    user = run(bot2.get_user2({
+        "id": 999,
+        "username": "shared-user",
+        "first_name": "Shared",
+    }))
+    run(db.bot_users.update_one(
+        {"telegram_id": 999},
+        {"$set": {"currency": "USD", "balance_usd": 100, "balance_idr": 10000}},
+    ))
+    user = run(db.bot_users.find_one({"telegram_id": 999}))
+
+    async def fake_delivery(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(bot2, "deliver_inventory", fake_delivery)
+    run(bot2.process_confirmed_bot2_order(999, user, "p1", 1, "balance", "test note"))
+
+    saved = run(db.bot_users.find_one({"telegram_id": 999}))
+    order = run(db.purchases.find_one({"user_tid": 999}))
+
+    assert saved["currency"] == "USD"
+    assert saved["balance_usd"] == 100
+    assert saved["balance_idr"] == 0
+    assert order["currency"] == "IDR"
+    assert order["bot2"] is True
+    assert order["payment_scope"] == "bot2"
