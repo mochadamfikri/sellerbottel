@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { BadgePercent, Ban, Check, Megaphone, RefreshCw, Send, Trash2, Upload, UserPlus, Users } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "../lib/api";
@@ -44,7 +44,7 @@ export default function Promotions() {
   const error = (e) => toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Terjadi kesalahan.");
   const activeAccounts = useMemo(() => accounts.filter((a) => a.status === "active"), [accounts]);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const [s, a, p, c, j, g, co, r, src, ev] = await Promise.all([
         api.get("/admin/promo/summary"),
