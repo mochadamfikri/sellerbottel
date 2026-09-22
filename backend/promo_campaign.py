@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from db import db
 from promo_service import now_iso
 from promo_telegram import decrypt_session
+from rates import get_rate
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError, PeerFloodError, UserPrivacyRestrictedError
@@ -18,9 +19,26 @@ DEFAULT_DAILY_LIMIT = max(1, int(os.environ.get("PROMO_DAILY_LIMIT", "20")))
 def _api():
     return int(os.environ["TG_API_ID"]), os.environ["TG_API_HASH"]
 
-def render_message(template: str, prospect: dict, bot_link: str = ""):
+async def render_message(template: str, prospect: dict, bot_link: str = "", product: dict | None = None):
     name = (prospect.get("name") or prospect.get("username") or "Kak").strip()
-    return template.replace("{nama}", name).replace("{username}", prospect.get("username") or "").replace("{bot_link}", bot_link)
+    values = {
+        "{nama}": name,
+        "{username}": prospect.get("username") or "",
+        "{bot_link}": bot_link,
+        "{produk}": (product or {}).get("name") or "",
+        "{harga_usd}": "$" + f"{float((product or {}).get('price_usd') or 0):,.2f}",
+        "{harga_idr}": "",
+    }
+    if product:
+        if product.get("price_idr") is not None:
+            idr = round(float(product["price_idr"]))
+        else:
+            rate = await get_rate()
+            idr = round(float(product.get("price_usd") or 0) * rate / 100) * 100
+        values["{harga_idr}"] = "Rp" + f"{idr:,.0f}".replace(",", ".")
+    for key, value in values.items():
+        template = template.replace(key, str(value))
+    return template
 
 async def create_campaign(data: dict):
     name = str(data.get("name") or "").strip()
@@ -41,6 +59,7 @@ async def create_campaign(data: dict):
         "_id": str(uuid.uuid4()), "name": name, "template": template,
         "source_code": str(data.get("source_code") or "").strip().lower(),
         "bot_link": str(data.get("bot_link") or "").strip(),
+        "product_id": str(data.get("product_id") or "").strip() or None,
         "account_ids": account_ids,
         "status": "draft", "approval_required": bool(data.get("approval_required", True)),
         "daily_limit": max(1, int(data.get("daily_limit") or DEFAULT_DAILY_LIMIT)),
@@ -104,6 +123,7 @@ async def send_job(job: dict):
     campaign = await db.outreach_campaigns.find_one({"_id": job["campaign_id"]})
     prospect = await db.prospects.find_one({"_id": job["prospect_id"]})
     account = await db.tg_accounts.find_one({"_id": job["account_id"]})
+    product = await db.products.find_one({"_id": campaign.get("product_id"), "active": True}) if campaign.get("product_id") else None
     if not campaign or not prospect or not account or account.get("status") != "active":
         return {"status": "skipped", "reason": "missing_or_inactive"}
     if job.get("scheduled_at"):
@@ -132,7 +152,7 @@ async def send_job(job: dict):
     client = TelegramClient(StringSession(decrypt_session(account["session_encrypted"])), api_id, api_hash)
     await client.connect()
     try:
-        text = render_message(campaign["template"], prospect, campaign.get("bot_link", ""))
+        text = await render_message(campaign["template"], prospect, campaign.get("bot_link", ""), product)
         await client.send_message(prospect["tg_user_id"], text)
         sent = now_iso()
         await db.outreach_jobs.update_one({"_id": job["_id"]}, {"$set": {"status": "sent", "sent_at": sent, "updated_at": sent, "last_error": None}, "$inc": {"attempts": 1}})
