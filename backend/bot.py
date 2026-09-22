@@ -446,7 +446,9 @@ async def add_to_cart(chat_id, user, pid):
 
 # ============ CHECKOUT & DELIVERY ============
 
-async def deliver_product(chat_id, p, lang):
+async def deliver_product(chat_id, p, lang, send_message_fn=None, send_document_fn=None):
+    send_message_fn = send_message_fn or send_message
+    send_document_fn = send_document_fn or send_document
     try:
         if p["delivery_type"] == "file" and p.get("storage_path"):
             data, _ = await get_object(p["storage_path"])
@@ -566,7 +568,9 @@ def _safe_filename_part(value):
     return value.strip("._") or "product"
 
 
-async def deliver_inventory(chat_id, product, records):
+async def deliver_inventory(chat_id, product, records, send_message_fn=None, send_document_fn=None):
+    send_message_fn = send_message_fn or send_message
+    send_document_fn = send_document_fn or send_document
     if not records:
         return False
 
