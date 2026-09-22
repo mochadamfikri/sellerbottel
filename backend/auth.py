@@ -32,7 +32,12 @@ async def seed_admin():
     password = os.environ.get("ADMIN_PASSWORD", "")
     if not email or not password:
         raise RuntimeError("ADMIN_EMAIL dan ADMIN_PASSWORD wajib di-set. Tidak ada default admin/password.")
-    existing = await db.admins.find_one({"email": email})
+    existing = await db.admins.find_one({
+        "$or": [
+            {"_id": "admin-1"},
+            {"email": email},
+        ]
+    })
     if existing is None:
         await db.admins.insert_one({
             "_id": "admin-1", "email": email, "password_hash": hash_password(password),

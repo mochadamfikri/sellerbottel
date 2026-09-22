@@ -73,6 +73,35 @@ async def delete2(chat_id, message_id):
     return await tg2("deleteMessage", chat_id=chat_id, message_id=message_id)
 
 
+async def clear_bot2_chat(chat_id, through_message_id):
+    """Best-effort clear of the private Bot 2 chat before /start.
+
+    Telegram permits bots to delete incoming messages in private chats and
+    outgoing bot messages, but only messages newer than 48 hours. We therefore
+    walk the message-id range in batches of 100. Telegram silently skips
+    missing/already-deleted IDs.
+    """
+    try:
+        last_id = int(through_message_id)
+    except (TypeError, ValueError):
+        return
+
+    if last_id <= 0:
+        return
+
+    for start in range(1, last_id + 1, 100):
+        message_ids = list(range(start, min(start + 100, last_id + 1)))
+        try:
+            await tg2(
+                "deleteMessages",
+                chat_id=chat_id,
+                message_ids=message_ids,
+            )
+        except Exception:
+            logger.exception("Bot2 chat cleanup failed for IDs %s-%s", start, message_ids[-1])
+        await asyncio.sleep(0.05)
+
+
 async def send_photo2(chat_id, data: bytes, filename="qris.jpg", caption=None, kb=None):
     payload = {"chat_id": str(chat_id)}
     if caption:
@@ -115,6 +144,7 @@ def menu_keyboard():
         ],
         "resize_keyboard": True,
         "is_persistent": True,
+        "input_field_placeholder": "Pilih menu atau ketik /start",
     }
 
 def cancel_keyboard():
@@ -1014,19 +1044,23 @@ async def handle_message2(message):    if "from" not in message or message["from
     text = (message.get("text") or "").strip()
 
     if text.startswith("/start"):
+        # Reset the conversation first so the new session starts clean.
+        await clear_bot2_chat(chat_id, message.get("message_id"))
         await set_b2_state(user["telegram_id"])
-        loading = await send2(chat_id, "⏳ <b>Memuat data...</b>\n\n▱▱▱▱▱▱▱▱▱▱ <b>0%</b>")
+        loading = await send2(chat_id, "⏳ <b>MEMUAT DATA</b>\n\n▱▱▱▱▱▱▱▱▱▱ <b>0%</b>")
         loading_id = (loading.get("result") or {}).get("message_id")
         import random
-        steps = sorted(set(random.randint(5, 95) for _ in range(random.randint(7, 15))))
+        step_count = random.randint(7, 15)
+        steps = sorted(random.sample(range(5, 96), step_count))
         for percent in steps + [100]:
             if loading_id:
                 await edit2(
                     chat_id,
                     loading_id,
-                    f"⏳ <b>Memuat data...</b>\n\n{_progress_bar(percent)} <b>{percent}%</b>",
+                    f"⏳ <b>MEMUAT DATA</b>\n\n{_progress_bar(percent)} <b>{percent}%</b>",
                 )
-                await asyncio.sleep(0.08)
+                # Telegram clients can coalesce very-fast edits; keep each frame visible.
+                await asyncio.sleep(0.4)
         if loading_id:
             await show_products(chat_id, 1, message_id=loading_id)
         else:
