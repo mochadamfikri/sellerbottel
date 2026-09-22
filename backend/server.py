@@ -109,7 +109,8 @@ async def startup():
         app.state.gopay_stop = asyncio.Event()
         app.state.gopay_task = asyncio.create_task(run_gopay_monitor(app.state.gopay_stop))
 
-    await resume_service_waiters()\n    await start_promo_runtime()
+    await resume_service_waiters()
+    await start_promo_runtime()
 
     if base and os.environ.get("TELEGRAM_TOKEN"):
         try:
@@ -125,7 +126,8 @@ async def startup():
 
 
 @app.on_event("shutdown")
-async def shutdown_db_client():\n    await stop_promo_runtime()
+async def shutdown_db_client():
+    await stop_promo_runtime()
     stop = getattr(app.state, "gopay_stop", None)
     task = getattr(app.state, "gopay_task", None)
     if stop:
