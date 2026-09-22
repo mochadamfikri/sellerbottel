@@ -40,9 +40,14 @@ export default function Promotions() {
   const [coupon, setCoupon] = useState(emptyCoupon);
   const [campaign, setCampaign] = useState(emptyCampaign);
   const [post, setPost] = useState({ account_id: "", group_id: "", message: "" });
+  const [userMessage, setUserMessage] = useState({ account_id: "", prospect_id: "", message: "" });
 
   const error = (e) => toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Terjadi kesalahan.");
   const activeAccounts = useMemo(() => accounts.filter((a) => a.status === "active"), [accounts]);
+  const postGroups = useMemo(
+    () => groups.filter((g) => !post.account_id || g.account_id === post.account_id),
+    [groups, post.account_id],
+  );
 
   const load = useCallback(async () => {
     try {
@@ -203,6 +208,29 @@ export default function Promotions() {
     try {
       await api.post("/admin/promo/groups/" + post.group_id + "/post", { ...post, group_id: Number(post.group_id) });
       toast.success("Posting grup terkirim."); setPost({ ...post, message: "" });
+      await load();
+    } catch (e) { error(e); }
+  };
+
+  const syncPostGroups = async () => {
+    if (!post.account_id) return toast.error("Pilih akun Telegram terlebih dahulu.");
+    try {
+      const r = await api.post("/admin/promo/accounts/" + post.account_id + "/sync-groups");
+      toast.success("Grup tersinkron: " + (r.data.groups || 0));
+      setPost((v) => ({ ...v, group_id: "" }));
+      await load();
+    } catch (e) { error(e); }
+  };
+
+  const sendUserMessage = async () => {
+    if (!userMessage.account_id || !userMessage.prospect_id || !userMessage.message.trim()) {
+      return toast.error("Akun, pengguna, dan pesan wajib diisi.");
+    }
+    try {
+      await api.post("/admin/promo/prospects/" + userMessage.prospect_id + "/send", userMessage);
+      toast.success("Pesan pengguna terkirim.");
+      setUserMessage((v) => ({ ...v, message: "" }));
+      await load();
     } catch (e) { error(e); }
   };
 
@@ -270,8 +298,27 @@ export default function Promotions() {
             <div className="grid md:grid-cols-4 gap-2"><input className={cls} placeholder="Telegram ID" value={manual.tg_user_id} onChange={(e) => setManual({ ...manual, tg_user_id: e.target.value })} /><input className={cls} placeholder="Username" value={manual.username} onChange={(e) => setManual({ ...manual, username: e.target.value })} /><input className={cls} placeholder="Nama" value={manual.name} onChange={(e) => setManual({ ...manual, name: e.target.value })} /><button onClick={addManualProspect} className="bg-cyan-600 rounded-lg">Tambah</button></div>
             <input className={cls} placeholder="Catatan" value={manual.notes} onChange={(e) => setManual({ ...manual, notes: e.target.value })} />
           </div>
+          <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-3">
+            <div className="flex items-center gap-2"><Send size={17} className="text-cyan-400" /><h2 className="font-semibold">Kirim Pesan ke Pengguna</h2></div>
+            <p className="text-xs text-slate-500">Hanya prospek yang berstatus izin kontak yang dapat dikirimi pesan secara manual.</p>
+            <div className="grid md:grid-cols-2 gap-2">
+              <select className={cls} value={userMessage.account_id} onChange={(e) => setUserMessage({ ...userMessage, account_id: e.target.value })}>
+                <option value="">Pilih akun pengirim</option>
+                {activeAccounts.map((a) => <option key={a._id} value={a._id}>{a.name || a.username || a.tg_user_id}</option>)}
+              </select>
+              <select className={cls} value={userMessage.prospect_id} onChange={(e) => setUserMessage({ ...userMessage, prospect_id: e.target.value })}>
+                <option value="">Pilih pengguna</option>
+                {prospects.filter((p) => p.contact_allowed && p.status !== "opt_out").map((p) => <option key={p._id} value={p._id}>{p.name || (p.username ? "@" + p.username : p.tg_user_id)}</option>)}
+              </select>
+            </div>
+            <textarea className={cls} rows="4" placeholder="Tulis pesan..." value={userMessage.message} onChange={(e) => setUserMessage({ ...userMessage, message: e.target.value })} />
+            <button onClick={sendUserMessage} className="bg-cyan-600 hover:bg-cyan-700 rounded-lg px-4 py-2">Kirim Pesan</button>
+          </div>
           <div className="bg-slate-900/80 border border-slate-800 rounded-xl overflow-x-auto">
-            <table className="w-full text-sm"><thead><tr className="border-b border-slate-800 text-xs text-slate-500"><th className="p-3 text-left">Nama</th><th>Username</th><th>Status</th><th>Izin kontak</th><th>Source</th><th>Aksi</th></tr></thead><tbody>{prospects.map((p) => <tr key={p._id} className="border-b border-slate-800/70"><td className="p-3">{p.name || "-"}</td><td>{p.username ? "@" + p.username : "-"}</td><td>{p.status}</td><td><button onClick={() => setContactPermission(p)} className={p.contact_allowed ? "text-emerald-400" : "text-slate-500"}>{p.contact_allowed ? "Diizinkan" : "Belum"}</button></td><td>{p.source?.label || "-"}</td><td><button onClick={() => optOut(p.tg_user_id)} title="Opt-out" className="text-rose-400"><Ban size={15} /></button></td></tr>)}</tbody></table>
+            <table className="w-full text-sm"><thead><tr className="border-b border-slate-800 text-xs text-slate-500"><th className="p-3 text-left">Nama</th><th>Username</th><th>Status</th><th>Izin kontak</th><th>Source</th><th>Aksi</th></tr></thead><tbody>{prospects.map((p) => <tr key={p._id} className="border-b border-slate-800/70"><td className="p-3">{p.name || "-"}</td><td>{p.username ? "@" + p.username : "-"}</td><td>{p.status}</td><td><button onClick={() => setContactPermission(p)} className={p.contact_allowed ? "text-emerald-400" : "text-slate-500"}>{p.contact_allowed ? "Diizinkan" : "Belum"}</button></td><td>{p.source?.label || "-"}</td><td className="p-3 flex gap-2 justify-center">
+  {p.contact_allowed && <button onClick={() => setUserMessage({ account_id: activeAccounts[0]?._id || "", prospect_id: p._id, message: "" })} title="Kirim pesan" className="text-cyan-400"><Send size={15} /></button>}
+  <button onClick={() => optOut(p.tg_user_id)} title="Opt-out" className="text-rose-400"><Ban size={15} /></button>
+</td></tr>)}</tbody></table>
             {!prospects.length && <p className="p-5 text-sm text-slate-500">Belum ada prospek.</p>}
           </div>
         </div>
@@ -296,8 +343,12 @@ export default function Promotions() {
 
       {tab === "groups" && (
         <div className="space-y-5">
-          <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-3"><h2 className="font-semibold">Posting Grup — manual approval</h2><select className={cls} value={post.account_id} onChange={(e) => setPost({ ...post, account_id: e.target.value })}><option value="">Pilih akun</option>{activeAccounts.map((a) => <option key={a._id} value={a._id}>{a.name || a.username || a.tg_user_id}</option>)}</select><select className={cls} value={post.group_id} onChange={(e) => setPost({ ...post, group_id: e.target.value })}><option value="">Pilih grup</option>{groups.map((g) => <option key={g._id} value={g.chat_id}>{g.title}</option>)}</select><textarea className={cls} rows="5" placeholder="Pesan grup" value={post.message} onChange={(e) => setPost({ ...post, message: e.target.value })} /><button onClick={postGroup} className="bg-cyan-600 rounded-lg py-2">Posting</button></div>
-          <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5"><h2 className="font-semibold">Grup tersinkron</h2><div className="mt-3 space-y-2">{groups.map((g) => <div key={g._id} className="flex justify-between border-b border-slate-800 py-2 text-sm"><span>{g.title || g.chat_id}</span><span className="text-slate-500">{g.account_id}</span></div>)}{!groups.length && <p className="text-sm text-slate-500">Belum ada grup.</p>}</div></div>
+          <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-3"><h2 className="font-semibold">Posting Grup — manual approval</h2><div className="grid md:grid-cols-[1fr_auto] gap-2">
+  <select className={cls} value={post.account_id} onChange={(e) => setPost({ account_id: e.target.value, group_id: "", message: post.message })}><option value="">Pilih akun Telegram</option>{activeAccounts.map((a) => <option key={a._id} value={a._id}>{a.name || a.username || a.tg_user_id}</option>)}</select>
+  <button onClick={syncPostGroups} disabled={!post.account_id} className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 rounded-lg px-4">Sync Grup</button>
+</div>
+<select className={cls} value={post.group_id} onChange={(e) => setPost({ ...post, group_id: e.target.value })}><option value="">Pilih grup dari akun</option>{postGroups.map((g) => <option key={g._id} value={g.chat_id}>{g.title}{g.username ? " @" + g.username : ""}</option>)}</select><textarea className={cls} rows="5" placeholder="Pesan grup" value={post.message} onChange={(e) => setPost({ ...post, message: e.target.value })} /><button onClick={postGroup} className="bg-cyan-600 rounded-lg py-2">Posting</button></div>
+          <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5"><h2 className="font-semibold">Grup tersinkron</h2><div className="mt-3 space-y-2">{postGroups.map((g) => <div key={g._id} className="flex justify-between border-b border-slate-800 py-2 text-sm"><span>{g.title || g.chat_id}</span><span className="text-slate-500">{g.account_id}</span></div>)}{!postGroups.length && <p className="text-sm text-slate-500">Belum ada grup untuk akun yang dipilih. Klik Sync Grup.</p>}</div></div>
         </div>
       )}
 
