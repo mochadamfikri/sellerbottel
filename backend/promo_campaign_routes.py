@@ -1,5 +1,6 @@
 import uuid
 from fastapi import APIRouter, HTTPException
+
 from pydantic import BaseModel, Field
 from db import db
 from promo_campaign import create_campaign, enqueue_campaign, approve_job, opt_out, import_private_chats, sync_groups, now_iso
@@ -25,6 +26,11 @@ class OptOutBody(BaseModel):
 class ManualPostBody(BaseModel):
     account_id: str
     group_id: int
+    message: str = Field(min_length=1, max_length=4000)
+
+class ManualUserMessageBody(BaseModel):
+    account_id: str
+    prospect_id: str
     message: str = Field(min_length=1, max_length=4000)
 
 @router.get("/campaigns")
@@ -67,8 +73,75 @@ async def groups_sync(account_id: str):
     except Exception as exc: raise HTTPException(400, str(exc))
 
 @router.get("/groups")
-async def groups():
-    return await db.tg_groups.find({}).sort("title", 1).to_list(500)
+async def groups(account_id: str | None = None):
+    query = {"account_id": account_id} if account_id else {}
+    return await db.tg_groups.find(query).sort("title", 1).to_list(500)
+
+@router.post("/prospects/{prospect_id}/send")
+async def send_user_message(prospect_id: str, body: ManualUserMessageBody):
+    from promo_telegram import decrypt_session, _api
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+
+    prospect = await db.prospects.find_one({"_id": prospect_id})
+    if not prospect:
+        raise HTTPException(404, "Prospek tidak ditemukan.")
+    if not prospect.get("contact_allowed"):
+        raise HTTPException(403, "Prospek belum mengizinkan kontak.")
+    if await db.promo_suppressions.find_one({"tg_user_id": prospect["tg_user_id"]}):
+        raise HTTPException(403, "Prospek berada di suppression/opt-out list.")
+
+    account = await db.tg_accounts.find_one({
+        "_id": body.account_id,
+        "status": "active",
+        "session_encrypted": {"$type": "string"},
+    })
+    if not account:
+        raise HTTPException(400, "Akun Telegram tidak aktif atau belum memiliki session.")
+
+    api_id, api_hash = _api()
+    client = TelegramClient(
+        StringSession(decrypt_session(account["session_encrypted"])),
+        api_id,
+        api_hash,
+    )
+    await client.connect()
+    sent_at = now_iso()
+    try:
+        await client.send_message(int(prospect["tg_user_id"]), body.message)
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+    finally:
+        await client.disconnect()
+
+    await db.outreach_jobs.insert_one({
+        "_id": str(uuid.uuid4()),
+        "campaign_id": None,
+        "prospect_id": prospect_id,
+        "account_id": body.account_id,
+        "status": "sent",
+        "scheduled_at": None,
+        "attempts": 1,
+        "last_error": None,
+        "sent_at": sent_at,
+        "manual": True,
+        "created_at": sent_at,
+        "updated_at": sent_at,
+    })
+    await db.prospects.update_one(
+        {"_id": prospect_id},
+        {"$set": {"status": "contacted", "last_contacted_at": sent_at},
+         "$inc": {"contact_count": 1}},
+    )
+    await db.promo_events.insert_one({
+        "_id": f"manual_message:{body.account_id}:{prospect_id}:{sent_at}",
+        "type": "manual_message",
+        "account_id": body.account_id,
+        "tg_user_id": prospect["tg_user_id"],
+        "prospect_id": prospect_id,
+        "created_at": sent_at,
+    })
+    return {"ok": True, "sent_at": sent_at}
 
 @router.get("/results/sources")
 async def result_sources():
@@ -102,8 +175,20 @@ async def post_group(body: ManualPostBody, group_id: str):
     from promo_telegram import decrypt_session, _api
     from telethon import TelegramClient
     from telethon.sessions import StringSession
-    account = await db.tg_accounts.find_one({"_id": body.account_id, "status": "active"})
-    if not account: raise HTTPException(400, "Akun tidak aktif.")
+    account = await db.tg_accounts.find_one({
+        "_id": body.account_id,
+        "status": "active",
+        "session_encrypted": {"$type": "string"},
+    })
+    if not account:
+        raise HTTPException(400, "Akun tidak aktif atau belum memiliki session.")
+
+    group = await db.tg_groups.find_one({
+        "account_id": body.account_id,
+        "chat_id": int(group_id),
+    })
+    if not group:
+        raise HTTPException(400, "Grup tidak terdaftar untuk akun Telegram yang dipilih. Sinkronkan grup akun tersebut terlebih dahulu.")
     api_id, api_hash = _api()
     client = TelegramClient(StringSession(decrypt_session(account["session_encrypted"])), api_id, api_hash)
     await client.connect()
