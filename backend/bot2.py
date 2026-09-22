@@ -14,6 +14,7 @@ from inventory import commit_items, decrypt_items, release_items, reserve_items
 from pricing import price_for_product
 from services import fmt_amount
 from checkout import next_invoice_id, stock_for
+from bot import deliver_inventory, deliver_product
 from gopay_provider import _run_node
 
 logger = logging.getLogger("bot2")
@@ -533,9 +534,6 @@ async def show_checkout_qr(chat_id, user, order_id):
 
 
 async def deliver_order(chat_id, order):
-    user = await db.bot_users.find_one({"telegram_id": order["user_tid"]})
-    if not user:
-        return False
     all_ok = True
     for item in order.get("items", []):
         product = await db.products.find_one({"_id": item["product_id"]})
@@ -543,50 +541,50 @@ async def deliver_order(chat_id, order):
             all_ok = False
             continue
         qty = int(item.get("qty") or 1)
-        if product.get("product_kind") == "digital" or product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
+
+        if (
+            product.get("product_kind") == "digital"
+            or product.get("delivery_type") == "inventory"
+            or product.get("inventory_enabled")
+        ):
             reservation_id = f"bot2:{order['_id']}"
             inventory = await db.inventory_items.find(
                 {"reservation_id": reservation_id, "status": "reserved"}
             ).to_list(qty)
-            ok = bool(inventory) and len(inventory) == qty
-            if ok:
-                try:
-                    records = decrypt_items(inventory)
-                    if len(records) > 20:
-                        lines = []
-                        for idx, record in enumerate(records, 1):
-                            values = [str(record.get(k, "none")) for k in ("email", "password", "recovery_email", "recovery", "2fa", "value") if k in record]
-                            lines.append(f"{idx}. " + ":".join(values))
-                        result = await send_document2(
-                            chat_id,
-                            "\n".join(lines).encode("utf-8"),
-                            f"invoice_{product['name']}_{len(records)}.txt",
-                            caption=f"📦 {product['name']} — {len(records)} item",
-                        )
-                    else:
-                        blocks = []
-                        for idx, record in enumerate(records, 1):
-                            lines = [f"<b>{escape(str(k))}:</b> <code>{escape(str(v))}</code>" for k, v in record.items()]
-                            blocks.append(f"<b>#{idx}</b>\n" + "\n".join(lines))
-                        result = await send2(chat_id, f"<b>📦 {escape(product['name'])}</b>\n\n" + "\n\n".join(blocks))
-                    ok = bool(result.get("ok"))
-                except Exception:
-                    logger.exception("Bot2 inventory delivery failed")
-                    ok = False
+            if len(inventory) != qty:
+                all_ok = False
+                continue
+
+            try:
+                records = decrypt_items(inventory)
+                ok = await deliver_inventory(
+                    chat_id,
+                    product,
+                    records,
+                    send_message_fn=send2,
+                    send_document_fn=send_document2,
+                )
                 if ok:
                     await commit_items(reservation_id, order["_id"], order["user_tid"])
-            all_ok = all_ok and ok
-        elif product.get("delivery_type") == "file" and product.get("storage_path"):
-            from storage import get_object
-            data, _ = await get_object(product["storage_path"])
-            result = await send_document2(chat_id, data, product.get("original_filename", "produk.bin"), caption=f"📦 {product['name']}")
-            all_ok = all_ok and bool(result.get("ok"))
-        elif product.get("delivery_type") == "link":
-            result = await send2(chat_id, f"📦 <b>{escape(product['name'])}</b>\n\n🔗 {escape(product.get('content',''))}")
-            all_ok = all_ok and bool(result.get("ok"))
+                else:
+                    await release_items(reservation_id)
+                all_ok = all_ok and ok
+            except Exception:
+                logger.exception("Bot2 inventory delivery failed")
+                await release_items(reservation_id)
+                all_ok = False
         else:
-            result = await send2(chat_id, f"📦 <b>{escape(product['name'])}</b>\n\n🔑 <code>{escape(product.get('content',''))}</code>")
-            all_ok = all_ok and bool(result.get("ok"))
+            ok = True
+            for _ in range(qty):
+                ok = await deliver_product(
+                    chat_id,
+                    product,
+                    "id",
+                    send_message_fn=send2,
+                    send_document_fn=send_document2,
+                ) and ok
+            all_ok = all_ok and ok
+
     return all_ok
 
 
