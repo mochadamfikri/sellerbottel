@@ -243,17 +243,19 @@ async def show_voucher(chat_id):
 
 async def show_information(chat_id, user):
     total_users = await db.bot_users.count_documents({})
-    purchases = await db.purchases.count_documents({"user_tid": user["telegram_id"]})
+    purchases = await db.purchases.find({"user_tid": user["telegram_id"], "currency": "IDR"}).to_list(500)
+    spent = sum(float(x.get("total") or 0) for x in purchases if x.get("status") not in {"cancelled", "expired", "failed"})
     balance = fmt_amount(float(user.get("balance_idr") or 0), "IDR")
+    spent_text = fmt_amount(spent, "IDR")
     text = (
         "──── 「 SALDO 」 ────\n"
         f"• ID : <code>{user['telegram_id']}</code>\n"
         f"• Username : {escape(user.get('username') or '-')}\n"
         f"• Saldo : {balance}\n"
         "• LEVEL : BASIC\n"
-        f"• Pemakaian Saldo : {balance}\n"
-        f"• Jumlah Beli : {purchases}\n"
-        f"• Total Transaksi : {purchases}\n"
+        f"• Pemakaian Saldo : {spent_text}\n"
+        f"• Jumlah Beli : {len(purchases)}\n"
+        f"• Total Transaksi : {len(purchases)}\n"
         f"• Total User : {total_users}\n"
         "────────────\n\n"
         "🛠️ <b>UP LEVEL</b>"
