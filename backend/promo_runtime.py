@@ -57,16 +57,30 @@ async def load_reply_listeners():
 async def _queue_loop():
     while True:
         try:
-            jobs = [x async for x in db.outreach_jobs.find({"status": "approved"}).sort("created_at", 1).limit(20)]
+            now = datetime.now(timezone.utc).isoformat()
+            jobs = [x async for x in db.outreach_jobs.find({
+                "status": "approved",
+                "$or": [
+                    {"scheduled_at": None},
+                    {"scheduled_at": {"$lte": now}},
+                ],
+            }).sort("created_at", 1).limit(20)]
             for job in jobs:
                 result = await send_job(job)
                 if result.get("status") == "sent":
                     interval = int((await db.outreach_campaigns.find_one({"_id": job["campaign_id"]}) or {}).get("min_interval_seconds") or 300)
                     await asyncio.sleep(random.uniform(max(300, interval), max(300, interval) * 1.5))
-                elif result.get("status") in {"stopped", "cancelled"}:
+                elif result.get("status") in {"stopped", "cancelled", "skipped"}:
                     continue
-                else:
-                    await db.outreach_jobs.update_one({"_id": job["_id"]}, {"$set": {"scheduled_at": datetime.now(timezone.utc).isoformat()}})
+                elif result.get("status") == "deferred":
+                    # Keep a future schedule intact; if no schedule was supplied, back off
+                    # instead of hammering Telegram/Mongo every few seconds.
+                    if not job.get("scheduled_at"):
+                        retry_at = datetime.now(timezone.utc) + __import__("datetime").timedelta(minutes=5)
+                        await db.outreach_jobs.update_one(
+                            {"_id": job["_id"], "status": "approved"},
+                            {"$set": {"scheduled_at": retry_at.isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()}},
+                        )
         except Exception:
             await asyncio.sleep(10)
         await asyncio.sleep(5)
