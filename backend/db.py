@@ -95,7 +95,10 @@ async def ensure_indexes():
     await db.outreach_jobs.create_index([("status", 1), ("scheduled_at", 1)])
     await db.outreach_campaigns.create_index([("status", 1), ("created_at", -1)])
     await db.traffic_sources.create_index("code", unique=True)
-    await db.promo_campaigns.create_index([("status", 1), ("created_at", -1)])\n    await db.promo_suppressions.create_index("tg_user_id", unique=True)\n    await db.promo_events.create_index([("type", 1), ("created_at", -1)])\n    await db.outreach_jobs.create_index([("campaign_id", 1), ("prospect_id", 1), ("status", 1)])
+    await db.promo_campaigns.create_index([("status", 1), ("created_at", -1)])
+    await db.promo_suppressions.create_index("tg_user_id", unique=True)
+    await db.promo_events.create_index([("type", 1), ("created_at", -1)])
+    await db.outreach_jobs.create_index([("campaign_id", 1), ("prospect_id", 1), ("status", 1)])
 
 
 async def get_settings() -> dict:
