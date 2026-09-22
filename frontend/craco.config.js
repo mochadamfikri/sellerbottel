@@ -138,6 +138,14 @@ let webpackConfig = {
 };
 
 webpackConfig.devServer = (devServerConfig) => {
+  devServerConfig.proxy = [
+    {
+      context: ["/api"],
+      target: "http://127.0.0.1:8001",
+      changeOrigin: true,
+    },
+  ];
+
   // Add health check endpoints if enabled
   if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {
     const originalSetupMiddlewares = devServerConfig.setupMiddlewares;
