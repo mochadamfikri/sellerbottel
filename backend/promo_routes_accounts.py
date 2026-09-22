@@ -29,7 +29,9 @@ async def accounts():
 async def account_login_start(body: LoginStartBody):
     account_id = str(uuid.uuid4())
     try:
-        return await begin_login(account_id, body.phone)
+        result = await begin_login(account_id, body.phone)
+        result["account_id"] = account_id
+        return result
     except Exception as exc:
         raise HTTPException(400, str(exc))
 
