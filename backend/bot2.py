@@ -877,7 +877,7 @@ async def handle_callback2(cb):
         )
         await send2(chat_id, "🔔 Notifikasi restok diaktifkan untuk produk ini.", kb=back_keyboard())
         return
-    if data.startswith("b2:pay:")
+    if data.startswith("b2:pay:"):
         order_id = data.split(":", 2)[2]
         await show_checkout_qr(chat_id, user, order_id)
         return
