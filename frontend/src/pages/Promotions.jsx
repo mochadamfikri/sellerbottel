@@ -191,6 +191,13 @@ export default function Promotions() {
     } catch (e) { error(e); }
   };
 
+  const setContactPermission = async (prospect) => {
+    try {
+      await api.patch("/admin/promo/prospects/" + prospect._id, { contact_allowed: !prospect.contact_allowed });
+      await load();
+    } catch (e) { error(e); }
+  };
+
   const postGroup = async () => {
     if (!post.account_id || !post.group_id || !post.message.trim()) return toast.error("Akun, grup, dan pesan wajib diisi.");
     try {
@@ -264,7 +271,7 @@ export default function Promotions() {
             <input className={cls} placeholder="Catatan" value={manual.notes} onChange={(e) => setManual({ ...manual, notes: e.target.value })} />
           </div>
           <div className="bg-slate-900/80 border border-slate-800 rounded-xl overflow-x-auto">
-            <table className="w-full text-sm"><thead><tr className="border-b border-slate-800 text-xs text-slate-500"><th className="p-3 text-left">Nama</th><th>Username</th><th>Status</th><th>Source</th><th>Aksi</th></tr></thead><tbody>{prospects.map((p) => <tr key={p._id} className="border-b border-slate-800/70"><td className="p-3">{p.name || "-"}</td><td>{p.username ? "@" + p.username : "-"}</td><td>{p.status}</td><td>{p.source?.label || "-"}</td><td><button onClick={() => optOut(p.tg_user_id)} title="Opt-out" className="text-rose-400"><Ban size={15} /></button></td></tr>)}</tbody></table>
+            <table className="w-full text-sm"><thead><tr className="border-b border-slate-800 text-xs text-slate-500"><th className="p-3 text-left">Nama</th><th>Username</th><th>Status</th><th>Izin kontak</th><th>Source</th><th>Aksi</th></tr></thead><tbody>{prospects.map((p) => <tr key={p._id} className="border-b border-slate-800/70"><td className="p-3">{p.name || "-"}</td><td>{p.username ? "@" + p.username : "-"}</td><td>{p.status}</td><td><button onClick={() => setContactPermission(p)} className={p.contact_allowed ? "text-emerald-400" : "text-slate-500"}>{p.contact_allowed ? "Diizinkan" : "Belum"}</button></td><td>{p.source?.label || "-"}</td><td><button onClick={() => optOut(p.tg_user_id)} title="Opt-out" className="text-rose-400"><Ban size={15} /></button></td></tr>)}</tbody></table>
             {!prospects.length && <p className="p-5 text-sm text-slate-500">Belum ada prospek.</p>}
           </div>
         </div>
