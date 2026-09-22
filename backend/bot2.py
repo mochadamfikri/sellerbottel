@@ -439,6 +439,10 @@ async def process_confirmed_bot2_order(chat_id, user, pid, qty, mode, note):
 
 
 async def create_bot2_checkout(chat_id, user, pid, qty, note=''):
+    settings = await get_settings()
+    if not settings.get("qris_enabled", False) or os.environ.get("GOPAY_ENABLED", "").lower() not in {"1", "true", "yes"}:
+        await send2(chat_id, "⚠️ Pembayaran QRIS sedang tidak tersedia.", kb=menu_keyboard())
+        return
     product = await db.products.find_one({"_id": pid, "active": True})
     if not product:
         await send2(chat_id, "❌ Produk sudah tidak tersedia.", kb=menu_keyboard())
