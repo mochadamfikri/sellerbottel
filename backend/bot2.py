@@ -399,6 +399,14 @@ async def process_confirmed_bot2_order(chat_id, user, pid, qty, mode, note):
             return
         order = result["order"]
         order["note"] = note
+        await db.purchases.update_one(
+            {"_id": order["_id"]},
+            {"$set": {
+                "bot2": True,
+                "payment_scope": PAYMENT_SCOPE,
+                "note": note,
+            }},
+        )
         await send2(chat_id, build_invoice_text(order))
         allocation_map = {x["product_id"]: x for x in result.get("allocations", [])}
         all_ok = True
