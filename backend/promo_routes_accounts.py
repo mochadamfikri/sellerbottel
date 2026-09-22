@@ -70,6 +70,7 @@ async def manual_prospect(body: ManualProspectBody):
         "owner_account_id": None,
         "source": {"kind": "manual", "label": "Manual"},
         "status": "customer" if bot_user else "new",
+        "contact_allowed": False,
         "bot_user_tid": body.tg_user_id if bot_user else None,
         "contact_count": 0,
         "last_contacted_at": None,
