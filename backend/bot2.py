@@ -109,15 +109,13 @@ async def send_document2(chat_id, data: bytes, filename, caption=None):
 def menu_keyboard():
     return {
         "keyboard": [
-            [{"text": "🏷️ List Produk"}, {"text": "📚 Voucher"}, {"text": "📦 Laporan Stok"}],
-            [{"text": "1"}],
-            [{"text": "💰 Deposit"}, {"text": "❓ Cara Order"}],
-            [{"text": "⚠️ Information"}, {"text": "📜 Riwayat"}],
+            [{"text": "📦 STOCK"}, {"text": "💰 DEPOSIT"}],
+            [{"text": "🛒 PESANAN"}, {"text": "🎟 VOUCHER"}],
+            [{"text": "👤 AKUN / INFORMATION"}, {"text": "❓ CARA ORDER"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
     }
-
 
 def cancel_keyboard():
     return {"inline_keyboard": [[{"text": "❌ Batal", "callback_data": "b2:cancel"}]]}
@@ -163,10 +161,27 @@ async def set_b2_state(tid, state=None, data=None):
     )
 
 
+async def _progress_bar(percent):
+    filled = max(0, min(10, int(percent / 10)))
+    return "▰" * filled + "▱" * (10 - filled)
+
+
+def _active_date_for_bot2(doc):
+    now = datetime.now(timezone.utc)
+    try:
+        starts = doc.get("starts_at")
+        ends = doc.get("ends_at")
+        if starts and now < datetime.fromisoformat(starts):
+            return False
+        if ends and now > datetime.fromisoformat(ends):
+            return False
+    except (TypeError, ValueError):
+        return False
+    return doc.get("active", True)
+
+
 async def show_home(chat_id, user, loaded=True):
     balance = fmt_amount(float(user.get("balance_idr") or 0), "IDR")
-    if loaded:
-        await send2(chat_id, "✅ <b>Data berhasil dimuat!</b>\n\n<b>LIST PRODUCT</b>")
     await send2(
         chat_id,
         f"💰 Saldo IDR: <b>{balance}</b>\n\nPilih menu di bawah.",
@@ -174,86 +189,123 @@ async def show_home(chat_id, user, loaded=True):
     )
 
 
-async def show_products(chat_id, page=1):
-    """Bot 2 product list: shared product DB/inventory, IDR display, video-style layout."""
-    page = max(1, int(page or 1))
-    page_size = 8
+async def show_products(chat_id, page=1, message_id=None):
+    """Shared stock list: only ready products, dynamic promo/voucher data, 2 buttons per row."""
     products = await db.products.find({"active": True}).sort("created_at", 1).to_list(500)
-    total_pages = max(1, (len(products) + page_size - 1) // page_size)
-    page = min(page, total_pages)
-    chunk = products[(page - 1) * page_size: page * page_size]
-
-    lines = ["<b>LIST PRODUCT</b>", ""]
-    buttons = []
-    for idx, product in enumerate(chunk, start=(page - 1) * page_size + 1):
+    ready = []
+    for product in products:
         stock = await stock_for(product)
+        if stock is None or stock > 0:
+            ready.append((product, stock))
+
+    lines = ["<b>📦 STOCK PRODUCT</b>", ""]
+    for idx, (product, stock) in enumerate(ready, start=1):
+        pricing = await price_for_product(product, "IDR", 1)
         stock_text = "∞" if stock is None else str(int(stock))
-        lines.append(f"[{idx}]. {escape(str(product.get('name') or 'Product'))} ({stock_text})")
-        buttons.append([{
-            "text": f"{idx}. {str(product.get('name') or 'Product')[:34]} ({stock_text})",
-            "callback_data": f"b2:product:{product['_id']}",
-        }])
+        lines.append(
+            f"<b>{idx}.</b> {escape(str(product.get('name') or 'Product'))} "
+            f"— <b>{fmt_amount(pricing['unit_price'], 'IDR')}</b> · Stok: <b>{stock_text}</b>"
+        )
+    if not ready:
+        lines.append("Belum ada produk yang ready.")
 
-    if not chunk:
-        lines.append("Belum ada product aktif.")
+    promo_lines = []
+    cursor = db.discounts.find({"active": True}).sort([("priority", -1), ("created_at", -1)]).limit(10)
+    async for discount in cursor:
+        if _active_date_for_bot2(discount):
+            name = escape(str(discount.get("name") or "Promo"))
+            mode = str(discount.get("mode") or "")
+            value = discount.get("value")
+            value_text = f"{value:g}%" if mode == "percent" and isinstance(value, (int, float)) else fmt_amount(value or 0, "IDR")
+            promo_lines.append(f"• <b>{name}</b> — {value_text}")
 
-    lines += ["", f"📄 Halaman {page} / {total_pages}"]
-    nav = []
-    if page > 1:
-        nav.append({"text": "◀️ Back", "callback_data": f"b2:products:{page - 1}"})
-    if page < total_pages:
-        nav.append({"text": "Next ▶️", "callback_data": f"b2:products:{page + 1}"})
-    if nav:
-        buttons.append(nav)
+    coupon_lines = []
+    cursor = db.coupons.find({"active": True}).limit(10)
+    async for coupon in cursor:
+        code = escape(str(coupon.get("code") or "-"))
+        condition = coupon.get("min_purchase") or coupon.get("min_amount") or coupon.get("minimum_purchase")
+        condition_text = f" · Min. {fmt_amount(condition, 'IDR')}" if condition else ""
+        coupon_lines.append(f"• <code>{code}</code>{condition_text}")
 
-    buttons.append([
-        {"text": "🔥 PRODUK POPULER", "callback_data": "b2:popular"},
-        {"text": "⚡ Flash Sale", "callback_data": "b2:flash"},
-    ])
-    buttons.append([{"text": "Kembali", "callback_data": "b2:home"}])
-    await send2(chat_id, "\n".join(lines), kb={"inline_keyboard": buttons})
+    if promo_lines:
+        lines += ["", "<b>🔥 PROMO AKTIF</b>"] + promo_lines
+    if coupon_lines:
+        lines += ["", "<b>🎟 VOUCHER AKTIF</b>"] + coupon_lines
+
+    buttons = []
+    for idx, (product, stock) in enumerate(ready, start=1):
+        buttons.append({
+            "text": f"{idx}. {str(product.get('name') or 'Product')[:28]}",
+            "callback_data": f"b2:productnum:{idx}",
+        })
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    markup = {"inline_keyboard": rows}
+
+    if message_id is not None:
+        return await edit2(chat_id, message_id, "\n".join(lines), kb=markup)
+    return await send2(chat_id, "\n".join(lines), kb=markup)
 
 
-async def show_product(chat_id, pid):
-    product = await db.products.find_one({"_id": pid, "active": True})
+async def show_product(chat_id, pid=None, message_id=None, product_index=None):
+    if product_index is not None:
+        products = await db.products.find({"active": True}).sort("created_at", 1).to_list(500)
+        ready = []
+        for product in products:
+            stock = await stock_for(product)
+            if stock is None or stock > 0:
+                ready.append(product)
+        pos = int(product_index) - 1
+        product = ready[pos] if 0 <= pos < len(ready) else None
+    else:
+        product = await db.products.find_one({"_id": pid, "active": True})
+
     if not product:
-        await send2(chat_id, "❌ Produk tidak ditemukan.", kb=back_keyboard())
-        return
+        text = "❌ Produk tidak ditemukan atau stok sudah habis."
+        return await edit2(chat_id, message_id, text, kb=back_keyboard()) if message_id else await send2(chat_id, text, kb=back_keyboard())
 
     stock = await stock_for(product)
     price = await price_for_product(product, "IDR", 1)
     stock_text = "∞" if stock is None else str(int(stock))
-    rating = product.get("rating") or "Belum ada ulasan"
     variation = product.get("variation") or product.get("variant") or product.get("sku") or product.get("name")
-    code = product.get("code") or product.get("_id", "")[-4:]
+    code = product.get("code") or str(product.get("_id", ""))[-6:]
     desc = product.get("description") or "Tidak ada deskripsi."
+
     text = (
         "╭───────────────\n"
-        f"• Produk : {escape(str(product['name']))}\n"
-        f"• Variasi : {escape(str(variation))}\n"
-        f"• Kode : {escape(str(code))}\n"
-        f"• Sisa Produk : {stock_text}\n"
-        f"• Rating : {escape(str(rating))}\n"
-        f"• Desk : {escape(str(desc))}\n"
+        f"• <b>Produk</b> : {escape(str(product.get('name') or 'Product'))}\n"
+        f"• <b>Variasi</b> : {escape(str(variation))}\n"
+        f"• <b>Kode</b> : <code>{escape(str(code))}</code>\n"
+        f"• <b>Sisa Produk</b> : {stock_text}\n"
+        f"• <b>Desk</b> : {escape(str(desc))}\n"
         "╰───────────────\n\n"
-        "╭───────────────\n"
-        "• Jumlah : 1\n"
-        f"• Harga : {fmt_amount(price['unit_price'], 'IDR')}\n"
-        f"• Total Harga : {fmt_amount(price['unit_price'], 'IDR')}\n"
-        "╰───────────────\n\n"
-        f"Current Date: {datetime.now().strftime('%I:%M:%S %p')}"
+        f"• <b>Harga</b> : {fmt_amount(price['unit_price'], 'IDR')}\n"
+        f"• <b>Total Harga</b> : {fmt_amount(price['unit_price'], 'IDR')}"
     )
     if stock is not None and stock <= 0:
-        await send2(chat_id, text + "\n\n❌ Stok habis.", kb=back_keyboard())
-        return
-    await send2(chat_id, text, kb={"inline_keyboard": [
-        [
-            {"text": "📝 Buy ( Saldo )", "callback_data": f"b2:buy_balance:{pid}"},
-            {"text": "🔄 Buy ( Now )", "callback_data": f"b2:buy_now:{pid}"},
-        ],
-        [{"text": "Back", "callback_data": "b2:products:1"}],
-        [{"text": "🔔 Notif Restok", "callback_data": f"b2:restock:{pid}"}],
-    ]})
+        text += "\n\n❌ Stok habis."
+        kb = back_keyboard()
+    else:
+        kb = {"inline_keyboard": [
+            [
+                {"text": "📝 Buy ( Saldo )", "callback_data": f"b2:buy_balance:{product['_id']}"},
+                {"text": "🔄 Buy ( Now )", "callback_data": f"b2:buy_now:{product['_id']}"},
+            ],
+            [{"text": "◀️ Kembali ke Stock", "callback_data": "b2:products:1"}],
+            [{"text": "🔔 Notif Restok", "callback_data": f"b2:restock:{product['_id']}"}],
+        ]}
+    return await edit2(chat_id, message_id, text, kb=kb) if message_id else await send2(chat_id, text, kb=kb)
+
+
+async def show_information(chat_id, user):
+    text = (
+        "👤 <b>ACCOUNT / INFORMATION</b>\n\n"
+        f"Telegram ID : <code>{user['telegram_id']}</code>\n"
+        f"Username : @{escape(user.get('username') or '-').lstrip('@')}\n"
+        f"Phone : <code>{escape(str(user.get('phone') or '-'))}</code>\n\n"
+        "@pardoxbuilder\n"
+        "t.me/pardoxbuilder"
+    )
+    await send2(chat_id, text, kb=menu_keyboard())
 
 
 async def show_stock(chat_id):
@@ -357,8 +409,7 @@ async def ask_quantity(chat_id, pid):
         await send2(chat_id, "❌ Stok produk sedang kosong.", kb=menu_keyboard())
         return
     price = await price_for_product(product, "IDR", 1)
-    await send2(
-        chat_id,
+    await send2(        chat_id,
         f"🛒 <b>{escape(product['name'])}</b>\n"
         f"Harga/unit: <b>{fmt_amount(price['unit_price'], 'IDR')}</b>\n"
         f"Stok: <b>{'∞' if stock is None else int(stock)}</b>\n\n"
@@ -476,7 +527,6 @@ async def process_confirmed_bot2_order(chat_id, user, pid, qty, mode, note):
         await send2(chat_id, "✅ <b>Pesanan berhasil diproses.</b>" if all_ok else "⚠️ Pembayaran berhasil, tetapi pengiriman membutuhkan perhatian admin.", kb=menu_keyboard())
         return
     await create_bot2_checkout(chat_id, user, pid, qty, note=note)
-
 
 async def create_bot2_checkout(chat_id, user, pid, qty, note=''):
     settings = await get_settings()
@@ -597,8 +647,7 @@ async def create_bot2_checkout(chat_id, user, pid, qty, note=''):
             f"Harga total: <b>{fmt_amount(subtotal, 'IDR')}</b>\n\n"
             "Pilih metode pembayaran:"
         ),
-        kb={"inline_keyboard": [[
-            {"text": f"📱 QRIS — {fmt_amount(payment_amount, 'IDR')}", "callback_data": f"b2:pay:{order_id}"}
+        kb={"inline_keyboard": [[            {"text": f"📱 QRIS — {fmt_amount(payment_amount, 'IDR')}", "callback_data": f"b2:pay:{order_id}"}
         ], [{"text": "❌ Batal", "callback_data": f"b2:cancel_order:{order_id}"}]]},
     )
 
@@ -717,8 +766,7 @@ async def finalize_bot2_checkout(order_id, tx_id=None):
     await db.purchases.update_one(
         {"_id": order_id},
         {"$set": {
-            "status": final_status,
-            "delivered_at": datetime.now(timezone.utc).isoformat() if ok else None,
+            "status": final_status,            "delivered_at": datetime.now(timezone.utc).isoformat() if ok else None,
             "delivery_error": None if ok else "Satu atau lebih produk gagal dikirim.",
         }},
     )
@@ -837,8 +885,7 @@ async def create_manual_deposit(user, amount, proof_file_id):
                 {"text": "✅ Setujui", "callback_data": f"b2:adm:approve:{deposit['_id']}"},
                 {"text": "❌ Tolak", "callback_data": f"b2:adm:reject:{deposit['_id']}"},
             ]]},
-        )
-        if proof_file_id:
+        )        if proof_file_id:
             try:
                 await tg2("sendPhoto", chat_id=admin_id, photo=proof_file_id, caption="Bukti transfer deposit Bot 2")
             except Exception:
@@ -910,10 +957,13 @@ async def handle_callback2(cb):
         )
         return
     if data.startswith("b2:products:"):
-        await show_products(chat_id, int(data.split(":")[-1]))
+        await show_products(chat_id, int(data.split(":")[-1]), message_id=cb["message"]["message_id"])
+        return
+    if data.startswith("b2:productnum:"):
+        await show_product(chat_id, message_id=cb["message"]["message_id"], product_index=int(data.split(":", 2)[2]))
         return
     if data.startswith("b2:product:"):
-        await show_product(chat_id, data.split(":", 2)[2])
+        await show_product(chat_id, pid=data.split(":", 2)[2], message_id=cb["message"]["message_id"])
         return
     if data.startswith("b2:buy_balance:"):
         pid = data.split(":", 2)[2]
@@ -957,8 +1007,7 @@ async def handle_callback2(cb):
         await send2(chat_id, "⚡ <b>FLASH SALE</b>\n\n" + "\n".join(f"• {escape(str(d.get('name','Promo')))}" for d in discounts), kb=menu_keyboard())
 
 
-async def handle_message2(message):
-    if "from" not in message or message["from"].get("is_bot"):
+async def handle_message2(message):    if "from" not in message or message["from"].get("is_bot"):
         return
     chat_id = message["chat"]["id"]
     user = await get_user2(message["from"])
@@ -966,8 +1015,22 @@ async def handle_message2(message):
 
     if text.startswith("/start"):
         await set_b2_state(user["telegram_id"])
-        await show_home(chat_id, user, loaded=True)
-        await show_products(chat_id, 1)
+        loading = await send2(chat_id, "⏳ <b>Memuat data...</b>\n\n▱▱▱▱▱▱▱▱▱▱ <b>0%</b>")
+        loading_id = (loading.get("result") or {}).get("message_id")
+        import random
+        steps = sorted(set(random.randint(5, 95) for _ in range(random.randint(7, 15))))
+        for percent in steps + [100]:
+            if loading_id:
+                await edit2(
+                    chat_id,
+                    loading_id,
+                    f"⏳ <b>Memuat data...</b>\n\n{_progress_bar(percent)} <b>{percent}%</b>",
+                )
+                await asyncio.sleep(0.08)
+        if loading_id:
+            await show_products(chat_id, 1, message_id=loading_id)
+        else:
+            await show_products(chat_id, 1)
         return
 
     if text in ("/menu", "/batal", "/cancel"):
@@ -985,22 +1048,22 @@ async def handle_message2(message):
         await show_how_to_order(chat_id)
         return
 
-    if text in ("🏷️ List Produk", "🛒 List Produk", "/products", "1"):
+    if text in ("📦 STOCK", "🏷️ List Produk", "🛒 List Produk", "/products"):
         await set_b2_state(user["telegram_id"])
         await show_products(chat_id, 1)
         return
 
-    if text in ("📚 Voucher", "/voucher"):
+    if text in ("🎟 VOUCHER", "📚 Voucher", "/voucher"):
         await set_b2_state(user["telegram_id"])
         await show_voucher(chat_id)
         return
 
-    if text in ("⚠️ Information", "/info"):
+    if text in ("👤 AKUN / INFORMATION", "⚠️ Information", "/info"):
         await set_b2_state(user["telegram_id"])
         await show_information(chat_id, user)
         return
 
-    if text in ("📜 Riwayat", "/history", "/riwayat"):
+    if text in ("🛒 PESANAN", "📜 Riwayat", "/history", "/riwayat"):
         await set_b2_state(user["telegram_id"])
         await show_history(chat_id, user)
         return
@@ -1077,8 +1140,7 @@ async def handle_deposit_callback2(cb):
             f"Bank: <b>{escape(str(settings.get('bank_name','')))}</b>\n"
             f"Nomor: <code>{escape(str(settings.get('bank_account_number','')))}</code>\n"
             f"Atas Nama: <b>{escape(str(settings.get('bank_account_holder','')))}</b>\n"
-            f"Nominal: <b>{fmt_amount(amount,'IDR')}</b>\n\n"
-            "Silakan transfer sesuai nominal, lalu kirim foto bukti transfer.",
+            f"Nominal: <b>{fmt_amount(amount,'IDR')}</b>\n\n"            "Silakan transfer sesuai nominal, lalu kirim foto bukti transfer.",
             kb=cancel_keyboard(),
         )
 
