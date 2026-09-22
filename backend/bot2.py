@@ -508,7 +508,6 @@ async def create_bot2_checkout(chat_id, user, pid, qty, note=''):
             "_id": payment_id,
             "payment_scope": PAYMENT_SCOPE,
             "payment_type": "checkout",
-            "payment_scope": PAYMENT_SCOPE,
             "order_id": order_id,
             "user_tid": user["telegram_id"],
             "base_amount": subtotal,
@@ -560,7 +559,7 @@ async def create_bot2_checkout(chat_id, user, pid, qty, note=''):
 
 
 async def show_checkout_qr(chat_id, user, order_id):
-    order = await db.purchases.find_one({"_id": order_id, "user_tid": user["telegram_id"], "status": "pending_payment"})
+    order = await db.purchases.find_one({"_id": order_id, "user_tid": user["telegram_id"], "bot2": True, "payment_scope": PAYMENT_SCOPE, "status": "pending_payment"})
     if not order:
         await send2(chat_id, "❌ Transaksi tidak ditemukan atau sudah selesai.", kb=menu_keyboard())
         return
