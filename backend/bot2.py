@@ -37,7 +37,42 @@ async def tg2(method: str, **payload):
         return response.json()
 
 
-async def send2(chat_id, text, kb=None):
+
+_BOT2_LAST_MESSAGES = {}
+
+async def _remember_last_message(chat_id, message_id):
+    if not message_id:
+        return
+    _BOT2_LAST_MESSAGES[int(chat_id)] = int(message_id)
+    try:
+        await db.bot_users.update_one(
+            {"telegram_id": int(chat_id)},
+            {"$set": {"bot2_last_message_id": int(message_id)}},
+        )
+    except Exception:
+        logger.exception("Failed to persist Bot2 last message id")
+
+
+async def _get_last_message(chat_id):
+    chat_id = int(chat_id)
+    message_id = _BOT2_LAST_MESSAGES.get(chat_id)
+    if message_id:
+        return message_id
+    try:
+        user = await db.bot_users.find_one(
+            {"telegram_id": chat_id},
+            {"bot2_last_message_id": 1},
+        )
+        message_id = (user or {}).get("bot2_last_message_id")
+        if message_id:
+            _BOT2_LAST_MESSAGES[chat_id] = int(message_id)
+            return int(message_id)
+    except Exception:
+        logger.exception("Failed to load Bot2 last message id")
+    return None
+
+
+async def send2(chat_id, text, kb=None, force_new=False):
     payload = {
         "chat_id": chat_id,
         "text": text,
@@ -46,7 +81,18 @@ async def send2(chat_id, text, kb=None):
     }
     if kb:
         payload["reply_markup"] = kb
-    return await tg2("sendMessage", **payload)
+
+    if not force_new:
+        previous_id = await _get_last_message(chat_id)
+        if previous_id:
+            edited = await edit2(chat_id, previous_id, text, kb=kb)
+            if edited.get("ok"):
+                return edited
+
+    result = await tg2("sendMessage", **payload)
+    if result.get("ok"):
+        await _remember_last_message(chat_id, (result.get("result") or {}).get("message_id"))
+    return result
 
 
 async def edit2(chat_id, message_id, text, kb=None):
@@ -59,7 +105,12 @@ async def edit2(chat_id, message_id, text, kb=None):
     }
     if kb:
         payload["reply_markup"] = kb
-    return await tg2("editMessageText", **payload)
+    else:
+        payload["reply_markup"] = {"inline_keyboard": []}
+    result = await tg2("editMessageText", **payload)
+    if result.get("ok"):
+        await _remember_last_message(chat_id, message_id)
+    return result
 
 
 async def answer2(callback_id, text=None):
@@ -70,36 +121,10 @@ async def answer2(callback_id, text=None):
 
 
 async def delete2(chat_id, message_id):
-    return await tg2("deleteMessage", chat_id=chat_id, message_id=message_id)
-
-
-async def clear_bot2_chat(chat_id, through_message_id):
-    """Best-effort clear of the private Bot 2 chat before /start.
-
-    Telegram permits bots to delete incoming messages in private chats and
-    outgoing bot messages, but only messages newer than 48 hours. We therefore
-    walk the message-id range in batches of 100. Telegram silently skips
-    missing/already-deleted IDs.
-    """
-    try:
-        last_id = int(through_message_id)
-    except (TypeError, ValueError):
-        return
-
-    if last_id <= 0:
-        return
-
-    for start in range(1, last_id + 1, 100):
-        message_ids = list(range(start, min(start + 100, last_id + 1)))
-        try:
-            await tg2(
-                "deleteMessages",
-                chat_id=chat_id,
-                message_ids=message_ids,
-            )
-        except Exception:
-            logger.exception("Bot2 chat cleanup failed for IDs %s-%s", start, message_ids[-1])
-        await asyncio.sleep(0.05)
+    result = await tg2("deleteMessage", chat_id=chat_id, message_id=message_id)
+    if result.get("ok") and _BOT2_LAST_MESSAGES.get(int(chat_id)) == int(message_id):
+        _BOT2_LAST_MESSAGES.pop(int(chat_id), None)
+    return result
 
 
 async def send_photo2(chat_id, data: bytes, filename="qris.jpg", caption=None, kb=None):
@@ -326,18 +351,6 @@ async def show_product(chat_id, pid=None, message_id=None, product_index=None):
     return await edit2(chat_id, message_id, text, kb=kb) if message_id else await send2(chat_id, text, kb=kb)
 
 
-async def show_information(chat_id, user):
-    text = (
-        "👤 <b>ACCOUNT / INFORMATION</b>\n\n"
-        f"Telegram ID : <code>{user['telegram_id']}</code>\n"
-        f"Username : @{escape(user.get('username') or '-').lstrip('@')}\n"
-        f"Phone : <code>{escape(str(user.get('phone') or '-'))}</code>\n\n"
-        "@pardoxbuilder\n"
-        "t.me/pardoxbuilder"
-    )
-    await send2(chat_id, text, kb=menu_keyboard())
-
-
 async def show_stock(chat_id):
     products = await db.products.find({"active": True}).to_list(200)
     lines = ["──── 「 LAPORAN STOK 」 ────"]
@@ -364,23 +377,15 @@ async def show_voucher(chat_id):
 
 
 async def show_information(chat_id, user):
-    total_users = await db.bot_users.count_documents({})
-    purchases = await db.purchases.find({"user_tid": user["telegram_id"], "currency": "IDR"}).to_list(500)
-    spent = sum(float(x.get("total") or 0) for x in purchases if x.get("status") not in {"cancelled", "expired", "failed"})
-    balance = fmt_amount(float(user.get("balance_idr") or 0), "IDR")
-    spent_text = fmt_amount(spent, "IDR")
+    username = user.get("username") or "-"
+    phone = user.get("phone") or user.get("phone_number") or "-"
     text = (
-        "──── 「 SALDO 」 ────\n"
-        f"• ID : <code>{user['telegram_id']}</code>\n"
-        f"• Username : {escape(user.get('username') or '-')}\n"
-        f"• Saldo : {balance}\n"
-        "• LEVEL : BASIC\n"
-        f"• Pemakaian Saldo : {spent_text}\n"
-        f"• Jumlah Beli : {len(purchases)}\n"
-        f"• Total Transaksi : {len(purchases)}\n"
-        f"• Total User : {total_users}\n"
-        "────────────\n\n"
-        "🛠️ <b>UP LEVEL</b>"
+        "👤 <b>ACCOUNT / INFORMATION</b>\n\n"
+        f"Telegram ID : <code>{user['telegram_id']}</code>\n"
+        f"Username : @{escape(username).lstrip('@')}\n"
+        f"Phone : <code>{escape(str(phone))}</code>\n\n"
+        "@pardoxbuilder\n"
+        "t.me/pardoxbuilder"
     )
     await send2(chat_id, text, kb=menu_keyboard())
 
@@ -954,6 +959,7 @@ async def handle_admin_deposit(cb, action, deposit_id):
 async def handle_callback2(cb):
     data = cb.get("data", "")
     chat_id = cb["message"]["chat"]["id"]
+    await _remember_last_message(chat_id, cb["message"].get("message_id"))
     user = await get_user2(cb["from"])
     await answer2(cb["id"])
 
@@ -1046,8 +1052,6 @@ async def handle_message2(message):
     text = (message.get("text") or "").strip()
 
     if text.startswith("/start"):
-        # Reset the conversation first so the new session starts clean.
-        await clear_bot2_chat(chat_id, message.get("message_id"))
         await set_b2_state(user["telegram_id"])
         loading = await send2(chat_id, "⏳ <b>MEMUAT DATA</b>\n\n▱▱▱▱▱▱▱▱▱▱ <b>0%</b>")
         loading_id = (loading.get("result") or {}).get("message_id")
@@ -1062,7 +1066,7 @@ async def handle_message2(message):
                     f"⏳ <b>MEMUAT DATA</b>\n\n{_progress_bar(percent)} <b>{percent}%</b>",
                 )
                 # Telegram clients can coalesce very-fast edits; keep each frame visible.
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(0.25)
         if loading_id:
             await show_products(chat_id, 1, message_id=loading_id)
         else:
