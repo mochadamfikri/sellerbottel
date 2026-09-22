@@ -15,12 +15,13 @@ const tabs = [
 ];
 
 const emptyCoupon = { code: "", type: "percent", value: "", currency: "IDR", quota_total: "", per_user_limit: 1, min_purchase: 0 };
-const emptyCampaign = { name: "", template: "", source_code: "", bot_link: "", account_ids: [], approval_required: true, daily_limit: 20, min_interval_seconds: 300, send_window_start: "09:00", send_window_end: "21:00" };
+const emptyCampaign = { name: "", template: "", source_code: "", bot_link: "", product_id: "", account_ids: [], approval_required: true, daily_limit: 20, min_interval_seconds: 300, send_window_start: "09:00", send_window_end: "21:00" };
 
 export default function Promotions() {
   const [tab, setTab] = useState("overview");
   const [summary, setSummary] = useState({});
   const [accounts, setAccounts] = useState([]);
+  const [products, setProducts] = useState([]);
   const [prospects, setProspects] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
   const [jobs, setJobs] = useState([]);
@@ -51,9 +52,10 @@ export default function Promotions() {
 
   const load = useCallback(async () => {
     try {
-      const [s, a, p, c, j, g, co, r, src, ev] = await Promise.all([
+      const [s, a, prod, p, c, j, g, co, r, src, ev] = await Promise.all([
         api.get("/admin/promo/summary"),
         api.get("/admin/promo/accounts"),
+        api.get("/admin/products"),
         api.get("/admin/promo/prospects"),
         api.get("/admin/promo/campaigns"),
         api.get("/admin/promo/jobs"),
@@ -63,7 +65,7 @@ export default function Promotions() {
         api.get("/admin/promo/results/sources"),
         api.get("/admin/promo/events"),
       ]);
-      setSummary(s.data); setAccounts(a.data); setProspects(p.data); setCampaigns(c.data);
+      setSummary(s.data); setAccounts(a.data); setProducts(prod.data); setProspects(p.data); setCampaigns(c.data);
       setJobs(j.data); setGroups(g.data); setCoupons(co.data); setResults(r.data);
       setSources(src.data); setEvents(ev.data);
     } catch (e) { error(e); }
@@ -329,7 +331,7 @@ export default function Promotions() {
           <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-3">
             <h2 className="font-semibold">Buat Campaign</h2>
             <input className={cls} placeholder="Nama campaign" value={campaign.name} onChange={(e) => setCampaign({ ...campaign, name: e.target.value })} />
-            <textarea className={cls} rows="5" placeholder="Pesan. Variabel: {nama} {username} {bot_link}" value={campaign.template} onChange={(e) => setCampaign({ ...campaign, template: e.target.value })} />
+            <select className={cls} value={campaign.product_id} onChange={(e) => setCampaign({ ...campaign, product_id: e.target.value })}><option value="">Broadcast umum (tanpa produk)</option>{products.filter((p) => p.active !== false).map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}</select><textarea className={cls} rows="5" placeholder="Pesan. Variabel: {nama} {username} {bot_link} {produk} {harga_usd} {harga_idr}" value={campaign.template} onChange={(e) => setCampaign({ ...campaign, template: e.target.value })} /><p className="text-xs text-cyan-400">Pilih produk untuk memakai harga otomatis. Gunakan {'{harga_usd}'} dan {'{harga_idr}'} agar broadcast menampilkan kedua harga.</p>
             <div className="grid md:grid-cols-4 gap-2"><input className={cls} placeholder="Source code" value={campaign.source_code} onChange={(e) => setCampaign({ ...campaign, source_code: e.target.value })} /><input className={cls} placeholder="Bot link" value={campaign.bot_link} onChange={(e) => setCampaign({ ...campaign, bot_link: e.target.value })} /><input className={cls} type="number" min="1" max="100" placeholder="Limit/hari" value={campaign.daily_limit} onChange={(e) => setCampaign({ ...campaign, daily_limit: Number(e.target.value) })} /><input className={cls} type="number" min="300" value={campaign.min_interval_seconds} onChange={(e) => setCampaign({ ...campaign, min_interval_seconds: Number(e.target.value) })} /></div>
             <div className="grid md:grid-cols-2 gap-2"><input className={cls} type="time" value={campaign.send_window_start} onChange={(e) => setCampaign({ ...campaign, send_window_start: e.target.value })} /><input className={cls} type="time" value={campaign.send_window_end} onChange={(e) => setCampaign({ ...campaign, send_window_end: e.target.value })} /></div>
             <div className="space-y-2"><p className="text-xs text-slate-500">Akun pengirim</p>{activeAccounts.length ? activeAccounts.map((a) => <label key={a._id} className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={campaign.account_ids.includes(a._id)} onChange={(e) => setCampaign({ ...campaign, account_ids: e.target.checked ? [...campaign.account_ids, a._id] : campaign.account_ids.filter((id) => id !== a._id) })} />{a.name || a.username || a.tg_user_id}</label>) : <p className="text-xs text-amber-400">Belum ada akun Telegram aktif.</p>}</div>
