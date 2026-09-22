@@ -4,6 +4,8 @@ import os
 import sys
 from pathlib import Path
 
+from cryptography.fernet import Fernet
+
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("DB_NAME", "sellerbottel_bot2_test")
 os.environ.setdefault("JWT_SECRET", "test-secret-test-secret-test-secret")
@@ -12,8 +14,6 @@ os.environ.setdefault("INVENTORY_ENCRYPTION_KEY", Fernet.generate_key().decode()
 
 import motor.motor_asyncio as _motor
 from mongomock_motor import AsyncMongoMockClient
-from cryptography.fernet import Fernet
-
 _motor.AsyncIOMotorClient = AsyncMongoMockClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
