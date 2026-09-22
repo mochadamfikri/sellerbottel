@@ -130,7 +130,7 @@ async def prospect_create(body: ProspectBody):
 
 @router.patch("/prospects/{prospect_id}")
 async def prospect_update(prospect_id: str, payload: dict):
-    allowed = {"username", "name", "status", "notes", "source"}
+    allowed = {"username", "name", "status", "notes", "source", "contact_allowed"}
     data = {k: v for k, v in payload.items() if k in allowed}
     if "status" in data and data["status"] not in {"new", "contacted", "replied", "interested", "customer", "opt_out"}:
         raise HTTPException(400, "Status prospek tidak valid.")
