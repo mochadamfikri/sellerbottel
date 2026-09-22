@@ -31,7 +31,7 @@ async def create_campaign(data: dict):
         "_id": str(uuid.uuid4()), "name": name, "template": template,
         "source_code": str(data.get("source_code") or "").strip().lower(),
         "bot_link": str(data.get("bot_link") or "").strip(),
-        "account_ids": [str(x) for x in data.get("account_ids") or []],
+        "account_ids": account_ids,
         "status": "draft", "approval_required": bool(data.get("approval_required", True)),
         "daily_limit": max(1, int(data.get("daily_limit") or DEFAULT_DAILY_LIMIT)),
         "min_interval_seconds": max(300, int(data.get("min_interval_seconds") or DEFAULT_INTERVAL)),
@@ -50,7 +50,7 @@ async def enqueue_campaign(campaign_id: str, statuses=("new",)):
         raise ValueError("Campaign sudah dihentikan.")
     query = {"status": {"$in": list(statuses)}, "tg_user_id": {"$exists": True}}
     count = 0
-    async for p in db.prospects.find(query).sort("created_at", 1):
+    account_ids = campaign.get("account_ids") or []\n    async for p in db.prospects.find(query).sort("created_at", 1):
         if await db.promo_suppressions.find_one({"tg_user_id": p["tg_user_id"]}):
             continue
         existing = await db.outreach_jobs.find_one({"campaign_id": campaign_id, "prospect_id": p["_id"], "status": {"$in": ["queued","approved","sending","sent"]}})
@@ -58,7 +58,7 @@ async def enqueue_campaign(campaign_id: str, statuses=("new",)):
             continue
         job = {
             "_id": str(uuid.uuid4()), "campaign_id": campaign_id, "prospect_id": p["_id"],
-            "account_id": (campaign.get("account_ids") or [None])[0],
+            "account_id": account_ids[count % len(account_ids)],
             "status": "queued" if campaign.get("approval_required", True) else "approved",
             "scheduled_at": None, "attempts": 0, "last_error": None, "sent_at": None,
             "created_at": now_iso(), "updated_at": now_iso(),
@@ -95,7 +95,7 @@ async def send_job(job: dict):
     account = await db.tg_accounts.find_one({"_id": job["account_id"]})
     if not campaign or not prospect or not account or account.get("status") != "active":
         return {"status": "skipped", "reason": "missing_or_inactive"}
-    if await db.promo_suppressions.find_one({"tg_user_id": prospect["tg_user_id"]}):
+    if job.get("scheduled_at"):\n        try:\n            due = datetime.fromisoformat(job["scheduled_at"])\n            if due.tzinfo is None:\n                due = due.replace(tzinfo=timezone.utc)\n            if datetime.now(timezone.utc) < due:\n                return {"status": "deferred", "reason": "scheduled_later"}\n        except (TypeError, ValueError):\n            pass\n    if await db.promo_suppressions.find_one({"tg_user_id": prospect["tg_user_id"]}):
         await db.outreach_jobs.update_one({"_id": job["_id"]}, {"$set": {"status": "cancelled", "last_error": "opt_out"}})
         return {"status": "cancelled", "reason": "opt_out"}
     limit = int(campaign.get("daily_limit") or DEFAULT_DAILY_LIMIT)
