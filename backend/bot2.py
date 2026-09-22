@@ -287,10 +287,12 @@ async def show_products(chat_id, page=1, message_id=None):
     if coupon_lines:
         lines += ["", "<b>🎟 VOUCHER AKTIF</b>"] + coupon_lines
 
+    # Product selector buttons: NUMBERS ONLY. Each number maps to the
+    # corresponding product position in this ready-stock list.
     buttons = []
-    for idx, (product, stock) in enumerate(ready, start=1):
+    for idx, (_product, _stock) in enumerate(ready, start=1):
         buttons.append({
-            "text": f"{idx}. {str(product.get('name') or 'Product')[:28]}",
+            "text": str(idx),
             "callback_data": f"b2:productnum:{idx}",
         })
     rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
@@ -384,8 +386,11 @@ async def show_information(chat_id, user):
         f"Telegram ID : <code>{user['telegram_id']}</code>\n"
         f"Username : @{escape(username).lstrip('@')}\n"
         f"Phone : <code>{escape(str(phone))}</code>\n\n"
+        "🤖 <b>BOT BUILD BY</b>\n"
         "@pardoxbuilder\n"
-        "t.me/pardoxbuilder"
+        "t.me/pardoxbuilder\n\n"
+        "🛠️ Menerima jasa <b>build bot Telegram</b> dan <b>website</b> "
+        "sesuai kebutuhan."
     )
     await send2(chat_id, text, kb=menu_keyboard())
 
