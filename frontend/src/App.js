@@ -14,7 +14,8 @@ import Discounts from "./pages/Discounts";
 import Messages from "./pages/Messages";
 import Orders from "./pages/Orders";
 import Inventory from "./pages/Inventory";
-import Reports from "./pages/Reports";\nimport Promotions from "./pages/Promotions";
+import Reports from "./pages/Reports";
+import Promotions from "./pages/Promotions";
 
 function Protected({ children, title }) {
   const { user } = useAuth();
@@ -39,7 +40,8 @@ function App() {
           <Route path="/settings" element={<Protected title="Pengaturan"><SettingsPage /></Protected>} />
           <Route path="/broadcasts" element={<Protected title="Broadcast"><Broadcasts /></Protected>} />
           <Route path="/discounts" element={<Protected title="Discount"><Discounts /></Protected>} />
-          <Route path="/messages" element={<Protected title="Bot Messages"><Messages /></Protected>} />\n          <Route path="/promotions" element={<Protected title="Promosi / Cari Pelanggan"><Promotions /></Protected>} />
+          <Route path="/messages" element={<Protected title="Bot Messages"><Messages /></Protected>} />
+          <Route path="/promotions" element={<Protected title="Promosi / Cari Pelanggan"><Promotions /></Protected>} />
         </Routes>
       </BrowserRouter>
       <Toaster position="top-right" theme="dark" richColors />
