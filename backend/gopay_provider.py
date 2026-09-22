@@ -94,6 +94,7 @@ async def create_gopay_payment(user, amount, platform_code=None):
         try:
             await db.gopay_payments.insert_one({
                 "_id": payment_id,
+                "payment_scope": "bot1",
                 "deposit_id": deposit_id,
                 "user_tid": user["telegram_id"],
                 "base_amount": amount,
