@@ -1609,6 +1609,8 @@ async def create_broadcast(
 ):
     if not text.strip():
         raise HTTPException(400, "Pesan broadcast kosong")
+    if auto_image and not (await get_settings()).get("broadcast_auto_image_enabled", False):
+        raise HTTPException(400, "Auto Generate Picture sedang OFF di Pengaturan.")
     query = {}
     if lang in ("id", "en"):
         query["lang"] = lang
@@ -1774,6 +1776,8 @@ async def broadcast_channel(
 ):
     mode = (mode or "").strip().lower()
     target = (target or "channel").strip().lower()
+    if auto_image and not (await get_settings()).get("broadcast_auto_image_enabled", False):
+        raise HTTPException(400, "Auto Generate Picture sedang OFF di Pengaturan.")
     content = (content or "both").strip().lower()
 
     if mode == "manual":
