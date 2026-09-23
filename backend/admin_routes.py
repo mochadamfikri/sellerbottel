@@ -938,6 +938,11 @@ async def search_users(
         if max_balance is not None and balance > max_balance: continue
         if product_id and product_id not in products_by_user.get(tid, set()): continue
         u["total_deposit"] = dep_total; u["order_count"] = stats["count"]; u["total_spending"] = stats["spending"]
+        u["telegram_account_connected"] = bool(await db.tg_accounts.find_one({
+            "tg_user_id": tid,
+            "status": "active",
+            "session_encrypted": {"$type": "string"},
+        }))
         u["purchased_product_ids"] = list(products_by_user.get(tid, set()))
         u.pop("state", None); u.pop("state_data", None)
         u.pop("deposit_credit_ids", None); u.pop("checkout_refund_ids", None); u.pop("deposit_debit_ids", None)
