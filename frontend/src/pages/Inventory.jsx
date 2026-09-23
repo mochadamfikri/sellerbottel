@@ -180,11 +180,11 @@ export default function Inventory() {
         <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
           <div>
             <h2 className="font-heading font-semibold flex items-center gap-2"><Upload size={17} className="text-emerald-400" /> Upload Bulk Inventory</h2>
-            <p className="text-xs text-slate-500 mt-1">Pilih product dulu, lalu upload file. Header file harus mengikuti schema product yang ditampilkan di atas.</p>
+            <p className="text-xs text-slate-500 mt-1">Pilih product dulu, lalu upload file. XLSX/CSV/TXT memakai header/schema product. File binary seperti .session dikirim sebagai file asli dan tidak dipaksa mengikuti schema kolom.</p>
           </div>
           <input
             type="file"
-            accept=".xlsx,.csv,.txt"
+            accept=".xlsx,.csv,.txt,.session,.zip,.json,.bin"
             ref={fileInputRef}
             className={cls}
             onChange={(e) => {
