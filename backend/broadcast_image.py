@@ -66,7 +66,7 @@ def render_transaction_image(total_qty, total_amount, currency="IDR", title="PEN
     image.save(out, format="JPEG", quality=92, optimize=True)
     return out.getvalue()
 
-def render_product_image(product_name, price, stock=None, description=""):
+def render_product_image(product_name, price, stock=None, description="", title="PRODUCT UPDATE"):
     width, height = 1200, 700
     image = Image.new("RGB", (width, height), BG)
     draw = ImageDraw.Draw(image)
@@ -77,7 +77,7 @@ def render_product_image(product_name, price, stock=None, description=""):
     label_font = _font(24, True)
     small_font = _font(24, False)
     draw.text((95, 90), "IDSE NETWORK CONNECT HUB", font=brand_font, fill=PURPLE)
-    draw.text((95, 155), "PRODUCT UPDATE", font=title_font, fill=WHITE)
+    draw.text((95, 155), _fit(draw, title, title_font, 1000), font=title_font, fill=WHITE)
     name = _fit(draw, product_name, _font(50, True), 1000)
     draw.text((95, 255), name, font=_font(50, True), fill=WHITE)
     draw.text((95, 350), "HARGA", font=label_font, fill=MUTED)
