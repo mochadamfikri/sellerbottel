@@ -242,6 +242,7 @@ async def update_product(
     service_wait_minutes: Optional[int] = Form(None),
     service_message_template: str = Form(""),
     file: Optional[UploadFile] = File(None),
+    files: Optional[list[UploadFile]] = File(None),
 ):
     product = await db.products.find_one({"_id": pid})
     if not product:
@@ -548,10 +549,34 @@ def _read_xlsx_rows_fallback(data: bytes):
         raise ValueError("XML workbook/worksheet rusak") from exc
 
 
-async def _parse_inventory_input(file: Optional[UploadFile], content: str, product: dict):
+async def _parse_inventory_input(file: Optional[UploadFile], content: str, product: dict, files: Optional[list[UploadFile]] = None):
     schema = [str(x).strip() for x in (product.get("inventory_schema") or []) if str(x).strip()]
     records = []
     source_name = (file.filename or "").lower() if file else ""
+
+    # Telegram Session mode supports selecting multiple real .session files.
+    if files:
+        if product.get("inventory_mode") != "telegram_session":
+            raise HTTPException(400, "Upload banyak file .session hanya tersedia untuk product Telegram Session.")
+        import base64
+        schema_from_file = ["Session File"]
+        for upload in files:
+            name = (upload.filename or "").strip()
+            if not name.lower().endswith(".session"):
+                raise HTTPException(400, f"File {name or '(tanpa nama)'} bukan file .session.")
+            data = await upload.read()
+            if not data:
+                continue
+            if len(data) > 10 * 1024 * 1024:
+                raise HTTPException(400, f"File {name} melebihi batas 10 MB.")
+            records.append({
+                "Session File": name,
+                "__file_name": name,
+                "__file_data_b64": base64.b64encode(data).decode("ascii"),
+            })
+        if not records:
+            raise HTTPException(400, "Tidak ada file .session yang berisi data.")
+        return schema_from_file, records
 
     if file:
         data = await file.read()
@@ -676,7 +701,7 @@ async def validate_inventory(
     if not _is_inventory_product(product):
         raise HTTPException(400, "Produk jasa tidak memiliki inventory.")
 
-    schema, records = await _parse_inventory_input(file, content, product)
+    schema, records = await _parse_inventory_input(file, content, product, files)
     try:
         check = await validate_records(pid, records, schema)
         # Validation is the point where a product's first inventory file
