@@ -135,10 +135,9 @@ async def notify_transaction_channel(order: dict):
     names = []
     total_qty = 0
     for item in order.get("items") or []:
-        product = item.get("product") or {}
         qty = max(1, int(item.get("qty") or 1))
         total_qty += qty
-        names.append(f"{product.get('name') or 'Product'} ×{qty}")
+        names.append(f"{item.get('name') or 'Product'} ×{qty}")
 
     body = (
         "🛒 <b>Transaction Succes!!</b>\n\n"
