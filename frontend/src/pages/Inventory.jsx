@@ -71,7 +71,7 @@ export default function Inventory() {
     try {
       const fd = new FormData();
       fd.append("content", "");
-      if (selectedProduct?.inventory_mode === "telegram_session") {
+      if ((selectedProduct?.inventory_mode === "telegram_session" || (selectedProduct?.inventory_schema?.length === 1 && selectedProduct.inventory_schema[0] === "Session File"))) {
         (files.length ? files : (selectedFile ? [selectedFile] : [])).forEach((f) => fd.append("files", f, f.name));
       } else {
         fd.append("file", selectedFile, selectedFile.name);
