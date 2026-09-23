@@ -760,7 +760,14 @@ async def inventory_list(pid: str, status: str = "available"):
             "sold_at": item.get("sold_at"),
         }
         if status != "sold" and item.get("secret"):
-            row["item"] = decrypt_items([item])[0]
+            decrypted = decrypt_items([item])[0]
+            if decrypted.get("__file_data_b64"):
+                row["item"] = {
+                    "file": decrypted.get("__file_name") or decrypted.get("file") or "inventory.bin",
+                    "is_file": True,
+                }
+            else:
+                row["item"] = decrypted
         rows.append(row)
     return {
         "schema": product.get("inventory_schema") or ["value"],
