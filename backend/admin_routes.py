@@ -694,6 +694,7 @@ async def validate_inventory(
     pid: str,
     content: str = Form(""),
     file: Optional[UploadFile] = File(None),
+    files: Optional[list[UploadFile]] = File(None),
 ):
     product = await db.products.find_one({"_id": pid})
     if not product:
@@ -730,6 +731,7 @@ async def import_inventory(
     pid: str,
     content: str = Form(""),
     file: Optional[UploadFile] = File(None),
+    files: Optional[list[UploadFile]] = File(None),
 ):
     product = await db.products.find_one({"_id": pid})
     if not product:
