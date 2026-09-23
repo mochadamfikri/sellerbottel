@@ -194,7 +194,7 @@ export default function Inventory() {
           </div>
           <input
             type="file"
-            accept={(selectedProduct?.inventory_mode === "telegram_session" || (selectedProduct?.inventory_schema?.length === 1 && selectedProduct.inventory_schema[0] === "Session File")) ? ".session" : ".xlsx,.csv,.txt"}
+            accept={(selectedProduct?.inventory_mode === "telegram_session" || (selectedProduct?.inventory_schema?.length === 1 && selectedProduct.inventory_schema[0] === "Session File")) ? "*/*" : ".xlsx,.csv,.txt"}
             ref={fileInputRef}
             className={cls}
             multiple={selectedProduct?.inventory_mode === "telegram_session" || (selectedProduct?.inventory_schema?.length === 1 && selectedProduct.inventory_schema[0] === "Session File")}
