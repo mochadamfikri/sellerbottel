@@ -132,6 +132,13 @@ def normalize_record(record: dict, schema: list[str] | None = None):
         clean[field] = str(value).strip()
     if not clean or not any(value for value in clean.values()):
         return None, None, schema
+
+    # File inventory metadata is stored alongside the normal schema fields.
+    # The payload remains encrypted with the same Fernet mechanism.
+    for meta_key in ("__file_name", "__file_data_b64"):
+        if meta_key in record and record.get(meta_key):
+            clean[meta_key] = str(record[meta_key])
+
     canonical = json.dumps(clean, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return clean, fingerprint, schema
