@@ -556,7 +556,7 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
 
     # Telegram Session mode supports selecting multiple real .session files.
     if files:
-        if product.get("inventory_mode") != "telegram_session":
+        if product.get("inventory_mode") != "telegram_session" and product.get("inventory_schema") != ["Session File"]:
             raise HTTPException(400, "Upload banyak file .session hanya tersedia untuk product Telegram Session.")
         import base64
         schema_from_file = ["Session File"]
@@ -650,7 +650,7 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
                 else:
                     raise HTTPException(400, f"Format TXT tidak cocok dengan schema inventory ({len(schema_from_file)} kolom).")
         else:
-            if product.get("inventory_mode") != "telegram_session":
+            if product.get("inventory_mode") != "telegram_session" and product.get("inventory_schema") != ["Session File"]:
                 raise HTTPException(
                     400,
                     "Produk ini memakai inventory tabel. Gunakan XLSX/CSV/TXT sesuai schema product. "
