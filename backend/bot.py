@@ -600,7 +600,7 @@ async def deliver_inventory(chat_id, product, records, send_message_fn=None, sen
         if not all_ok:
             await send_message_fn(
                 chat_id,
-                t(lang, "deliver_fail", name=product["name"]) if "lang" in globals() else f"Pengiriman {product['name']} gagal."
+                f"❌ Pengiriman {product['name']} gagal. Silakan hubungi admin."
             )
         return all_ok
 
