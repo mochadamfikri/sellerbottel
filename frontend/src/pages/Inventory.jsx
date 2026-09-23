@@ -99,7 +99,11 @@ export default function Inventory() {
     try {
       const fd = new FormData();
       fd.append("content", "");
-      fd.append("file", selectedFile, selectedFile.name);
+      if (selectedProduct?.inventory_mode === "telegram_session" || selectedProduct?.inventory_schema?.length === 1 && selectedProduct.inventory_schema[0] === "Session File") {
+        (files.length ? files : (selectedFile ? [selectedFile] : [])).forEach((f) => fd.append("files", f, f.name));
+      } else {
+        fd.append("file", selectedFile, selectedFile.name);
+      }
       const { data } = await api.post("/admin/products/" + selectedPid + "/inventory/import", fd);
       toast.success("Inventory masuk: " + data.created + " item · dilewati: " + data.skipped);
       setFile(null);
@@ -190,10 +194,10 @@ export default function Inventory() {
           </div>
           <input
             type="file"
-            accept={selectedProduct?.inventory_mode === "telegram_session" ? ".session" : ".xlsx,.csv,.txt"}
+            accept={(selectedProduct?.inventory_mode === "telegram_session" || (selectedProduct?.inventory_schema?.length === 1 && selectedProduct.inventory_schema[0] === "Session File")) ? ".session" : ".xlsx,.csv,.txt"}
             ref={fileInputRef}
             className={cls}
-            multiple={selectedProduct?.inventory_mode === "telegram_session"}
+            multiple={selectedProduct?.inventory_mode === "telegram_session" || (selectedProduct?.inventory_schema?.length === 1 && selectedProduct.inventory_schema[0] === "Session File")}
             onChange={(e) => {
               const picked = Array.from(e.target.files || []);
               const selected = picked[0] || null;
