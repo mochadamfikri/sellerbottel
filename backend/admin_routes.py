@@ -308,15 +308,17 @@ def _parse_num(v, idr: bool):
 
 @router.get("/products/import-template")
 async def product_import_template():
+    """Generate the multi-sheet product + inventory workbook."""
     try:
         from openpyxl import Workbook
         from openpyxl.worksheet.datavalidation import DataValidation
+
         wb = Workbook()
         ws = wb.active
-        ws.title = "Products"
+        ws.title = "product"
         headers = [
             "Nama Product",
-            "Deskripsi",
+            "Deskripsi Singkat / Poin",
             "Harga USD",
             "Harga IDR",
             "Jenis Product",
@@ -326,6 +328,7 @@ async def product_import_template():
         ws.append(headers)
         for cell in ws[1]:
             cell.font = cell.font.copy(bold=True)
+
         type_validation = DataValidation(
             type="list",
             formula1='"A. Produk Digital / sudah ada datanya,B. Produk Jasa"',
@@ -342,26 +345,36 @@ async def product_import_template():
         wait_validation.add("F2:F1000")
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = "A1:G1000"
-        widths = [28, 42, 16, 18, 34, 24, 60]
+
+        widths = [30, 55, 16, 18, 34, 24, 65]
         for i, width in enumerate(widths, 1):
             ws.column_dimensions[chr(64 + i)].width = width
 
         info = wb.create_sheet("Petunjuk")
         info_rows = [
-            ["Kolom", "Keterangan"],
-            ["Nama Product", "Wajib."],
-            ["Deskripsi", "Opsional."],
-            ["Harga USD", "Wajib jika Harga IDR kosong."],
-            ["Harga IDR", "Opsional. Jika diisi dan USD kosong, USD dihitung otomatis dari kurs."],
-            ["Jenis Product", "Wajib: A. Produk Digital / sudah ada datanya atau B. Produk Jasa."],
-            ["Waktu Tunggu (menit)", "Untuk B saja: pilih 1, 5, 10, 25, atau 60. Untuk A diabaikan."],
-            ["Pesan Jasa", "Untuk B saja. Placeholder yang tersedia: {product_name} dan {wait_minutes}."],
+            ["Bagian", "Aturan"],
+            ["Sheet product", "Wajib. Berisi daftar product."],
+            ["Nama Product", "Wajib. Untuk product digital, nama ini juga menjadi nama sheet inventory."],
+            ["Deskripsi Singkat / Poin", "Opsional. Sistem otomatis menyusun deskripsi lengkap berdasarkan nama + poin ini."],
+            ["Harga USD / Harga IDR", "Minimal salah satu wajib diisi."],
+            ["Jenis Product", "A = digital/inventory, B = jasa tanpa inventory."],
+            ["Sheet inventory", "Untuk product A, buat sheet dengan nama PERSIS sama seperti Nama Product."],
+            ["Header inventory", "Baris pertama sheet inventory menjadi schema product tersebut. Tidak ada schema global."],
+            ["Isi inventory", "Mulai baris kedua. Setiap baris adalah satu item inventory."],
+            ["Contoh", "product: Gmail Aged -> sheet: Gmail Aged -> header: email | password | recovery"],
         ]
         for row in info_rows:
             info.append(row)
         info.freeze_panes = "A2"
-        info.column_dimensions["A"].width = 28
-        info.column_dimensions["B"].width = 90
+        info.column_dimensions["A"].width = 32
+        info.column_dimensions["B"].width = 100
+
+        sample = wb.create_sheet("Contoh Digital")
+        sample.append(["email", "password", "recovery", "2fa"])
+        sample.append(["example@gmail.com", "password123", "recovery@example.com", "enabled"])
+        sample.append(["akun2@gmail.com", "password456", "recovery2@example.com", "enabled"])
+        for cell in sample[1]:
+            cell.font = cell.font.copy(bold=True)
 
         output = io.BytesIO()
         wb.save(output)
@@ -376,135 +389,30 @@ async def product_import_template():
 
 
 @router.post("/products/import")
-async def import_products(
-    file: UploadFile = File(...),
-):
+async def import_products(file: UploadFile = File(...)):
+    """Import products from the new multi-sheet workbook.
+
+    Sheet product contains product metadata. Each digital product gets its
+    own inventory sheet named exactly like the product. The first row of that
+    sheet is the product-specific inventory schema.
+    """
+    from bulk_product_import import import_workbook
+
     data = await file.read()
-    fn = (file.filename or "").lower()
-    rows = []
-    if fn.endswith(".csv") or fn.endswith(".txt"):
-        text_data = data.decode("utf-8-sig", errors="ignore")
-        lines = text_data.splitlines()
-        first_line = lines[0] if lines else ""
-        delim = "|" if "|" in first_line else ("," if "," in first_line else ";")
-        rows = list(csv.reader(io.StringIO(text_data), delimiter=delim))
-    else:
-        try:
-            import openpyxl
-            wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
-            rows = [list(r) for r in wb.active.iter_rows(values_only=True)]
-        except Exception as exc:
-            raise HTTPException(400, f"File tidak valid. Gunakan .xlsx atau .csv ({type(exc).__name__}).")
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".xlsx"):
+        raise HTTPException(400, "Gunakan file .xlsx dengan format multi-sheet product.")
 
-    rows = [row for row in rows if any(str(v or "").strip() for v in row)]
-    if not rows:
-        raise HTTPException(400, "File bulk product kosong.")
+    try:
+        return await import_workbook(data)
+    except HTTPException:
+        raise
+    except InventoryError:
+        raise
+    except Exception as exc:
+        logger.exception("Bulk product import gagal")
+        raise HTTPException(500, f"Bulk product import gagal ({type(exc).__name__}). Lihat log backend.")
 
-    headers = [str(v or "").strip() for v in rows[0]]
-    normalized = {re.sub(r"\s+", " ", h).strip().casefold(): i for i, h in enumerate(headers)}
-    aliases = {
-        "name": ["nama product", "nama produk", "product", "produk", "name"],
-        "description": ["deskripsi", "description", "desc"],
-        "price_usd": ["harga usd", "price usd", "usd"],
-        "price_idr": ["harga idr", "price idr", "idr"],
-        "kind": ["jenis product", "jenis produk", "product kind", "tipe product", "tipe produk"],
-        "wait": ["waktu tunggu (menit)", "waktu tunggu", "wait minutes", "service wait minutes"],
-        "message": ["pesan jasa", "pesan antrean jasa", "service message", "service message template"],
-    }
-
-    def col_index(key):
-        for alias in aliases[key]:
-            idx = normalized.get(alias.casefold())
-            if idx is not None:
-                return idx
-        return None
-
-    name_i = col_index("name")
-    kind_i = col_index("kind")
-    usd_i = col_index("price_usd")
-    idr_i = col_index("price_idr")
-    if name_i is None or kind_i is None:
-        raise HTTPException(400, "Header wajib: Nama Product dan Jenis Product.")
-    if usd_i is None and idr_i is None:
-        raise HTTPException(400, "Header wajib: Harga USD atau Harga IDR.")
-
-    rate = await get_rate()
-    docs, skipped, errors = [], 0, []
-    default_service_message = "Jasa {product_name} sedang dalam antrean, harap tunggu {wait_minutes} untuk dapat menghubungi admin."
-
-    for row_index, row in enumerate(rows[1:], start=2):
-        def cell(idx):
-            return str(row[idx]).strip() if idx is not None and idx < len(row) and row[idx] is not None else ""
-
-        name = cell(name_i)
-        kind_raw = cell(kind_i)
-        if not name:
-            skipped += 1
-            continue
-
-        kind_key = kind_raw.casefold()
-        if kind_key.startswith("a.") or "digital" in kind_key or "data" in kind_key:
-            product_kind = "digital"
-        elif kind_key.startswith("b.") or "jasa" in kind_key or "service" in kind_key:
-            product_kind = "service"
-        else:
-            skipped += 1
-            errors.append(f"Baris {row_index}: Jenis Product harus A. Produk Digital / sudah ada datanya atau B. Produk Jasa.")
-            continue
-
-        try:
-            usd_text = cell(usd_i)
-            idr_text = cell(idr_i)
-            price_usd = _parse_num(usd_text, False) if usd_text else 0.0
-            price_idr = _parse_num(idr_text, True) if idr_text else None
-            if price_usd <= 0 and (price_idr is None or price_idr <= 0):
-                raise ValueError("harga kosong")
-            if price_usd <= 0:
-                price_usd = round(price_idr / rate, 2)
-            if price_idr is not None and price_idr <= 0:
-                price_idr = None
-        except (ValueError, TypeError):
-            skipped += 1
-            errors.append(f"Baris {row_index}: harga tidak valid.")
-            continue
-
-        description = cell(col_index("description"))
-        wait_minutes = None
-        service_message = ""
-        if product_kind == "service":
-            wait_text = cell(col_index("wait"))
-            wait_minutes = int(float(wait_text)) if wait_text else 5
-            if wait_minutes not in {1, 5, 10, 25, 60}:
-                skipped += 1
-                errors.append(f"Baris {row_index}: Waktu Tunggu harus 1, 5, 10, 25, atau 60 menit.")
-                continue
-            service_message = cell(col_index("message")) or default_service_message
-
-        docs.append({
-            "_id": str(uuid.uuid4()),
-            "name": name,
-            "description": description,
-            "price_usd": round(price_usd, 2),
-            "price_idr": price_idr,
-            "product_kind": product_kind,
-            "delivery_type": "service" if product_kind == "service" else "inventory",
-            "content": "",
-            "storage_path": None,
-            "original_filename": None,
-            "service_wait_minutes": wait_minutes,
-            "service_message_template": service_message,
-            "active": True,
-            "stock": None,
-            "stock_mode": "unlimited" if product_kind == "service" else "auto",
-            "manual_stock": None,
-            "inventory_enabled": product_kind == "digital",
-            "inventory_schema": [],
-            "created_at": now_iso(),
-        })
-
-    if docs:
-        await db.products.insert_many(docs)
-    return {"imported": len(docs), "skipped": skipped, "errors": errors[:20]}
 
 def _stringify_cell(value):
     if value is None:
