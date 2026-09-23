@@ -791,3 +791,134 @@ The inventory feature is considered operational when all of these are true:
 - [ ] Product page and Manage Inventory use the same schema contract.
 - [ ] Backend logs show 200 for successful validation/import.
 - [ ] INVENTORY_ENCRYPTION_KEY is configured and stable.
+
+
+---
+
+## Automation, Broadcast & Transaction Notifications
+
+The admin panel now includes optional automation for product and transaction notifications.
+
+### Automation settings
+
+Under **Pengaturan → Automation & Broadcast**:
+
+- **Auto Broadcast Product Baru**: when a new product is created/imported, a product notice is sent to the configured broadcast channel.
+- **Transaction Success → Channel**: after a transaction is fully delivered, a privacy-safe public transaction notice is sent to the configured channel.
+- **Auto Generate Picture**: enables automatic black/purple visual generation for supported product/transaction broadcasts.
+- **Channel Broadcast ID**: explicit Telegram channel ID or @username used for channel broadcasts.
+- **Target Join Group**: public group username/link or private invite link used by the connected-account join action.
+
+The existing Telegram admin sales notification is intentionally unchanged and still contains buyer information. Only the channel notification is privacy-filtered.
+
+### Transaction success channel format
+
+Channel notifications intentionally contain no buyer name, username, or Telegram ID:
+
+```text
+🛒 Transaction Succes!!
+
+Invoice: INV-20260923-0010
+Produk: Netflix 1P2U ×5, WeTV Premium ×3, YT Premium 1 bulan akun Seller ×7
+Total: Rp 286.000
+Status: completed
+```
+
+### Automatic transaction image
+
+When **Auto Generate Picture** is enabled, a black/purple image is generated from the completed transaction:
+
+- total quantity of items/accounts
+- total transaction value
+- successful/completed status
+- IDSE Network Connect Hub branding
+
+The image is generated locally with Pillow; no external image-generation API is required.
+
+### Broadcast page
+
+**Broadcast → Broadcast Baru** supports:
+
+- user targeting and existing language/status filters
+- optional product selection
+- optional automatic product image
+- manual uploaded image
+- button text and URL
+
+**Broadcast ke Channel / Pengguna** supports:
+
+- manual channel message
+- all active products
+- one selected product
+- automatic discount/stock broadcast
+- automatic product image for the selected product
+- user queue broadcast
+
+The global **Auto Generate Picture** setting must be enabled before automatic images can be generated.
+
+### GoPay QR expiry
+
+Expired GoPay QR payments are now:
+
+1. marked expired,
+2. released from the active payment amount index,
+3. reported to the user by Telegram,
+4. protected from repeated expiry notifications.
+
+The GoPay active payment index now uses a numeric partial filter so documents with an absent/null `active_payment_amount` cannot collide with another active payment.
+
+### Connected Telegram account → Join Group
+
+The Users page shows a **Join Group** action when the customer has an active connected Telegram account. The action uses that connected account's Telethon session and the **Target Join Group** configured in Settings.
+
+Supported target formats:
+
+- public `@username`
+- public `https://t.me/username`
+- private invite link `https://t.me/+invitehash`
+- legacy private invite link `https://t.me/joinchat/invitehash`
+
+The connected Telegram account must have a valid active session.
+
+---
+
+## Production Update After Pulling These Changes
+
+Run on the VPS:
+
+```bash
+cd /opt/sellerbottel
+
+git pull origin main
+
+cd backend
+source venv/bin/activate
+
+python -m pip install -r requirements.txt
+
+python -m py_compile   db.py   services.py   gopay_provider.py   broadcast_image.py   admin_user_routes.py   admin_routes.py   bulk_product_import.py   bot.py
+
+cd ../frontend
+npm install
+npm run build
+
+systemctl restart sellerbottel
+systemctl restart sellerbottel-dev-frontend
+
+systemctl status sellerbottel --no-pager
+systemctl status sellerbottel-dev-frontend --no-pager
+
+nginx -t && systemctl reload nginx
+
+journalctl -u sellerbottel -n 100 --no-pager
+```
+
+After deployment, open **Admin → Pengaturan** and configure:
+
+1. Broadcast Channel ID.
+2. Auto Broadcast Product Baru.
+3. Transaction Success → Channel.
+4. Auto Generate Picture.
+5. Target Join Group.
+
+Do not enable the transaction channel notice until the channel ID has been tested and the bot has permission to post there.
