@@ -11,6 +11,7 @@ export default function Inventory() {
   const [meta, setMeta] = useState({ schema: [], items: [], available: 0, reserved: 0, sold: 0 });
   const [status, setStatus] = useState("available");
   const [file, setFile] = useState(null);
+  const [files, setFiles] = useState([]);
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [manualData, setManualData] = useState({});
@@ -54,6 +55,7 @@ export default function Inventory() {
   const selectProduct = (value) => {
     setPid(value);
     setFile(null);
+    setFiles([]);
     setFileName("");
     setPreview(null);
     setManualData({});
@@ -69,7 +71,11 @@ export default function Inventory() {
     try {
       const fd = new FormData();
       fd.append("content", "");
-      fd.append("file", selectedFile, selectedFile.name);
+      if (selectedProduct?.inventory_mode === "telegram_session") {
+        (files.length ? files : (selectedFile ? [selectedFile] : [])).forEach((f) => fd.append("files", f, f.name));
+      } else {
+        fd.append("file", selectedFile, selectedFile.name);
+      }
       const { data } = await api.post("/admin/products/" + selectedPid + "/inventory/validate", fd);
       setPreview(data);
       const next = {};
@@ -184,13 +190,16 @@ export default function Inventory() {
           </div>
           <input
             type="file"
-            accept=".xlsx,.csv,.txt,.session,.zip,.json,.bin"
+            accept={selectedProduct?.inventory_mode === "telegram_session" ? ".session" : ".xlsx,.csv,.txt"}
             ref={fileInputRef}
             className={cls}
+            multiple={selectedProduct?.inventory_mode === "telegram_session"}
             onChange={(e) => {
-              const selected = e.target.files?.[0] || null;
+              const picked = Array.from(e.target.files || []);
+              const selected = picked[0] || null;
+              setFiles(picked);
               setFile(selected);
-              setFileName(selected?.name || "");
+              setFileName(selectedProduct?.inventory_mode === "telegram_session" ? (picked.length + " file .session dipilih") : (selected?.name || ""));
               setPreview(null);
             }}
           />
