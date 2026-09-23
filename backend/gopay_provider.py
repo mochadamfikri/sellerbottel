@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pymongo.errors import DuplicateKeyError
 
 from db import db, get_settings
-from services import credit_deposit, now_iso
+from services import credit_deposit, now_iso, user_lang
 
 
 NODE_DIR = os.path.join(os.path.dirname(__file__), "gobiz")
@@ -174,10 +174,32 @@ async def poll_gopay_once():
         return {"checked": False, "matched": 0}
 
     now = datetime.now(timezone.utc)
+    expired = await db.gopay_payments.find(
+        {
+            "status": "pending",
+            "payment_scope": {"$ne": "bot2"},
+            "expires_at": {"$lte": now.isoformat()},
+            "expiry_notified_at": {"$exists": False},
+        },
+        {"_id": 1, "user_tid": 1, "deposit_id": 1, "payment_amount": 1},
+    ).to_list(500)
+
     await db.gopay_payments.update_many(
         {"status": "pending", "payment_scope": {"$ne": "bot2"}, "expires_at": {"$lte": now.isoformat()}},
-        {"$set": {"status": "expired", "expired_at": now_iso()}, "$unset": {"active_payment_amount": ""}},
+        {"$set": {"status": "expired", "expired_at": now_iso(), "expiry_notified_at": now_iso()}, "$unset": {"active_payment_amount": ""}},
     )
+
+    for payment in expired:
+        try:
+            lang = await user_lang(payment["user_tid"])
+            await __import__("tgapi").send_message(
+                payment["user_tid"],
+                "⚠️ <b>Pembayaran Kedaluwarsa</b>\n\n"
+                "QR GoPay untuk pembayaran ini sudah tidak berlaku.\n"
+                "Silakan buat pembayaran baru jika masih ingin melakukan deposit.",
+            )
+        except Exception:
+            pass
     await db.deposits.update_many(
         {"method": "gopay", "bot2": {"$ne": True}, "status": "pending", "expires_at": {"$lte": now.isoformat()}},
         {"$set": {"status": "expired", "decided_at": now_iso()}},
