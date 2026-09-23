@@ -14,7 +14,7 @@ from db import db, get_settings
 from auth import get_current_admin, verify_password
 from rates import get_rate
 from pricing import price_for_product
-from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso
+from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso, notify_product_created
 from tgapi import download_telegram_file, send_message, send_photo_bytes, tg
 from html import escape
 from inventory import (
@@ -215,6 +215,10 @@ async def create_product(
         "created_at": now_iso(),
     }
     await db.products.insert_one(prod)
+    try:
+        await notify_product_created(prod)
+    except Exception:
+        logger.exception("Auto broadcast product baru gagal")
     return prod
 
 
@@ -1039,6 +1043,11 @@ class SettingsBody(BaseModel):
     join_gate_enabled: bool = True
     join_gate_fail_open: bool = True
     required_channels: list[dict] = []
+    auto_broadcast_new_product: bool = False
+    transaction_success_channel_enabled: bool = False
+    broadcast_auto_image_enabled: bool = False
+    broadcast_channel_id: str = ""
+    join_group_target: str = ""
 
 
 def _normalize_required_channel(channel: dict) -> dict:
@@ -1066,6 +1075,8 @@ async def update_settings(body: SettingsBody):
     if data.get("join_gate_enabled") and not channels:
         data["join_gate_enabled"] = False
     data["required_channels"] = channels
+    data["broadcast_channel_id"] = str(data.get("broadcast_channel_id") or "").strip()
+    data["join_group_target"] = str(data.get("join_group_target") or "").strip()
     await db.settings.update_one({"_id": "main"}, {"$set": data}, upsert=True)
     s = await get_settings()
     s["current_rate"] = await get_rate()
