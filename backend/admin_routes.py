@@ -1599,6 +1599,8 @@ async def create_broadcast(
     button_text: str = Form(""),
     button_url: str = Form(""),
     photo: Optional[UploadFile] = File(None),
+    product_id: str = Form(""),
+    auto_image: bool = Form(False),
 ):
     if not text.strip():
         raise HTTPException(400, "Pesan broadcast kosong")
@@ -1626,6 +1628,22 @@ async def create_broadcast(
     if photo:
         photo_bytes = await photo.read()
         filename = photo.filename
+    elif auto_image and product_id:
+        product = await db.products.find_one({"_id": product_id, "active": True})
+        if not product:
+            raise HTTPException(400, "Produk untuk gambar otomatis tidak ditemukan.")
+        try:
+            from broadcast_image import render_product_image
+            stock = await available_count(product["_id"]) if _is_inventory_product(product) else None
+            price = fmt_amount(
+                product.get("price_idr") if product.get("price_idr") is not None else product.get("price_usd") or 0,
+                "IDR" if product.get("price_idr") is not None else "USD",
+            )
+            photo_bytes = render_product_image(product.get("name") or "Product", price, stock, product.get("description") or "")
+            filename = "product-broadcast.jpg"
+        except Exception as exc:
+            logger.exception("Generate broadcast image gagal")
+            raise HTTPException(500, f"Gagal membuat gambar otomatis: {type(exc).__name__}")
 
     doc = {
         "_id": str(uuid.uuid4()),
@@ -1638,6 +1656,8 @@ async def create_broadcast(
         "total": total,
         "created_at": now_iso(),
         "finished_at": None,
+        "product_id": product_id or None,
+        "auto_image": bool(auto_image),
     }
     await db.broadcasts.insert_one(doc)
     asyncio.create_task(_broadcast_worker(
@@ -1744,6 +1764,8 @@ async def broadcast_channel(
     text: str = Form(""),
     target: str = Form("channel"),
     content: str = Form("both"),
+    product_id: str = Form(""),
+    auto_image: bool = Form(False),
 ):
     mode = (mode or "").strip().lower()
     target = (target or "channel").strip().lower()
@@ -1758,6 +1780,33 @@ async def broadcast_channel(
         if not result.get("ok"):
             raise HTTPException(502, f"Telegram gagal mengirim ke channel: {result.get('description', 'unknown error')}")
         return {"ok": True, "mode": mode, "target": "channel", "channel_id": channel_id, "text": body}
+
+    if mode == "product":
+        channel_id = await _broadcast_channel_target()
+        product = await db.products.find_one({"_id": product_id, "active": True}) if product_id else None
+        if not product:
+            raise HTTPException(400, "Pilih product terlebih dahulu.")
+        stock = await available_count(product["_id"]) if _is_inventory_product(product) else None
+        price = fmt_amount(
+            product.get("price_idr") if product.get("price_idr") is not None else product.get("price_usd") or 0,
+            "IDR" if product.get("price_idr") is not None else "USD",
+        )
+        body = (
+            "🛒 <b>" + escape(str(product.get("name") or "Product")) + "</b>\n\n"
+            + escape(str(product.get("description") or "").strip()) + "\n\n"
+            + "Harga: <b>" + escape(price) + "</b>"
+        )
+        image = None
+        if auto_image:
+            try:
+                from broadcast_image import render_product_image
+                image = render_product_image(product.get("name") or "Product", price, stock, product.get("description") or "")
+            except Exception as exc:
+                raise HTTPException(500, f"Gagal membuat gambar otomatis: {type(exc).__name__}")
+        result = await (send_photo_bytes(channel_id, image, "product-broadcast.jpg", caption=body) if image else send_message(channel_id, body))
+        if not result.get("ok"):
+            raise HTTPException(502, f"Telegram gagal mengirim ke channel: {result.get('description', 'unknown error')}")
+        return {"ok": True, "mode": mode, "target": "channel", "channel_id": channel_id, "text": body, "auto_image": bool(image)}
 
     if mode == "products":
         channel_id = await _broadcast_channel_target()
@@ -1803,9 +1852,23 @@ async def broadcast_channel(
             "broadcast_target": "users",
             "broadcast_content": content,
         }
+        photo_bytes = None
+        filename = None
+        if auto_image and product_id:
+            product = await db.products.find_one({"_id": product_id, "active": True})
+            if not product:
+                raise HTTPException(400, "Produk untuk gambar otomatis tidak ditemukan.")
+            from broadcast_image import render_product_image
+            stock = await available_count(product["_id"]) if _is_inventory_product(product) else None
+            price = fmt_amount(
+                product.get("price_idr") if product.get("price_idr") is not None else product.get("price_usd") or 0,
+                "IDR" if product.get("price_idr") is not None else "USD",
+            )
+            photo_bytes = render_product_image(product.get("name") or "Product", price, stock, product.get("description") or "")
+            filename = "product-broadcast.jpg"
         await db.broadcasts.insert_one(doc)
         asyncio.create_task(_broadcast_worker(
-            doc["_id"], query, body, None, None, None, None
+            doc["_id"], query, body, photo_bytes, filename, None, None
         ))
         return {
             "ok": True,
