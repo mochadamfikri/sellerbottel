@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Wallet, Snowflake, Sun, Search } from "lucide-react";
+import { Wallet, Snowflake, Sun, Search, UserRoundCheck } from "lucide-react";
 import { toast } from "sonner";
 import api, { fmtUSD, fmtIDR, fmtDate, formatApiErrorDetail } from "../lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
@@ -56,6 +56,16 @@ export default function UsersPage() {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const doJoinGroup = async (u) => {
+    try {
+      const { data } = await api.post("/admin/users/" + u.telegram_id + "/join-group");
+      if (data.ok) toast.success(data.message || "Akun diproses untuk join group.");
+      else toast.error(data.message || "Gagal join group.");
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal join group.");
     }
   };
 
@@ -119,6 +129,9 @@ export default function UsersPage() {
                 <td className="px-4 py-3 text-right">
                   <div className="flex justify-end gap-1.5">
                     <button onClick={() => { setAdjust(u); setAdjForm({ currency: u.currency || "USD", amount: "", reason: "" }); }} title="Sesuaikan saldo" className="p-2 rounded-lg text-slate-400 hover:text-cyan-400 hover:bg-slate-800"><Wallet size={15} /></button>
+                    {u.telegram_account_connected && (
+                      <button onClick={() => doJoinGroup(u)} title="Join Group dengan akun Telegram terhubung" className="p-2 rounded-lg text-slate-400 hover:text-violet-400 hover:bg-slate-800"><UserRoundCheck size={15} /></button>
+                    )}
                     {u.frozen
                       ? <button onClick={() => doUnfreeze(u)} title="Buka blokir" className="p-2 rounded-lg text-emerald-400 hover:bg-emerald-500/10"><Sun size={15} /></button>
                       : <button onClick={() => { setFreeze(u); setFreezeReason(""); }} title="Bekukan" className="p-2 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800"><Snowflake size={15} /></button>}
