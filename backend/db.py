@@ -31,6 +31,11 @@ DEFAULT_SETTINGS = {
     "join_gate_fail_open": False,
     "required_channels": [],
     "message_version": 1,
+    "auto_broadcast_new_product": False,
+    "transaction_success_channel_enabled": False,
+    "broadcast_auto_image_enabled": False,
+    "broadcast_channel_id": "",
+    "join_group_target": "",
 }
 
 
@@ -74,10 +79,16 @@ async def ensure_indexes():
         await db.gopay_payments.drop_index("active_payment_amount_1")
     except Exception:
         pass
+    try:
+        await db.gopay_payments.drop_index("payment_scope_1_active_payment_amount_1")
+    except Exception:
+        pass
     await db.gopay_payments.create_index(
         [("payment_scope", 1), ("active_payment_amount", 1)],
         unique=True,
-        sparse=True,
+        partialFilterExpression={
+            "active_payment_amount": {"$type": ["int", "long", "double", "decimal"]},
+        },
     )
     await db.bot2_restock_requests.create_index(
         [("user_tid", 1), ("product_id", 1)],
