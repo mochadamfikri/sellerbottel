@@ -739,7 +739,7 @@ async def import_inventory(
     if not _is_inventory_product(product):
         raise HTTPException(400, "Produk jasa tidak memiliki inventory.")
 
-    schema, records = await _parse_inventory_input(file, content, product)
+    schema, records = await _parse_inventory_input(file, content, product, files)
     try:
         result = await add_records(pid, records, schema)
     except InventoryError:
