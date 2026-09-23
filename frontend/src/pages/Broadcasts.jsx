@@ -17,6 +17,7 @@ export default function Broadcasts() {
   const [products, setProducts] = useState([]);
   const [channelProductId, setChannelProductId] = useState("");
   const [channelAutoImage, setChannelAutoImage] = useState(false);
+  const [autoImageEnabled, setAutoImageEnabled] = useState(false);
 
   const load = () => api.get("/admin/broadcasts").then(({ data }) => setHistory(data));
   const loadProductPreview = useCallback(async () => {
@@ -45,6 +46,7 @@ export default function Broadcasts() {
   useEffect(() => {
     load();
     api.get("/admin/products").then(({ data }) => setProducts(data || [])).catch(() => {});
+    api.get("/admin/settings").then(({ data }) => setAutoImageEnabled(!!data.broadcast_auto_image_enabled)).catch(() => {});
   }, []);
 
   const submit = async () => {
@@ -81,8 +83,8 @@ export default function Broadcasts() {
             {products.filter((p) => p.active).map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
           </select>
           <label className="flex items-center gap-3 text-sm text-slate-300">
-            <input type="checkbox" checked={!!form.auto_image} onChange={(e) => setForm({ ...form, auto_image: e.target.checked })} />
-            🖼️ Auto Generate Picture
+            <input type="checkbox" disabled={!autoImageEnabled} checked={!!form.auto_image} onChange={(e) => setForm({ ...form, auto_image: e.target.checked })} />
+            🖼️ Auto Generate Picture {autoImageEnabled ? "(ON)" : "(OFF di Pengaturan)"}
           </label>
           <div className="grid grid-cols-2 gap-3">
             <select className={cls} value={form.lang} onChange={(e) => setForm({ ...form, lang: e.target.value })}><option value="all">Semua bahasa</option><option value="id">Indonesia</option><option value="en">English</option></select>
@@ -124,7 +126,7 @@ export default function Broadcasts() {
                 {products.filter((p) => p.active).map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
               </select>
               <label className="flex items-center gap-3 text-sm text-slate-300">
-                <input type="checkbox" checked={channelAutoImage} onChange={(e) => setChannelAutoImage(e.target.checked)} />
+                <input type="checkbox" disabled={!autoImageEnabled} checked={channelAutoImage} onChange={(e) => setChannelAutoImage(e.target.checked)} />
                 🖼️ Auto Generate Picture
               </label>
               <p className="text-xs text-slate-500">Product pilihan dikirim ke channel. Gambar otomatis memakai tema hitam/ungu.</p>
