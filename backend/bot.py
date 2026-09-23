@@ -4,6 +4,7 @@ import math
 import re
 import asyncio
 import secrets
+import base64
 from html import escape
 from datetime import datetime, timezone, timedelta
 from db import db, get_settings
@@ -573,6 +574,35 @@ async def deliver_inventory(chat_id, product, records, send_message_fn=None, sen
     send_document_fn = send_document_fn or send_document
     if not records:
         return False
+
+    # Binary/file inventory: send the original file instead of rendering
+    # base64 or metadata to the buyer.
+    file_records = [
+        record for record in records
+        if isinstance(record, dict) and record.get("__file_data_b64")
+    ]
+    if file_records:
+        all_ok = True
+        for index, record in enumerate(file_records, 1):
+            try:
+                data = base64.b64decode(record["__file_data_b64"], validate=True)
+                filename = str(record.get("__file_name") or record.get("file") or f"inventory_{index}.bin")
+                result = await send_document_fn(
+                    chat_id,
+                    data,
+                    filename,
+                    caption=f"📦 {product['name']}" + (f" — {index}/{len(file_records)}" if len(file_records) > 1 else ""),
+                )
+                all_ok = all_ok and bool(result.get("ok"))
+            except Exception:
+                logger.exception("file inventory delivery failed for product %s", product.get("_id"))
+                all_ok = False
+        if not all_ok:
+            await send_message_fn(
+                chat_id,
+                t(lang, "deliver_fail", name=product["name"]) if "lang" in globals() else f"Pengiriman {product['name']} gagal."
+            )
+        return all_ok
 
     schema = product.get("inventory_schema") or ["value"]
     account_mode = all(_looks_like_account_record(record) for record in records)
