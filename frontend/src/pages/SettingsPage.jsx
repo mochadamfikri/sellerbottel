@@ -46,6 +46,11 @@ export default function SettingsPage() {
         join_gate_enabled: !!s.join_gate_enabled,
         join_gate_fail_open: !!s.join_gate_fail_open,
         required_channels: s.required_channels || [],
+        auto_broadcast_new_product: !!s.auto_broadcast_new_product,
+        transaction_success_channel_enabled: !!s.transaction_success_channel_enabled,
+        broadcast_auto_image_enabled: !!s.broadcast_auto_image_enabled,
+        broadcast_channel_id: String(s.broadcast_channel_id || ""),
+        join_group_target: String(s.join_group_target || ""),
       });
       setS(data);
       toast.success("Pengaturan disimpan.");
@@ -154,6 +159,36 @@ export default function SettingsPage() {
               <p className="text-sm text-slate-400">Kurs otomatis saat ini: <span className="font-mono text-cyan-400">{fmtIDR(s.current_rate)}</span></p>
             )}
           </div>
+        </div>
+      </div>
+
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
+        <div>
+          <h2 className="font-heading font-semibold">Automation & Broadcast</h2>
+          <p className="text-xs text-slate-500 mt-1">Atur notifikasi otomatis tanpa mengubah notifikasi transaksi ke admin Telegram.</p>
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 flex items-center justify-between gap-4">
+            <div><p className="font-semibold text-slate-200">Auto Broadcast Product Baru</p><p className="text-xs text-slate-500 mt-1">Kirim product baru otomatis ke channel.</p></div>
+            <Switch checked={!!s.auto_broadcast_new_product} onCheckedChange={(v) => setS({ ...s, auto_broadcast_new_product: v })} />
+          </div>
+          <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 flex items-center justify-between gap-4">
+            <div><p className="font-semibold text-slate-200">Transaction Success → Channel</p><p className="text-xs text-slate-500 mt-1">Kirim notice transaksi tanpa identitas pembeli.</p></div>
+            <Switch checked={!!s.transaction_success_channel_enabled} onCheckedChange={(v) => setS({ ...s, transaction_success_channel_enabled: v })} />
+          </div>
+          <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 flex items-center justify-between gap-4">
+            <div><p className="font-semibold text-slate-200">Auto Generate Picture</p><p className="text-xs text-slate-500 mt-1">Generate visual hitam/ungu untuk broadcast yang mendukung gambar otomatis.</p></div>
+            <Switch checked={!!s.broadcast_auto_image_enabled} onCheckedChange={(v) => setS({ ...s, broadcast_auto_image_enabled: v })} />
+          </div>
+        </div>
+        <div>
+          <label className="text-xs text-slate-400">Channel Broadcast ID</label>
+          <input className={cls} placeholder="-1001234567890 atau @username" value={s.broadcast_channel_id || ""} onChange={(e) => setS({ ...s, broadcast_channel_id: e.target.value })} />
+          <p className="text-[10px] text-slate-600 mt-1">Bot harus menjadi admin channel. Jika kosong, sistem masih bisa memakai required channel pertama yang aktif.</p>
+        </div>
+        <div>
+          <label className="text-xs text-slate-400">Target Join Group untuk akun Telegram terhubung</label>
+          <input className={cls} placeholder="@group atau https://t.me/+invitehash" value={s.join_group_target || ""} onChange={(e) => setS({ ...s, join_group_target: e.target.value })} />
         </div>
       </div>
 
