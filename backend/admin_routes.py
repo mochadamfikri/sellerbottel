@@ -568,8 +568,8 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
             if not name.lower().endswith(".session"):
                 raise HTTPException(400, f"File {name or '(tanpa nama)'} bukan file .session.")
             data = await upload.read()
-            if not data:
-                continue
+            # Session inventory is identified by the uploaded .session file itself.
+            # An empty file is still a valid inventory item; do not discard it.
             if len(data) > 10 * 1024 * 1024:
                 raise HTTPException(400, f"File {name} melebihi batas 10 MB.")
             records.append({
@@ -577,8 +577,10 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
                 "__file_name": name,
                 "__file_data_b64": base64.b64encode(data).decode("ascii"),
             })
+        # Every selected .session file is an inventory item, including
+        # zero-byte test/placeholder files.
         if not records:
-            raise HTTPException(400, "Tidak ada file .session yang berisi data.")
+            raise HTTPException(400, "Tidak ada file .session yang dipilih.")
         return schema_from_file, records
 
     if file:
