@@ -18,7 +18,7 @@ from tgapi import (
     delete_message,
     send_photo_bytes,
 )
-from services import credit_deposit, reject_deposit, cancel_deposit, notify_admin, fmt_amount, now_iso, user_lang
+from services import credit_deposit, reject_deposit, cancel_deposit, notify_admin, notify_transaction_channel, fmt_amount, now_iso, user_lang
 from storage import get_object
 from i18n import t, LANG_NAMES
 from checkout import execute_checkout, stock_for
@@ -1016,6 +1016,12 @@ async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
         f"Total: <b>{fmt_amount(order['total'], order['currency'])}</b>\n"
         f"Status: <b>{final_status}</b>"
     )
+
+    if all_delivered:
+        try:
+            await notify_transaction_channel(order)
+        except Exception:
+            logger.exception("Transaction success channel notification failed")
 
 
 async def do_checkout(chat_id, user, cart_items, preserve_cart=False):
