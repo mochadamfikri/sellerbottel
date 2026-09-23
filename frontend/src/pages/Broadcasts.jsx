@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "../lib/api";
 
 export default function Broadcasts() {
-  const [form, setForm] = useState({ text: "", lang: "all", status: "active", search: "", button_text: "", button_url: "" });
+  const [form, setForm] = useState({ text: "", lang: "all", status: "active", search: "", button_text: "", button_url: "", product_id: "", auto_image: false });
   const [photo, setPhoto] = useState(null);
   const [history, setHistory] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -14,6 +14,9 @@ export default function Broadcasts() {
   const [autoTarget, setAutoTarget] = useState("channel");
   const [autoContent, setAutoContent] = useState("both");
   const [autoPreview, setAutoPreview] = useState("");
+  const [products, setProducts] = useState([]);
+  const [channelProductId, setChannelProductId] = useState("");
+  const [channelAutoImage, setChannelAutoImage] = useState(false);
 
   const load = () => api.get("/admin/broadcasts").then(({ data }) => setHistory(data));
   const loadProductPreview = useCallback(async () => {
@@ -39,7 +42,10 @@ export default function Broadcasts() {
     if (channelMode === "auto") loadAutoPreview();
   }, [channelMode, autoContent, loadProductPreview, loadAutoPreview]);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    api.get("/admin/products").then(({ data }) => setProducts(data || [])).catch(() => {});
+  }, []);
 
   const submit = async () => {
     if (!form.text.trim()) return;
@@ -55,7 +61,7 @@ export default function Broadcasts() {
       if (photo) fd.append("photo", photo);
       await api.post("/admin/broadcasts", fd);
       toast.success("Broadcast dimulai.");
-      setForm({ ...form, text: "" });
+      setForm({ ...form, text: "", product_id: "", auto_image: false });
       setPhoto(null);
       load();
     } catch (err) {
@@ -70,6 +76,14 @@ export default function Broadcasts() {
         <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
           <div className="flex items-center gap-2"><Send size={18} className="text-cyan-400" /><h2 className="font-heading font-semibold">Broadcast Baru</h2></div>
           <textarea rows={8} className={cls} placeholder="Pesan promosi..." value={form.text} onChange={(e) => setForm({ ...form, text: e.target.value })} />
+          <select className={cls} value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })}>
+            <option value="">Product terkait (opsional)</option>
+            {products.filter((p) => p.active).map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+          </select>
+          <label className="flex items-center gap-3 text-sm text-slate-300">
+            <input type="checkbox" checked={!!form.auto_image} onChange={(e) => setForm({ ...form, auto_image: e.target.checked })} />
+            🖼️ Auto Generate Picture
+          </label>
           <div className="grid grid-cols-2 gap-3">
             <select className={cls} value={form.lang} onChange={(e) => setForm({ ...form, lang: e.target.value })}><option value="all">Semua bahasa</option><option value="id">Indonesia</option><option value="en">English</option></select>
             <select className={cls} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option value="active">Pengguna aktif</option><option value="all">Semua</option><option value="frozen">Dibekukan</option></select>
@@ -90,8 +104,10 @@ export default function Broadcasts() {
           <p className="text-xs text-slate-500">Manual dan Product Aktif / Tersedia tetap dikirim ke channel. Broadcast otomatis dapat dikirim ke channel atau semua pengguna bot.</p>
           <select className={cls} value={channelMode} onChange={(e) => setChannelMode(e.target.value)}>
             <option value="manual">1. Manual</option>
-            <option value="products">2. Broadcast Product Aktif / Tersedia</option>
-            <option value="auto">3. Broadcast Otomatis</option>
+            <option value="products">2. Broadcast Semua Product Aktif / Tersedia</option>
+            <option value="product">3. Broadcast Product Pilihan</option>
+            <option value="auto">4. Broadcast Otomatis</option>
+            
           </select>
           {channelMode === "manual" ? (
             <textarea rows={8} className={cls} placeholder="Tulis pesan untuk channel..." value={channelText} onChange={(e) => setChannelText(e.target.value)} />
@@ -100,6 +116,18 @@ export default function Broadcasts() {
               <p className="text-xs text-slate-400 mb-2">Preview pesan otomatis:</p>
               <pre className="whitespace-pre-wrap text-sm text-slate-200 bg-slate-950 border border-slate-800 rounded-lg p-4 max-h-80 overflow-auto">{productPreview}</pre>
               <p className="text-xs text-slate-500 mt-2">Digital hanya ditampilkan jika stock &gt; 0. Produk jasa ditampilkan sebagai Unlimited.</p>
+            </div>
+          ) : channelMode === "product" ? (
+            <div className="space-y-3">
+              <select className={cls} value={channelProductId} onChange={(e) => setChannelProductId(e.target.value)}>
+                <option value="">Pilih product</option>
+                {products.filter((p) => p.active).map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+              </select>
+              <label className="flex items-center gap-3 text-sm text-slate-300">
+                <input type="checkbox" checked={channelAutoImage} onChange={(e) => setChannelAutoImage(e.target.checked)} />
+                🖼️ Auto Generate Picture
+              </label>
+              <p className="text-xs text-slate-500">Product pilihan dikirim ke channel. Gambar otomatis memakai tema hitam/ungu.</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -129,7 +157,7 @@ export default function Broadcasts() {
           )}
           <button
             type="button"
-            disabled={busy || (channelMode === "manual" && !channelText.trim())}
+            disabled={busy || (channelMode === "manual" && !channelText.trim()) || (channelMode === "product" && !channelProductId)}
             onClick={async () => {
               setBusy(true);
               try {
@@ -137,6 +165,9 @@ export default function Broadcasts() {
                 fd.append("mode", channelMode);
                 if (channelMode === "manual") {
                   fd.append("text", channelText);
+                } else if (channelMode === "product") {
+                  fd.append("product_id", channelProductId);
+                  fd.append("auto_image", channelAutoImage ? "true" : "false");
                 } else if (channelMode === "auto") {
                   fd.append("target", autoTarget);
                   fd.append("content", autoContent);
