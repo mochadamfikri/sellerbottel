@@ -574,12 +574,22 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
             rows = [row for row in rows if any(value not in (None, "") for value in row)]
             if not rows:
                 raise HTTPException(400, "File inventory kosong.")
-            headers = [_stringify_cell(v) for v in rows[0]]
-            if not all(headers) or len(set(headers)) != len(headers):
+
+            # Spreadsheet apps often keep formatted/empty columns to the right
+            # of the real table (e.g. A1 has "Session File" while B/C are
+            # visually blank). Those trailing empty cells are not schema fields.
+            first_row = list(rows[0])
+            while first_row and first_row[-1] in (None, ""):
+                first_row.pop()
+            headers = [_stringify_cell(v) for v in first_row]
+            if not headers or any(not header for header in headers) or len(set(headers)) != len(headers):
                 raise HTTPException(400, "Header inventory tidak boleh kosong atau duplikat.")
             schema_from_file = headers
             for row in rows[1:]:
-                record = {headers[i]: _stringify_cell(row[i] if i < len(row) else "") for i in range(len(headers))}
+                values = list(row[:len(headers)])
+                if len(values) < len(headers):
+                    values.extend([""] * (len(headers) - len(values)))
+                record = {headers[i]: _stringify_cell(values[i]) for i in range(len(headers))}
                 if any(record.values()):
                     records.append(record)
         elif source_name.endswith(".csv"):
