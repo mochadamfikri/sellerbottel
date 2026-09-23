@@ -1679,6 +1679,9 @@ async def _broadcast_channel_id():
     if configured:
         return configured
     settings = await get_settings()
+    configured = str(settings.get("broadcast_channel_id") or "").strip()
+    if configured:
+        return configured
     for channel in settings.get("required_channels") or []:
         if channel.get("enabled", True) and channel.get("channel_id"):
             return str(channel["channel_id"])
