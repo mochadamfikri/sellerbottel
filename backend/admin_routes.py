@@ -163,6 +163,7 @@ async def create_product(
     stock: Optional[int] = Form(None),
     product_kind: str = Form("digital"),
     stock_mode: str = Form("auto"),
+    inventory_mode: str = Form("table"),
     service_wait_minutes: Optional[int] = Form(None),
     service_message_template: str = Form(""),
     file: Optional[UploadFile] = File(None),
@@ -170,6 +171,8 @@ async def create_product(
     product_kind = _validate_product_kind(product_kind)
     if stock_mode not in {"auto", "manual"}:
         raise HTTPException(400, "Mode stok tidak valid.")
+    if inventory_mode not in {"table", "telegram_session"}:
+        raise HTTPException(400, "Mode inventory tidak valid.")
 
     storage_path, original_filename = None, None
     if product_kind == "service":
@@ -212,6 +215,7 @@ async def create_product(
         "manual_stock": manual_stock,
         "inventory_enabled": inventory_enabled,
         "inventory_schema": [],
+        "inventory_mode": inventory_mode if product_kind == "digital" else "table",
         "created_at": now_iso(),
     }
     await db.products.insert_one(prod)
@@ -275,6 +279,7 @@ async def update_product(
             "stock_mode": "unlimited",
             "manual_stock": None,
             "inventory_enabled": False,
+            "inventory_mode": "table",
         })
     else:
         manual_stock = None if stock_mode == "auto" else max(0, int(stock or 0))
@@ -289,6 +294,7 @@ async def update_product(
             "stock_mode": stock_mode,
             "manual_stock": manual_stock,
             "inventory_enabled": True,
+            "inventory_mode": inventory_mode,
         })
 
     await db.products.update_one({"_id": pid}, {"$set": updates})
@@ -619,17 +625,23 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
                 else:
                     raise HTTPException(400, f"Format TXT tidak cocok dengan schema inventory ({len(schema_from_file)} kolom).")
         else:
-            # Any other file type is a real file inventory item (e.g. .session, .zip, .json).
-            # It is encrypted and delivered as the original binary file after purchase.
+            if product.get("inventory_mode") != "telegram_session":
+                raise HTTPException(
+                    400,
+                    "Produk ini memakai inventory tabel. Gunakan XLSX/CSV/TXT sesuai schema product. "
+                    "File .session hanya tersedia untuk product dengan mode Telegram Session.",
+                )
+            if not source_name.endswith(".session"):
+                raise HTTPException(400, "Mode Telegram Session hanya menerima file .session.")
             import base64
             if not data:
                 raise HTTPException(400, "File inventory kosong.")
             if len(data) > 10 * 1024 * 1024:
                 raise HTTPException(400, "Ukuran satu file inventory maksimal 10 MB.")
-            filename = (file.filename or "inventory.bin").strip() or "inventory.bin"
-            schema_from_file = ["file"]
+            filename = (file.filename or "inventory.session").strip() or "inventory.session"
+            schema_from_file = ["Session File"]
             records.append({
-                "file": filename,
+                "Session File": filename,
                 "__file_name": filename,
                 "__file_data_b64": base64.b64encode(data).decode("ascii"),
             })
