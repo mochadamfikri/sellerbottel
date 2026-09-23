@@ -3,7 +3,7 @@ from db import db, get_settings
 from tgapi import send_message, send_photo_bytes
 from html import escape
 from i18n import t
-from pricing import price_for_product
+from pricing import base_price
 from inventory import available_count
 
 CUR_FIELD = {"USD": "balance_usd", "IDR": "balance_idr"}
@@ -172,8 +172,7 @@ async def _product_channel_notification(product: dict, title: str, heading: str,
 
     name = escape(str(product.get("name") or "Product"))
     description = escape(str(product.get("description") or "").strip())
-    pricing = await price_for_product(product, "IDR", 1)
-    price = fmt_amount(pricing["unit_price"], "IDR")
+    price = fmt_amount(await base_price(product, "IDR"), "IDR")
     body = (
         f"{heading} <b>{escape(title)}</b>\n\n"
         f"Produk: <b>{name}</b>\n"
