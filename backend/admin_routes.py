@@ -239,6 +239,7 @@ async def update_product(
     stock: Optional[int] = Form(None),
     product_kind: str = Form("digital"),
     stock_mode: str = Form("auto"),
+    inventory_mode: str = Form("table"),
     service_wait_minutes: Optional[int] = Form(None),
     service_message_template: str = Form(""),
     file: Optional[UploadFile] = File(None),
@@ -251,6 +252,8 @@ async def update_product(
     product_kind = _validate_product_kind(product_kind)
     if stock_mode not in {"auto", "manual"}:
         raise HTTPException(400, "Mode stok tidak valid.")
+    if inventory_mode not in {"table", "telegram_session"}:
+        raise HTTPException(400, "Mode inventory tidak valid.")
 
     updates = {
         "name": name.strip(),
