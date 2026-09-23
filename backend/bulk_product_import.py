@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from db import db
 from rates import get_rate
-from services import now_iso
+from services import now_iso, notify_product_created
 from inventory import add_records, available_count
 
 
@@ -277,6 +277,10 @@ async def import_workbook(data: bytes):
             doc["created_at"] = now_iso()
             await db.products.insert_one(doc)
             imported += 1
+            try:
+                await notify_product_created(doc)
+            except Exception:
+                pass
 
         result = {"name": item["name"], "product_id": pid, "description_generated": True}
 
