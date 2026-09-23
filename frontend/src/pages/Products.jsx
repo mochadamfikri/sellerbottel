@@ -12,6 +12,7 @@ const empty = {
   price_idr: "",
   product_kind: "digital",
   stock_mode: "auto",
+  inventory_mode: "table",
   stock: "",
   delivery_type: "link",
   content: "",
@@ -64,6 +65,7 @@ export default function Products() {
       price_idr: p.price_idr ?? "",
       product_kind: kind,
       stock_mode: p.stock_mode === "manual" ? "manual" : "auto",
+      inventory_mode: p.inventory_mode === "telegram_session" ? "telegram_session" : "table",
       stock: p.manual_stock ?? p.stock ?? "",
       delivery_type: p.delivery_type || "link",
       content: p.service_message_template || p.content || "",
@@ -84,6 +86,7 @@ export default function Products() {
       if (form.price_idr !== "") fd.append("price_idr", form.price_idr);
       fd.append("product_kind", form.product_kind);
       fd.append("stock_mode", form.product_kind === "digital" ? form.stock_mode : "auto");
+      fd.append("inventory_mode", form.product_kind === "digital" ? form.inventory_mode : "table");
       fd.append("stock", form.product_kind === "digital" && form.stock_mode === "manual" ? (form.stock || "0") : "");
       fd.append("delivery_type", form.product_kind === "digital" ? "inventory" : "service");
       fd.append("content", "");
@@ -368,11 +371,11 @@ export default function Products() {
                   ? inventoryProduct.inventory_schema.join(" · ")
                   : "Belum ditentukan — header file valid pertama akan menjadi schema product"}
               </p>
-              <p className="text-[11px] text-slate-500 mt-1">Nama field harus sama. Urutan kolom boleh berbeda.</p>
+              <p className="text-[11px] text-slate-500 mt-1">Data tabel mengikuti schema product. Mode Telegram Session menerima file .session asli.</p>
             </div>
             <div>
               <label className="text-xs text-slate-400">File Data / Inventory</label>
-              <input type="file" accept=".xlsx,.csv,.txt" className={cls} onChange={(e) => { setInventoryFile(e.target.files?.[0] || null); setInventoryResult(null); }} />
+              <input type="file" accept={inventoryProduct?.inventory_mode === "telegram_session" ? ".session" : ".xlsx,.csv,.txt"} className={cls} onChange={(e) => { setInventoryFile(e.target.files?.[0] || null); setInventoryResult(null); }} />
             </div>
             {inventoryResult && (
               <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-300 space-y-1">
@@ -442,6 +445,15 @@ export default function Products() {
 
             {form.product_kind === "digital" ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-4 space-y-3">
+                <div>
+                  <label className="text-xs text-slate-400">Format Inventory</label>
+                  <select className={cls} value={form.inventory_mode} onChange={(e) => setForm({ ...form, inventory_mode: e.target.value })}>
+                    <option value="table">Data tabel — schema mengikuti header produk</option>
+                    <option value="telegram_session">Telegram Session — file .session</option>
+                  </select>
+                  <p className="text-[11px] text-slate-500 mt-1">Telegram Session khusus produk yang memang menjual file sesi Telegram.</p>
+                </div>
+
                 <div>
                   <label className="text-xs text-slate-400">Sumber Stok</label>
                   <select className={cls} value={form.stock_mode} onChange={(e) => setForm({ ...form, stock_mode: e.target.value })}>
