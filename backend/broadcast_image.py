@@ -65,3 +65,29 @@ def render_transaction_image(total_qty, total_amount, currency="IDR", title="PEN
     out = BytesIO()
     image.save(out, format="JPEG", quality=92, optimize=True)
     return out.getvalue()
+
+def render_product_image(product_name, price, stock=None, description=""):
+    width, height = 1200, 700
+    image = Image.new("RGB", (width, height), BG)
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((55, 55, width - 55, height - 55), 28, fill=PANEL, outline=(67, 43, 95), width=2)
+    brand_font = _font(30, True)
+    title_font = _font(62, True)
+    value_font = _font(46, True)
+    label_font = _font(24, True)
+    small_font = _font(24, False)
+    draw.text((95, 90), "IDSE NETWORK CONNECT HUB", font=brand_font, fill=PURPLE)
+    draw.text((95, 155), "PRODUCT UPDATE", font=title_font, fill=WHITE)
+    name = _fit(draw, product_name, _font(50, True), 1000)
+    draw.text((95, 255), name, font=_font(50, True), fill=WHITE)
+    draw.text((95, 350), "HARGA", font=label_font, fill=MUTED)
+    draw.text((95, 390), str(price), font=value_font, fill=WHITE)
+    if stock is not None:
+        draw.text((650, 350), "STOCK", font=label_font, fill=MUTED)
+        draw.text((650, 390), f"{int(stock):,}", font=value_font, fill=WHITE)
+    if description:
+        desc = _fit(draw, " ".join(description.split()), small_font, 1000)
+        draw.text((95, 500), desc, font=small_font, fill=MUTED)
+    out = BytesIO()
+    image.save(out, format="JPEG", quality=92, optimize=True)
+    return out.getvalue()
