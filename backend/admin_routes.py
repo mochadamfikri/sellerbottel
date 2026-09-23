@@ -605,7 +605,20 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
                 else:
                     raise HTTPException(400, f"Format TXT tidak cocok dengan schema inventory ({len(schema_from_file)} kolom).")
         else:
-            raise HTTPException(400, "Inventory hanya menerima .xlsx, .csv atau .txt")
+            # Any other file type is a real file inventory item (e.g. .session, .zip, .json).
+            # It is encrypted and delivered as the original binary file after purchase.
+            import base64
+            if not data:
+                raise HTTPException(400, "File inventory kosong.")
+            if len(data) > 10 * 1024 * 1024:
+                raise HTTPException(400, "Ukuran satu file inventory maksimal 10 MB.")
+            filename = (file.filename or "inventory.bin").strip() or "inventory.bin"
+            schema_from_file = ["file"]
+            records.append({
+                "file": filename,
+                "__file_name": filename,
+                "__file_data_b64": base64.b64encode(data).decode("ascii"),
+            })
     else:
         lines = [line.strip() for line in (content or "").splitlines() if line.strip()]
         schema_from_file = schema or ["value"]
@@ -618,30 +631,10 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
             else:
                 raise HTTPException(400, f"Input manual tidak cocok dengan schema inventory ({len(schema_from_file)} kolom).")
 
-    # Once a product already has a schema, accept the same field names
-    # regardless of column order/case/extra whitespace. The records are
-    # remapped to the canonical product schema before validation/import.
-    if schema:
-        expected = {re.sub(r"\s+", " ", field).strip().casefold(): field for field in schema}
-        received = {re.sub(r"\s+", " ", field).strip().casefold(): field for field in schema_from_file}
-        if set(expected) != set(received):
-            expected_text = ", ".join(schema)
-            received_text = ", ".join(schema_from_file)
-            raise HTTPException(
-                400,
-                "Header inventory tidak cocok dengan schema product ini. "
-                f"Schema wajib: [{expected_text}]. Header file: [{received_text}]. "
-                "Gunakan nama field yang sama; urutan kolom boleh berbeda."
-            )
-        canonical_records = []
-        for record in records:
-            canonical_records.append({
-                expected[expected_key]: record.get(received[expected_key], "")
-                for expected_key in expected
-            })
-        records = canonical_records
-        schema_from_file = schema
-
+    # Product-specific schema: the uploaded file/header is authoritative.
+    # We intentionally do NOT compare against an older schema here. This lets
+    # every product use its own fields and lets an updated XLSX header redefine
+    # that product's schema.
     return schema_from_file, records
 
 
