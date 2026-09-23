@@ -14,7 +14,7 @@ from db import db, get_settings
 from auth import get_current_admin, verify_password
 from rates import get_rate
 from pricing import price_for_product
-from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso, notify_product_created
+from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso, notify_product_created, notify_product_stock_updated
 from tgapi import download_telegram_file, send_message, send_photo_bytes, tg
 from html import escape
 from inventory import (
@@ -754,6 +754,12 @@ async def import_inventory(
     result.pop("duplicates", None)
     result["stock"] = await available_count(pid)
     result["schema"] = schema
+    try:
+        updated_product = await db.products.find_one({"_id": pid})
+        if updated_product and result.get("created", 0) > 0:
+            await notify_product_stock_updated(updated_product, result["stock"])
+    except Exception:
+        logger.exception("Auto broadcast stock update gagal untuk produk %s", pid)
     return result
 
 
@@ -786,10 +792,15 @@ async def add_inventory_manual(pid: str, body: InventoryManualBody):
         raise InventoryError(f"Simpan data inventory gagal ({type(exc).__name__}). Lihat log backend.") from exc
     if result["created"] != 1:
         raise HTTPException(409, "Data inventory sudah ada atau tidak valid.")
+    stock = await available_count(pid)
+    try:
+        await notify_product_stock_updated(product, stock)
+    except Exception:
+        logger.exception("Auto broadcast stock update manual gagal untuk produk %s", pid)
     return {
         "ok": True,
         "schema": schema,
-        "stock": await available_count(pid),
+        "stock": stock,
     }
 
 
