@@ -5,6 +5,11 @@ import api, { formatApiErrorDetail } from "../lib/api";
 
 const cls = "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
 const initial = { kind: "message", period: "30d", message: "", product_ids: [], summaries: {}, target: "chats" };
+const broadcastTypes = [
+  { value: "message", title: "Pesan & Produk", detail: "Tulis pesan dan pilih hingga 10 produk dalam satu gambar." },
+  { value: "best_sellers", title: "Produk Terlaris", detail: "Kirim peringkat produk, total unit terjual, dan total penjualan." },
+  { value: "daily_recap", title: "Rekap Harian", detail: "Kirim total penjualan, unit terjual, dan produk terlaris kemarin." },
+];
 
 export default function Broadcasts() {
   const [form, setForm] = useState(initial);
@@ -86,12 +91,15 @@ export default function Broadcasts() {
           <p className="text-sm text-slate-400 mt-1">Pilih isi pesan, lihat pratinjau, lalu tentukan penerimanya.</p>
         </div>
         <div>
-          <label className="text-sm text-slate-300">Jenis broadcast</label>
-          <select className={cls} value={form.kind} onChange={(event) => change({ ...form, kind: event.target.value })}>
-            <option value="message">Pesan dan produk pilihan</option>
-            <option value="best_sellers">Produk terlaris</option>
-            <option value="daily_recap">Rekap penjualan harian</option>
-          </select>
+          <p className="text-sm text-slate-300 mb-2">Pilih jenis broadcast</p>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {broadcastTypes.map((type) => <button key={type.value} type="button" onClick={() => change({ ...form, kind: type.value })}
+              aria-pressed={form.kind === type.value}
+              className={`rounded-xl border p-4 text-left transition-colors ${form.kind === type.value ? "border-cyan-500 bg-cyan-500/10" : "border-slate-700 bg-slate-950 hover:border-slate-500"}`}>
+              <span className="block font-semibold text-slate-100">{type.title}</span>
+              <span className="block mt-1 text-xs text-slate-400">{type.detail}</span>
+            </button>)}
+          </div>
         </div>
         {form.kind === "best_sellers" && <div>
           <label className="text-sm text-slate-300">Periode penjualan</label>
@@ -100,7 +108,7 @@ export default function Broadcasts() {
           </select>
           <p className="text-xs text-slate-500 mt-1">Menampilkan hingga 5 produk terlaris beserta unit terjual dan total penjualan.</p>
         </div>}
-        {form.kind === "daily_recap" && <p className="text-sm text-slate-400">Rekap untuk hari kemarin (WIB): total penjualan, jumlah unit terjual, dan produk terlaris.</p>}
+        {form.kind === "daily_recap" && <p className="text-sm text-slate-400">Rekap penjualan harian untuk kemarin (WIB): total penjualan, jumlah unit terjual, dan produk terlaris.</p>}
         {form.kind === "message" && <>
         <div>
           <label className="text-sm text-slate-300">Pesan utama</label>
