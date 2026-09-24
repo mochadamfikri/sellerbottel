@@ -243,6 +243,8 @@ async def scan_subscriptions():
         except Exception:
             logger.exception("Auto activation failed for bot %s", bot["_id"])
     from reseller_payout import reconcile_payouts, remind_payout
+    from reseller_contest import scan_contests
+    await scan_contests()
     await reconcile_payouts()
     payouts = await db.reseller_payouts.find({"status": "pending_transfer",
                                               "reminder_sent_at": {"$exists": False}}).limit(100).to_list(100)

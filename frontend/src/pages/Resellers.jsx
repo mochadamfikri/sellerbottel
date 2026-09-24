@@ -11,16 +11,20 @@ export default function Resellers() {
   const [bots, setBots] = useState([]);
   const [payouts, setPayouts] = useState([]);
   const [detail, setDetail] = useState(null);
+  const [contests, setContests] = useState([]);
+  const [contestDetail, setContestDetail] = useState(null);
+  const [contestForm, setContestForm] = useState({ name: "", starts_at: "", ends_at: "", target_sales_idr: 1000000, prize_idr: 100000 });
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
     try {
-      const [settings, botList, payoutList] = await Promise.all([
-        api.get("/admin/resellers/settings"), api.get("/admin/resellers"), api.get("/admin/resellers/payouts"),
+      const [settings, botList, payoutList, contestList] = await Promise.all([
+        api.get("/admin/resellers/settings"), api.get("/admin/resellers"), api.get("/admin/resellers/payouts"), api.get("/admin/resellers/contests"),
       ]);
       setConfig(settings.data);
       setBots(botList.data || []);
       setPayouts(payoutList.data || []);
+      setContests(contestList.data || []);
     } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal memuat bot reseller."); }
   };
   useEffect(() => { load(); }, []);
@@ -28,6 +32,24 @@ export default function Resellers() {
   const openBot = async (id) => {
     try { setDetail((await api.get(`/admin/resellers/${id}`)).data); }
     catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Detail gagal dimuat."); }
+  };
+  const openContest = async (id) => {
+    try { setContestDetail((await api.get(`/admin/resellers/contests/${id}`)).data); }
+    catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Kontes gagal dimuat."); }
+  };
+  const createContest = async () => {
+    if (!contestForm.starts_at || !contestForm.ends_at) { toast.error("Isi tanggal mulai dan selesai kontes."); return; }
+    setBusy(true);
+    try {
+      await api.post("/admin/resellers/contests", {
+        ...contestForm, starts_at: new Date(contestForm.starts_at).toISOString(),
+        ends_at: new Date(contestForm.ends_at).toISOString(),
+      });
+      toast.success("Kontes dibuat.");
+      setContestForm({ ...contestForm, name: "", starts_at: "", ends_at: "" });
+      await load();
+    } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal membuat kontes."); }
+    finally { setBusy(false); }
   };
   const save = async () => {
     setBusy(true);
@@ -44,6 +66,7 @@ export default function Resellers() {
       toast.success("Berhasil diproses.");
       await load();
       if (detail) await openBot(detail._id);
+      if (contestDetail) await openContest(contestDetail._id);
     } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Aksi gagal."); }
     finally { setBusy(false); }
   };
@@ -93,6 +116,31 @@ export default function Resellers() {
       <div><h4 className="font-medium mb-2">Pengguna terbaru</h4><div className="max-h-36 overflow-auto text-xs text-slate-400 space-y-1">{detail.recent_users?.map((user) => <p key={user.telegram_id}>{user.first_name || user.username || "Pengguna"} · {user.telegram_id} · {user.last_seen_at?.slice(0, 16)}</p>)}{!detail.recent_users?.length && <p>Belum ada pengguna.</p>}</div></div>
       <div><h4 className="font-medium mb-2">Pesanan terbaru</h4><div className="max-h-40 overflow-auto text-xs text-slate-400 space-y-1">{detail.recent_orders?.map((order) => <div key={order._id} className="flex flex-wrap justify-between gap-2"><span>{order.invoice_id} · {order.user_tid} · {order.status} · {idr(order.total)}</span>{order.status === "service_waiting" && <button disabled={busy} onClick={() => act(`/admin/resellers/${detail._id}/orders/${order._id}/complete`)} className="text-cyan-300">Tandai jasa selesai</button>}</div>)}{!detail.recent_orders?.length && <p>Belum ada pesanan.</p>}</div></div>
     </div>}
+
+    <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-5 space-y-4">
+      <div><h3 className="font-semibold">🏆 Kontes Owner Bot Reseller</h3>
+        <p className="text-xs text-slate-400 mt-1">Peringkat dihitung dari omzet pesanan berbayar selama periode kontes. Satu owner dapat menggabungkan penjualan dari beberapa bot. Hadiah ditransfer manual setelah kontes selesai.</p></div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div><label className="text-xs text-slate-300">Nama kontes</label><input className={cls} value={contestForm.name} onChange={(event) => setContestForm({ ...contestForm, name: event.target.value })} placeholder="Kontes Bulanan" /></div>
+        <div><label className="text-xs text-slate-300">Target minimal omzet (IDR)</label><input type="number" min="1" className={cls} value={contestForm.target_sales_idr} onChange={(event) => setContestForm({ ...contestForm, target_sales_idr: Number(event.target.value) })} /></div>
+        <div><label className="text-xs text-slate-300">Mulai (waktu lokal)</label><input type="datetime-local" className={cls} value={contestForm.starts_at} onChange={(event) => setContestForm({ ...contestForm, starts_at: event.target.value })} /></div>
+        <div><label className="text-xs text-slate-300">Selesai (waktu lokal)</label><input type="datetime-local" className={cls} value={contestForm.ends_at} onChange={(event) => setContestForm({ ...contestForm, ends_at: event.target.value })} /></div>
+        <div><label className="text-xs text-slate-300">Hadiah pemenang (IDR)</label><input type="number" min="1" className={cls} value={contestForm.prize_idr} onChange={(event) => setContestForm({ ...contestForm, prize_idr: Number(event.target.value) })} /></div>
+      </div>
+      <button disabled={busy} onClick={createContest} className="rounded-lg bg-cyan-600 hover:bg-cyan-700 px-4 py-2.5 text-sm font-semibold disabled:opacity-50">Buat Kontes</button>
+      <div className="space-y-2">{contests.map((contest) => <button key={contest._id} onClick={() => openContest(contest._id)} className="w-full text-left rounded-lg border border-slate-800 bg-slate-950/50 p-3 hover:border-cyan-700">
+        <div className="flex justify-between gap-2"><b>{contest.name}</b><span className="text-xs text-cyan-300">{contest.phase}</span></div>
+        <p className="text-xs text-slate-400 mt-1">Target {idr(contest.target_sales_idr)} · Hadiah {idr(contest.prize_idr)} · {new Date(contest.starts_at).toLocaleString("id-ID")} – {new Date(contest.ends_at).toLocaleString("id-ID")}</p>
+      </button>)}{!contests.length && <p className="text-sm text-slate-500">Belum ada kontes.</p>}</div>
+      {contestDetail && <div className="rounded-lg border border-cyan-500/30 p-4 space-y-3">
+        <div className="flex justify-between"><h4 className="font-semibold">Peringkat: {contestDetail.name}</h4><button onClick={() => setContestDetail(null)} className="text-xs text-slate-400">Tutup</button></div>
+        <p className="text-xs text-slate-400">Target minimal {idr(contestDetail.target_sales_idr)} · Hadiah {idr(contestDetail.prize_idr)} · Status {contestDetail.phase}</p>
+        {contestDetail.winner && <p className="text-sm text-emerald-300">🏆 Pemenang: owner {contestDetail.winner.owner_tid} · Omzet {idr(contestDetail.winner.sales_idr)}</p>}
+        <div className="space-y-1 max-h-48 overflow-auto">{contestDetail.leaderboard?.map((row) => <p key={row.owner_tid} className="text-xs text-slate-300">#{row.rank} Owner {row.owner_tid} · {row.bots.join(", ")} · {idr(row.sales_idr)} · {row.order_count} pesanan {row.eligible ? "✅ memenuhi target" : ""}</p>)}{!contestDetail.leaderboard?.length && <p className="text-xs text-slate-500">Belum ada penjualan selama kontes.</p>}</div>
+        {contestDetail.phase === "ended" && <button disabled={busy} onClick={() => act(`/admin/resellers/contests/${contestDetail._id}/settle`)} className="rounded-lg bg-cyan-700 px-3 py-2 text-xs disabled:opacity-50">Tetapkan Pemenang</button>}
+        {contestDetail.status === "winner_pending_transfer" && <button disabled={busy} onClick={() => { const reference = window.prompt("Masukkan referensi setelah hadiah ditransfer:"); if (reference !== null) act(`/admin/resellers/contests/${contestDetail._id}/paid`, { transfer_reference: reference }); }} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs disabled:opacity-50">Tandai Hadiah Sudah Dibayar</button>}
+      </div>}
+    </div>
 
     <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-5 space-y-4">
       <h3 className="font-semibold">Pencairan Komisi</h3>

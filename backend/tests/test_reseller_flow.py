@@ -19,6 +19,7 @@ import reseller_bot
 import reseller_payout
 import reseller_service
 import reseller_signup
+import reseller_contest
 from db import db
 
 
@@ -187,5 +188,51 @@ def test_inactive_after_14_days_without_paid_sales_and_no_refund(monkeypatch):
         assert len(messages) == 1 and "tidak dikembalikan" in messages[0][1]
         await reseller_signup.scan_subscriptions()
         assert len(messages) == 1
+
+    run(check())
+
+
+def test_contest_combines_owner_sales_and_requires_target(monkeypatch):
+    notifications = []
+
+    async def fake_admin(message):
+        notifications.append(message)
+
+    async def fake_message(tid, message):
+        notifications.append(message)
+
+    monkeypatch.setattr(reseller_contest, "notify_admin", fake_admin)
+    monkeypatch.setattr(reseller_contest, "send_message", fake_message)
+
+    async def check():
+        await db.reseller_bots.delete_many({})
+        await db.purchases.delete_many({})
+        await db.reseller_contests.delete_many({})
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(days=2)).isoformat()
+        end = (now - timedelta(days=1)).isoformat()
+        inside = (now - timedelta(days=1, hours=12)).isoformat()
+        outside = (now - timedelta(hours=12)).isoformat()
+        await db.reseller_bots.insert_many([
+            {"_id": "b1", "owner_tid": 1, "username": "one"},
+            {"_id": "b2", "owner_tid": 1, "username": "two"},
+            {"_id": "b3", "owner_tid": 2, "username": "three"},
+        ])
+        await db.purchases.insert_many([
+            {"_id": "c1", "reseller_bot_id": "b1", "status": "delivered", "currency": "IDR", "total": 600000, "paid_at": inside},
+            {"_id": "c2", "reseller_bot_id": "b2", "status": "service_waiting", "currency": "IDR", "total": 500000, "paid_at": inside},
+            {"_id": "c3", "reseller_bot_id": "b3", "status": "delivered", "currency": "IDR", "total": 900000, "paid_at": inside},
+            {"_id": "c4", "reseller_bot_id": "b3", "status": "refunded", "currency": "IDR", "total": 1000000, "paid_at": inside},
+            {"_id": "c5", "reseller_bot_id": "b3", "status": "delivered", "currency": "IDR", "total": 1000000, "paid_at": outside},
+        ])
+        contest = await reseller_contest.create_contest("Kontes September", start, end, 1000000, 250000)
+        ranking = await reseller_contest.leaderboard(contest)
+        assert ranking[0]["owner_tid"] == 1 and ranking[0]["sales_idr"] == 1100000
+        assert ranking[0]["eligible"] and not ranking[1]["eligible"]
+        result = await reseller_contest.settle_contest(contest)
+        assert result["winner"]["owner_tid"] == 1
+        assert (await db.reseller_contests.find_one({"_id": contest["_id"]}))["status"] == "winner_pending_transfer"
+        assert not await reseller_contest.settle_contest(contest)
+        assert len(notifications) == 2
 
     run(check())

@@ -1,6 +1,8 @@
 """Admin controls and webhook entry point for reseller bots."""
 import asyncio
 import hmac
+from datetime import datetime, timezone
+from html import escape
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -8,6 +10,8 @@ from pydantic import BaseModel, Field
 from auth import get_current_admin
 from db import db, get_settings
 from reseller_service import activation_fees, configure_webhook
+from reseller_contest import (contest_phase, create_contest, leaderboard,
+                              settle_contest)
 from services import now_iso
 
 admin_router = APIRouter(prefix="/api/admin/resellers", dependencies=[Depends(get_current_admin)])
@@ -24,6 +28,24 @@ class ResellerSettings(BaseModel):
 
 class PayoutDecision(BaseModel):
     transfer_reference: str = Field(default="", max_length=120)
+
+
+class ContestInput(BaseModel):
+    name: str = Field(min_length=3, max_length=100)
+    starts_at: datetime
+    ends_at: datetime
+    target_sales_idr: int = Field(gt=0, le=100_000_000_000)
+    prize_idr: int = Field(gt=0, le=100_000_000_000)
+
+
+def contest_dates(body: ContestInput):
+    if body.starts_at.tzinfo is None or body.ends_at.tzinfo is None:
+        raise HTTPException(400, "Tanggal kontes harus memuat zona waktu.")
+    start = body.starts_at.astimezone(timezone.utc)
+    end = body.ends_at.astimezone(timezone.utc)
+    if end <= start:
+        raise HTTPException(400, "Waktu selesai harus setelah waktu mulai.")
+    return start.isoformat(), end.isoformat()
 
 
 @admin_router.get("/settings")
@@ -84,6 +106,59 @@ async def list_resellers():
 @admin_router.get("/payouts")
 async def list_payouts():
     return await db.reseller_payouts.find().sort("created_at", -1).limit(200).to_list(200)
+
+
+@admin_router.get("/contests")
+async def list_contests():
+    contests = await db.reseller_contests.find().sort("created_at", -1).limit(100).to_list(100)
+    return [{**contest, "phase": contest_phase(contest)} for contest in contests]
+
+
+@admin_router.post("/contests")
+async def add_contest(body: ContestInput):
+    start, end = contest_dates(body)
+    if end <= now_iso():
+        raise HTTPException(400, "Waktu selesai harus di masa depan.")
+    return await create_contest(body.name.strip(), start, end,
+                                body.target_sales_idr, body.prize_idr)
+
+
+@admin_router.get("/contests/{contest_id}")
+async def contest_detail(contest_id: str):
+    contest = await db.reseller_contests.find_one({"_id": contest_id})
+    if not contest:
+        raise HTTPException(404, "Kontes tidak ditemukan.")
+    return {**contest, "phase": contest_phase(contest),
+            "leaderboard": contest.get("final_leaderboard") if contest.get("status") != "active"
+            else await leaderboard(contest)}
+
+
+@admin_router.post("/contests/{contest_id}/settle")
+async def close_contest(contest_id: str):
+    contest = await db.reseller_contests.find_one({"_id": contest_id})
+    if not contest:
+        raise HTTPException(404, "Kontes tidak ditemukan.")
+    if contest.get("status") != "active" or contest["ends_at"] > now_iso():
+        raise HTTPException(400, "Kontes belum selesai atau sudah diproses.")
+    return {"ok": bool(await settle_contest(contest))}
+
+
+@admin_router.post("/contests/{contest_id}/paid")
+async def mark_contest_prize_paid(contest_id: str, body: PayoutDecision):
+    contest = await db.reseller_contests.find_one_and_update(
+        {"_id": contest_id, "status": "winner_pending_transfer"},
+        {"$set": {"status": "prize_paid", "prize_paid_at": now_iso(),
+                  "transfer_reference": body.transfer_reference.strip()}})
+    if not contest:
+        raise HTTPException(400, "Hadiah tidak ditemukan atau sudah dibayar.")
+    try:
+        from tgapi import send_message
+        await send_message(contest["winner"]["owner_tid"],
+                           f"🎁 Hadiah kontes <b>{escape(contest['name'])}</b> sebesar "
+                           f"{contest['prize_idr']:,.0f} IDR sudah ditransfer oleh admin pusat.")
+    except Exception:
+        pass
+    return {"ok": True}
 
 
 @admin_router.post("/payouts/{payout_id}/paid")
