@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from auth import get_current_admin
 from broadcast_image import render_product_collection
+from broadcast_reports import format_report, sales_summary
 from checkout import stock_for
 from db import db, get_settings
 from services import _broadcast_channel_id, base_price, fmt_amount, now_iso
@@ -20,6 +21,9 @@ router = APIRouter(prefix="/api/admin/broadcasts/compose", dependencies=[Depends
 
 
 class ComposeBody(BaseModel):
+    kind: Literal["message", "best_sellers", "daily_recap"] = "message"
+    period: Literal["7d", "30d", "all"] = "30d"
+    day: str | None = None
     message: str = ""
     product_ids: list[str] = Field(default_factory=list)
     summaries: dict[str, str] = Field(default_factory=dict)
@@ -44,6 +48,12 @@ async def configured_chats() -> list[str]:
 
 
 async def build_content(body: ComposeBody):
+    if body.kind != "message":
+        try:
+            summary = await sales_summary(body.kind, body.period, body.day)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return format_report(body.kind, summary), None, []
     ids = body.product_ids
     if len(ids) != len(set(ids)) or len(ids) > 10:
         raise HTTPException(400, "Pilih maksimal 10 produk tanpa duplikat.")
@@ -146,7 +156,7 @@ async def send(body: ComposeBody):
     if body.target in {"chats", "both"} and not chats:
         raise HTTPException(400, "Channel/grup broadcast belum diisi di Pengaturan.")
     user_count = await db.bot_users.count_documents({"blocked": {"$ne": True}}) if body.target in {"users", "both"} else 0
-    doc = {"_id": str(uuid.uuid4()), "text": text, "status": "running", "broadcast_type": "compose",
+    doc = {"_id": str(uuid.uuid4()), "text": text, "status": "running", "broadcast_type": body.kind,
            "broadcast_target": body.target, "product_ids": [p["id"] for p in products],
            "total": user_count + len(chats), "success": 0, "failed": 0, "blocked": 0,
            "created_at": now_iso(), "finished_at": None}

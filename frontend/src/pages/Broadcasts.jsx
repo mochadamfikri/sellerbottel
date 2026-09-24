@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "../lib/api";
 
 const cls = "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
-const initial = { message: "", product_ids: [], summaries: {}, target: "chats" };
+const initial = { kind: "message", period: "30d", message: "", product_ids: [], summaries: {}, target: "chats" };
 
 export default function Broadcasts() {
   const [form, setForm] = useState(initial);
@@ -14,11 +14,14 @@ export default function Broadcasts() {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
+  const [recapConfig, setRecapConfig] = useState({ enabled: true, time: "00:05", target: "chats" });
+  const [savingConfig, setSavingConfig] = useState(false);
 
   const load = () => {
     api.get("/admin/products").then(({ data }) => setProducts(data || [])).catch(() => {});
     api.get("/admin/broadcasts").then(({ data }) => setHistory(data || [])).catch(() => {});
     api.get("/admin/broadcasts/stock-events").then(({ data }) => setStockEvents(data || [])).catch(() => {});
+    api.get("/admin/broadcasts/daily-recap/config").then(({ data }) => setRecapConfig(data)).catch(() => {});
   };
   useEffect(() => { load(); }, []);
 
@@ -36,7 +39,7 @@ export default function Broadcasts() {
   };
 
   const run = async (action) => {
-    if (!form.message.trim() && !form.product_ids.length) {
+    if (form.kind === "message" && !form.message.trim() && !form.product_ids.length) {
       toast.error("Tulis pesan atau pilih produk.");
       return;
     }
@@ -64,14 +67,41 @@ export default function Broadcasts() {
     (product.product_kind === "service" || product.stock == null || product.stock > 0));
   const filtered = available.filter((product) => product.name?.toLowerCase().includes(search.toLowerCase()));
   const plainPreview = (preview?.text || "").replace(/<[^>]*>/g, "");
+  const saveConfig = async () => {
+    setSavingConfig(true);
+    try {
+      const { data } = await api.put("/admin/broadcasts/daily-recap/config", recapConfig);
+      setRecapConfig(data);
+      toast.success("Jadwal rekap harian disimpan.");
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Jadwal gagal disimpan.");
+    } finally { setSavingConfig(false); }
+  };
 
   return (
     <div className="space-y-5">
       <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-5 space-y-5">
         <div>
           <h2 className="font-heading text-lg font-semibold flex items-center gap-2"><Send size={19} className="text-cyan-400" /> Broadcast</h2>
-          <p className="text-sm text-slate-400 mt-1">Satu pesan dan satu gambar untuk produk pilihan. Periksa hasilnya sebelum mengirim.</p>
+          <p className="text-sm text-slate-400 mt-1">Pilih isi pesan, lihat pratinjau, lalu tentukan penerimanya.</p>
         </div>
+        <div>
+          <label className="text-sm text-slate-300">Jenis broadcast</label>
+          <select className={cls} value={form.kind} onChange={(event) => change({ ...form, kind: event.target.value })}>
+            <option value="message">Pesan dan produk pilihan</option>
+            <option value="best_sellers">Produk terlaris</option>
+            <option value="daily_recap">Rekap penjualan harian</option>
+          </select>
+        </div>
+        {form.kind === "best_sellers" && <div>
+          <label className="text-sm text-slate-300">Periode penjualan</label>
+          <select className={cls} value={form.period} onChange={(event) => change({ ...form, period: event.target.value })}>
+            <option value="7d">7 hari terakhir</option><option value="30d">30 hari terakhir</option><option value="all">Sepanjang waktu</option>
+          </select>
+          <p className="text-xs text-slate-500 mt-1">Menampilkan hingga 5 produk terlaris beserta unit terjual dan total penjualan.</p>
+        </div>}
+        {form.kind === "daily_recap" && <p className="text-sm text-slate-400">Rekap untuk hari kemarin (WIB): total penjualan, jumlah unit terjual, dan produk terlaris.</p>}
+        {form.kind === "message" && <>
         <div>
           <label className="text-sm text-slate-300">Pesan utama</label>
           <textarea rows={4} maxLength={1000} className={cls} placeholder="Tulis pesan untuk pembeli (opsional jika memilih produk)..." value={form.message} onChange={(event) => change({ ...form, message: event.target.value })} />
@@ -104,6 +134,7 @@ export default function Broadcasts() {
             })}
           </div>
         )}
+        </>}
         <div>
           <label className="text-sm text-slate-300">Kirim ke</label>
           <select className={cls} value={form.target} onChange={(event) => change({ ...form, target: event.target.value })}>
@@ -113,6 +144,23 @@ export default function Broadcasts() {
           </select>
         </div>
         <button type="button" disabled={busy} onClick={() => run("preview")} className="w-full rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 py-3 font-semibold">{busy ? "Memproses..." : "Lihat Pratinjau"}</button>
+      </div>
+
+      <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-5 space-y-4">
+        <div>
+          <h3 className="font-semibold">Rekap Harian Otomatis</h3>
+          <p className="text-sm text-slate-400 mt-1">Mengirim hasil penjualan hari sebelumnya menurut waktu WIB. Pesanan dihitung setelah selesai dikirim.</p>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-slate-200">
+          <input type="checkbox" checked={recapConfig.enabled} onChange={(event) => setRecapConfig({ ...recapConfig, enabled: event.target.checked })} /> Aktifkan rekap otomatis
+        </label>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div><label className="text-sm text-slate-300">Jam kirim (WIB)</label><input type="time" className={cls} value={recapConfig.time} onChange={(event) => setRecapConfig({ ...recapConfig, time: event.target.value })} /></div>
+          <div><label className="text-sm text-slate-300">Kirim otomatis ke</label><select className={cls} value={recapConfig.target} onChange={(event) => setRecapConfig({ ...recapConfig, target: event.target.value })}>
+            <option value="chats">Channel dan grup terhubung</option><option value="users">Semua pengguna bot</option><option value="both">Channel, grup, dan semua pengguna</option>
+          </select></div>
+        </div>
+        <button type="button" disabled={savingConfig} onClick={saveConfig} className="rounded-lg bg-slate-700 hover:bg-slate-600 px-4 py-2.5 text-sm disabled:opacity-50">{savingConfig ? "Menyimpan..." : "Simpan Jadwal"}</button>
       </div>
 
       {preview && <div className="rounded-xl border border-cyan-500/30 bg-slate-900/80 p-5 space-y-4">

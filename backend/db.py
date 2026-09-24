@@ -37,6 +37,9 @@ DEFAULT_SETTINGS = {
     "broadcast_channel_id": "",
     "broadcast_group_ids": "",
     "stock_notifications_enabled": True,
+    "daily_recap_enabled": True,
+    "daily_recap_time": "00:05",
+    "daily_recap_target": "chats",
     "join_group_target": "",
 }
 
