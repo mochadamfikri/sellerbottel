@@ -108,6 +108,16 @@ async def ensure_indexes():
             "active_payment_amount": {"$type": ["int", "long", "double", "decimal"]},
         },
     )
+    # A bank transaction has no bot scope. The amount must identify only one
+    # pending QR across the central and reseller payment monitors.
+    await db.gopay_payments.create_index(
+        "active_payment_amount",
+        unique=True,
+        name="active_payment_amount_global_unique",
+        partialFilterExpression={
+            "active_payment_amount": {"$type": ["int", "long", "double", "decimal"]},
+        },
+    )
     await db.bot2_restock_requests.create_index(
         [("user_tid", 1), ("product_id", 1)],
         unique=True,

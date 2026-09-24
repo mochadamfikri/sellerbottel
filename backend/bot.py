@@ -7,6 +7,7 @@ import secrets
 import base64
 from html import escape
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from db import db, get_settings
 from rates import get_rate
 from chain import verify_tx, looks_like_tx_hash
@@ -25,6 +26,7 @@ from checkout import execute_checkout, stock_for
 from inventory import decrypt_items
 from join_gate import check_user_membership, build_gate_keyboard, clear_cache_for_user
 from gopay_provider import create_gopay_payment
+from direct_checkout import create_qris_order, qris_ready, quote_items
 from pricing import price_for_product
 
 logger = logging.getLogger("bot")
@@ -179,6 +181,7 @@ async def show_products(chat_id, user, page=1):
         nav.append({"text": "➡️ Berikutnya", "callback_data": f"products:{page + 1}"})
     if nav:
         rows.append(nav)
+    rows.append([{"text": "🔄 Perbarui stok", "callback_data": f"products:{page}"}])
     rows.append([{"text": t(lang, "btn_main"), "callback_data": "menu:main"}])
 
     await send_message(
@@ -1046,6 +1049,124 @@ async def do_checkout(chat_id, user, cart_items, preserve_cart=False):
         return await _do_checkout(chat_id, user, cart_items, preserve_cart=preserve_cart)
 
 
+async def show_payment_methods(chat_id, user, cart_items, preserve_cart=False):
+    lang = user.get("lang", "id")
+    if not cart_items:
+        await send_message(chat_id, "🛒 Keranjang kosong.", kb=back_kb(lang))
+        return
+    qr_available = await qris_ready()
+    qr_total = None
+    if qr_available:
+        quote = await quote_items(user, cart_items,
+            user.get("pending_coupon") if user.get("currency") == "IDR" else None)
+        if quote.get("error"):
+            await send_message(chat_id, f"⚠️ {escape(quote['error'])}", kb=back_kb(lang))
+            return
+        qr_total = quote["total"]
+    if user.get("currency") == "IDR" and qr_total is not None:
+        total = qr_total
+    else:
+        total = 0
+        for item in cart_items:
+            product = await db.products.find_one({"_id": item["pid"], "active": True})
+            if not product:
+                await send_message(chat_id, "⚠️ Produk sudah tidak tersedia.", kb=back_kb(lang))
+                return
+            qty = max(1, int(item.get("qty") or 1))
+            stock = await stock_for(product)
+            if stock is not None and stock < qty:
+                await send_message(chat_id, f"⚠️ Stok {escape(product['name'])} berubah. Tersedia {stock}.", kb=back_kb(lang))
+                return
+            total += (await price_for_product(product, user["currency"], qty))["unit_price"] * qty
+    await set_state(user["telegram_id"], "checkout_method", {
+        "cart_items": cart_items, "preserve_cart": bool(preserve_cart),
+    })
+    rows = [[{"text": f"💰 Saldo — {fmt_amount(total, user['currency'])}", "callback_data": "pay:balance"}]]
+    if qr_available:
+        rows.append([{"text": f"📱 QRIS — {fmt_amount(qr_total, 'IDR')}", "callback_data": "pay:qris"}])
+    rows.append([{"text": "⬅️ Kembali", "callback_data": "menu:cart"}])
+    await send_message(chat_id,
+        "🧾 <b>Pilih Metode Pembayaran</b>\n\n"
+        f"Total produk: <b>{fmt_amount(total, user['currency'])}</b>\n"
+        + ("QRIS akan menambahkan biaya admin dan kode unik; jumlah akhir terlihat pada QR. "
+           "Stok ditahan 10 menit saat QR dibuat.\n\n" if qr_available else "\n")
+        + ("Kupon USD hanya berlaku untuk pembayaran saldo USD.\n\n"
+           if qr_available and user.get("currency") == "USD" and user.get("pending_coupon") else "")
+        + "Pilih metode pembayaran:", kb={"inline_keyboard": rows})
+
+
+async def handle_payment_method(chat_id, user, method):
+    if user.get("state") != "checkout_method":
+        await send_message(chat_id, "⚠️ Pilihan pembayaran sudah tidak aktif. Mulai checkout lagi.",
+                           kb=back_kb(user.get("lang", "id")))
+        return
+    data = user.get("state_data") or {}
+    cart_items = norm_cart(data.get("cart_items"))
+    preserve_cart = bool(data.get("preserve_cart"))
+    if not cart_items:
+        await set_state(user["telegram_id"], None)
+        await send_message(chat_id, "🛒 Keranjang kosong.", kb=back_kb(user.get("lang", "id")))
+        return
+    claimed = await db.bot_users.update_one(
+        {"telegram_id": user["telegram_id"], "state": "checkout_method"},
+        {"$set": {"state": "checkout_processing"}},
+    )
+    if claimed.modified_count != 1:
+        await send_message(chat_id, "⏳ Checkout ini sudah diproses. Lihat riwayat transaksi.",
+                           kb=back_kb(user.get("lang", "id")))
+        return
+    if method == "balance":
+        await set_state(user["telegram_id"], None)
+        await do_checkout(chat_id, user, cart_items, preserve_cart=preserve_cart)
+        return
+    if method != "qris":
+        await set_state(user["telegram_id"], "checkout_method", data)
+        return
+    lock = _checkout_lock(user["telegram_id"])
+    if lock.locked():
+        await send_message(chat_id, "⏳ Checkout sedang diproses.")
+        await set_state(user["telegram_id"], "checkout_method", data)
+        return
+    async with lock:
+        try:
+            result = await create_qris_order(user, cart_items,
+                coupon_code=user.get("pending_coupon") if user.get("currency") == "IDR" else None,
+                preserve_cart=preserve_cart)
+            if result.get("error"):
+                await set_state(user["telegram_id"], "checkout_method", data)
+                await send_message(chat_id, f"⚠️ {escape(result['error'])}",
+                    kb=back_kb(user.get("lang", "id")))
+                return
+            order, payment = result["order"], result["payment"]
+            expiry_wib = datetime.fromisoformat(order["expires_at"]).astimezone(
+                ZoneInfo("Asia/Jakarta")).strftime("%d %b %Y %H:%M WIB")
+            caption = ("🧾 <b>Bayar Produk via QRIS</b>\n\n"
+                f"Invoice: <code>{escape(order['invoice_id'])}</code>\n"
+                f"Total produk: <b>{fmt_amount(order['total'], 'IDR')}</b>\n"
+                f"Biaya admin: {fmt_amount(payment['admin_fee'], 'IDR')}\n"
+                f"Kode unik: {fmt_amount(payment['platform_code'], 'IDR')}\n"
+                f"<b>Bayar tepat {fmt_amount(payment['payment_amount'], 'IDR')}</b>\n"
+                f"Berlaku sampai: {expiry_wib}\n\n"
+                "Bayar sebelum waktu di atas. Setelah pembayaran terverifikasi, produk dikirim otomatis. "
+                "Ini pembayaran invoice, bukan deposit.")
+            sent_qr = await send_photo_bytes(chat_id, result["image"], "checkout-qris.jpg",
+                caption=caption, kb={"inline_keyboard": [
+                    [{"text": "🧾 Riwayat", "callback_data": "menu:history"}],
+                ]})
+            if not sent_qr.get("ok"):
+                raise RuntimeError(f"Telegram menolak foto QRIS: {sent_qr.get('description', 'unknown')}")
+            await set_state(user["telegram_id"], None)
+        except ValueError as exc:
+            await set_state(user["telegram_id"], "checkout_method", data)
+            await send_message(chat_id, f"⚠️ {escape(str(exc))}",
+                               kb=back_kb(user.get("lang", "id")))
+        except Exception:
+            logger.exception("QRIS checkout creation failed")
+            await set_state(user["telegram_id"], "checkout_method", data)
+            await send_message(chat_id, "⚠️ QRIS gagal dibuat. Silakan coba lagi atau pilih saldo.",
+                               kb=back_kb(user.get("lang", "id")))
+
+
 # ============ DEPOSIT ============
 
 async def ensure_join_gate(chat_id, user, force_refresh=False):
@@ -1513,7 +1634,7 @@ async def show_history(chat_id, user):
         return
 
     status_labels = {
-        "pending": "⏳ Pending", "service_waiting": "⏳ Antrean Jasa", "approved": "✅ Disetujui", "rejected": "❌ Ditolak",
+        "pending": "⏳ Pending", "pending_payment": "📱 Menunggu QRIS", "service_waiting": "⏳ Antrean Jasa", "approved": "✅ Disetujui", "rejected": "❌ Ditolak",
         "cancelled": "🚫 Dibatalkan", "expired": "⌛ Kedaluwarsa", "paid": "💳 Dibayar",
         "processing": "⚙️ Diproses", "delivered": "✅ Selesai", "delivery_failed": "⚠️ Gagal Kirim",
         "failed": "❌ Gagal", "refunded": "↩️ Refund",
@@ -1546,7 +1667,7 @@ async def show_order_history_detail(chat_id, user, order_id):
         return
 
     status_labels = {
-        "pending": "⏳ Pending", "paid": "💳 Dibayar", "processing": "⚙️ Diproses",
+        "pending": "⏳ Pending", "pending_payment": "📱 Menunggu QRIS", "expired": "⌛ Kedaluwarsa", "paid": "💳 Dibayar", "processing": "⚙️ Diproses",
         "delivered": "✅ Selesai", "delivery_failed": "⚠️ Gagal Kirim",
         "failed": "❌ Gagal", "refunded": "↩️ Refund",
     }
@@ -1818,7 +1939,7 @@ async def handle_callback(cb):
     elif data.startswith("prod:"):
         await show_product_detail(chat_id, user, data.split(":", 1)[1])
     elif data.startswith("buy:"):
-        await do_checkout(chat_id, user, [{"pid": data.split(":", 1)[1], "qty": 1}])
+        await show_payment_methods(chat_id, user, [{"pid": data.split(":", 1)[1], "qty": 1}])
     elif data.startswith("cartadd:"):
         await add_to_cart(chat_id, user, data.split(":", 1)[1])
     elif data.startswith("qtycustom:"):
@@ -1863,7 +1984,7 @@ async def handle_callback(cb):
             )
             return
         await set_state(user["telegram_id"], None)
-        await do_checkout(chat_id, user, [{"pid": pid, "qty": qty}], preserve_cart=True)
+        await show_payment_methods(chat_id, user, [{"pid": pid, "qty": qty}], preserve_cart=True)
     elif data == "menu:cart":
         await set_state(user["telegram_id"], None)
         user["state"] = None
@@ -1883,7 +2004,11 @@ async def handle_callback(cb):
         await save_cart(user["telegram_id"], [])
         await send_message(chat_id, t(lang, "cart_cleared"), kb=back_kb(lang))
     elif data == "checkout":
-        await do_checkout(chat_id, user, norm_cart(user.get("cart")))
+        await show_payment_methods(chat_id, user, norm_cart(user.get("cart")))
+    elif data == "pay:balance":
+        await handle_payment_method(chat_id, user, "balance")
+    elif data == "pay:qris":
+        await handle_payment_method(chat_id, user, "qris")
     elif data == "menu:deposit":
         await show_deposit_menu(chat_id, user)
     elif data == "depmethod:qris":

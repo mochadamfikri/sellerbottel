@@ -19,6 +19,7 @@ const histories = (result.data?.histories || []).map((entry) => {
     amount,
     type: entry.type,
     time: entry.time,
+    transaction_time: raw.transaction_time ?? raw.metadata?.transaction?.transaction_time ?? null,
     status: raw.status ?? raw.transaction_status ?? raw.state ?? null,
     payment_type: raw.payment_type ?? raw.payment_method ?? null,
     raw,

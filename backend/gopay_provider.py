@@ -5,12 +5,13 @@ import os
 import subprocess
 import uuid
 import secrets
+from html import escape
 from datetime import datetime, timedelta, timezone
 
 from pymongo.errors import DuplicateKeyError
 
 from db import db, get_settings
-from services import credit_deposit, now_iso, user_lang
+from services import credit_deposit, notify_admin, now_iso, user_lang
 
 
 NODE_DIR = os.path.join(os.path.dirname(__file__), "gobiz")
@@ -166,11 +167,72 @@ async def _history():
     return await asyncio.to_thread(_run_node, "history.mjs", [], 90)
 
 
+async def _flag_late_checkout(tx, amount):
+    paid_at = _transaction_time(tx.get("transaction_time"))
+    if not paid_at:
+        return
+    payment = await db.gopay_payments.find_one({
+        "payment_scope": "bot1", "payment_type": "checkout",
+        "payment_amount": amount, "status": "expired",
+    }, sort=[("created_at", -1)])
+    if not payment:
+        return
+    created_at = _transaction_time(payment.get("created_at"))
+    if not created_at or paid_at < created_at:
+        return
+    tx_id = str(tx["tx_id"])
+    try:
+        await db.gopay_late_payments.insert_one({
+            "_id": tx_id, "order_id": payment.get("order_id"),
+            "payment_id": payment["_id"], "amount": amount,
+            "transaction_time": paid_at.isoformat(), "created_at": now_iso(),
+        })
+    except DuplicateKeyError:
+        return
+    try:
+        await notify_admin(
+            "⚠️ <b>Pembayaran QRIS setelah invoice ditutup</b>\n"
+            f"Invoice terkait: <code>{escape(str(payment.get('order_id') or '-'))}</code>\n"
+            f"Nominal: Rp{amount:,}\nTX: <code>{escape(tx_id)}</code>\n"
+            "Periksa transaksi merchant dan tangani pesanan/refund secara manual."
+        )
+    except Exception:
+        pass
+
+
+def _transaction_time(value):
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value / 1000 if value > 10**11 else value, timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            return None
+    if isinstance(value, str) and value.strip():
+        try:
+            value = value.strip()
+            if value.isdigit():
+                return _transaction_time(int(value))
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
 async def poll_gopay_once():
+    from direct_checkout import expire_qris_orders, finalize_qris_order
+    async for payment in db.gopay_payments.find({
+        "payment_scope": "bot1", "payment_type": "checkout",
+        "status": "confirmed", "tx_id": {"$ne": None},
+    }).sort("confirmed_at", -1).limit(100):
+        order = await db.purchases.find_one({"_id": payment.get("order_id")}, {"status": 1})
+        if order and order.get("status") == "pending_payment":
+            await finalize_qris_order(payment["order_id"], payment["tx_id"])
     if os.environ.get("GOPAY_ENABLED", "").lower() not in {"1", "true", "yes"}:
         return {"checked": False, "matched": 0}
     settings = await get_settings()
-    if not settings.get("qris_enabled", False):
+    if not settings.get("qris_enabled", False) and not await db.gopay_payments.find_one({
+        "status": "pending", "payment_scope": {"$ne": "bot2"},
+    }, {"_id": 1}):
         return {"checked": False, "matched": 0}
 
     now = datetime.now(timezone.utc)
@@ -178,6 +240,7 @@ async def poll_gopay_once():
         {
             "status": "pending",
             "payment_scope": {"$ne": "bot2"},
+            "payment_type": {"$ne": "checkout"},
             "expires_at": {"$lte": now.isoformat()},
             "expiry_notified_at": {"$exists": False},
         },
@@ -185,7 +248,8 @@ async def poll_gopay_once():
     ).to_list(500)
 
     await db.gopay_payments.update_many(
-        {"status": "pending", "payment_scope": {"$ne": "bot2"}, "expires_at": {"$lte": now.isoformat()}},
+        {"status": "pending", "payment_scope": {"$ne": "bot2"},
+         "payment_type": {"$ne": "checkout"}, "expires_at": {"$lte": now.isoformat()}},
         {"$set": {"status": "expired", "expired_at": now_iso(), "expiry_notified_at": now_iso()}, "$unset": {"active_payment_amount": ""}},
     )
 
@@ -205,7 +269,10 @@ async def poll_gopay_once():
         {"$set": {"status": "expired", "decided_at": now_iso()}},
     )
 
-    histories = await _history()
+    try:
+        histories = await _history()
+    except Exception:
+        raise
     matched = 0
 
     for tx in histories:
@@ -219,14 +286,35 @@ async def poll_gopay_once():
             continue
         if status and status not in {"settlement", "capture", "paid", "success", "successful"}:
             continue
+        if await db.gopay_payments.find_one({"tx_id": tx_id, "status": "confirmed"}, {"_id": 1}):
+            continue
 
-        payment = await db.gopay_payments.find_one_and_update(
-            {
+        candidate = await db.gopay_payments.find_one({
+            "status": "pending", "payment_scope": {"$ne": "bot2"},
+            "active_payment_amount": tx_amount,
+        })
+        if not candidate:
+            await _flag_late_checkout(tx, tx_amount)
+            continue
+        if candidate.get("payment_type") == "checkout":
+            paid_at = _transaction_time(tx.get("transaction_time"))
+            created_at = _transaction_time(candidate.get("created_at"))
+            expires_at = _transaction_time(candidate.get("expires_at"))
+            if not paid_at or not created_at or not expires_at or not (created_at <= paid_at <= expires_at):
+                continue
+        elif candidate.get("expires_at", "") <= now.isoformat():
+            continue
+
+        query = {
+                "_id": candidate["_id"],
                 "status": "pending",
                 "payment_scope": {"$ne": "bot2"},
                 "active_payment_amount": tx_amount,
-                "expires_at": {"$gt": now.isoformat()},
-            },
+            }
+        if candidate.get("payment_type") != "checkout":
+            query["expires_at"] = {"$gt": now.isoformat()}
+        payment = await db.gopay_payments.find_one_and_update(
+            query,
             {
                 "$set": {
                     "status": "confirmed",
@@ -240,6 +328,11 @@ async def poll_gopay_once():
         if not payment:
             continue
 
+        if payment.get("payment_type") == "checkout" and payment.get("payment_scope") == "bot1":
+            await finalize_qris_order(payment["order_id"], tx_id)
+            matched += 1
+            continue
+
         deposit = await db.deposits.find_one({"_id": payment["deposit_id"]})
         if not deposit or deposit.get("status") != "pending":
             continue
@@ -249,6 +342,7 @@ async def poll_gopay_once():
         await credit_deposit(deposit, note=f"GoPay QR terverifikasi. TX {tx_id}")
         matched += 1
 
+    await expire_qris_orders()
     return {"checked": True, "matched": matched}
 
 

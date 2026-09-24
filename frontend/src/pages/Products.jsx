@@ -39,16 +39,22 @@ export default function Products() {
   const [inventoryBusy, setInventoryBusy] = useState(false);
   const [inventoryResult, setInventoryResult] = useState(null);
 
-  const load = async () => {
+  const load = async (silent = false) => {
     try {
       const { data } = await api.get("/admin/products");
       setProducts(data);
     } catch (err) {
-      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal memuat produk.");
+      if (!silent) toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal memuat produk.");
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") load(true);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const openCreate = () => {
     setForm(empty);

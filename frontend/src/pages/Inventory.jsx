@@ -30,7 +30,7 @@ export default function Inventory() {
 
   const selectedProduct = useMemo(() => products.find((p) => p._id === pid) || null, [products, pid]);
 
-  const loadProducts = useCallback(async () => {
+  const loadProducts = useCallback(async (silent = false) => {
     try {
       const { data } = await api.get("/admin/products");
       const digital = data.filter((p) => p.product_kind !== "service");
@@ -38,7 +38,7 @@ export default function Inventory() {
       if (!pid && digital.length) setPid(digital[0]._id);
       if (pid && !digital.some((p) => p._id === pid)) setPid(digital[0]?._id || "");
     } catch (err) {
-      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal memuat product inventory.");
+      if (!silent) toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal memuat product inventory.");
     }
   }, [pid]);
 
@@ -60,6 +60,16 @@ export default function Inventory() {
 
   useEffect(() => { loadProducts(); }, [loadProducts]);
   useEffect(() => { loadInventory(); }, [loadInventory]);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible" || busy || !pid) return;
+      loadProducts(true);
+      api.get(`/admin/products/${pid}/inventory/summary`)
+        .then(({ data }) => setMeta((current) => ({ ...current, ...data })))
+        .catch(() => {});
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [busy, pid, loadProducts]);
 
   const selectProduct = (value) => {
     setPid(value);
@@ -222,6 +232,7 @@ export default function Inventory() {
 
   return (
     <div className="space-y-5">
+      <p className="text-xs text-slate-500">Jumlah stok diperbarui otomatis setiap 5 detik saat halaman aktif.</p>
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_auto_auto] gap-3 items-end">
         <div>
           <label className="text-xs text-slate-400">Pilih product inventory</label>

@@ -121,7 +121,7 @@ def _effective_admin_stock(product: dict, inventory_stock: int) -> int | None:
         return None
     mode = product.get("stock_mode", "auto")
     if mode == "manual" and product.get("manual_stock") is not None:
-        return max(0, int(product.get("manual_stock") or 0))
+        return min(inventory_stock, max(0, int(product.get("manual_stock") or 0)))
     return inventory_stock
 
 
@@ -834,6 +834,20 @@ async def inventory_list(pid: str, status: str = "available"):
     return {
         "schema": product.get("inventory_schema") or ["value"],
         "items": rows,
+        "available": await db.inventory_items.count_documents({"product_id": pid, "status": "available"}),
+        "reserved": await db.inventory_items.count_documents({"product_id": pid, "status": "reserved"}),
+        "sold": await db.inventory_items.count_documents({"product_id": pid, "status": "sold"}),
+    }
+
+
+@router.get("/products/{pid}/inventory/summary")
+async def inventory_summary(pid: str):
+    product = await db.products.find_one({"_id": pid})
+    if not product:
+        raise HTTPException(404, "Produk tidak ditemukan")
+    if not _is_inventory_product(product):
+        raise HTTPException(400, "Produk jasa tidak memiliki inventory.")
+    return {
         "available": await db.inventory_items.count_documents({"product_id": pid, "status": "available"}),
         "reserved": await db.inventory_items.count_documents({"product_id": pid, "status": "reserved"}),
         "sold": await db.inventory_items.count_documents({"product_id": pid, "status": "sold"}),
