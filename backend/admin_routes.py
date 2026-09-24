@@ -664,8 +664,6 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
             if not source_name.endswith(".session"):
                 raise HTTPException(400, "Mode Telegram Session hanya menerima file .session.")
             import base64
-            if not data:
-                raise HTTPException(400, "File inventory kosong.")
             if len(data) > 10 * 1024 * 1024:
                 raise HTTPException(400, "Ukuran satu file inventory maksimal 10 MB.")
             filename = (file.filename or "inventory.session").strip() or "inventory.session"

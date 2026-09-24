@@ -7,6 +7,7 @@ import asyncio
 import io
 import os
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -83,6 +84,28 @@ def sample_rows(n=13, prefix="u"):
 def upload(step, data, filename="upload inventory.xlsx", mime=XLSX_MIME, pid=PID):
     files = {"file": (filename, data, mime)}
     return request("POST", f"/api/admin/products/{pid}/inventory/{step}", files=files, data={"content": ""})
+
+
+def test_empty_telegram_session_upload_from_both_pages():
+    """An empty .session is inventory whether sent as file or files."""
+    from fastapi import UploadFile
+
+    async def check():
+        product = {"inventory_mode": "telegram_session", "inventory_schema": ["Session File"]}
+        for field in ("file", "files"):
+            upload = UploadFile(file=tempfile.SpooledTemporaryFile(), filename=f"{field}.session")
+            args = (upload, "", product) if field == "file" else (None, "", product)
+            kwargs = {} if field == "file" else {"files": [upload]}
+            schema, records = await admin_routes._parse_inventory_input(*args, **kwargs)
+            assert schema == ["Session File"]
+            assert len(records) == 1
+            assert records[0]["__file_data_b64"] == ""
+            checked = await inventory.validate_records(PID, records, schema)
+            assert checked["valid_count"] == 1
+            imported = await inventory.add_records(PID, records, schema)
+            assert imported["created"] == 1
+
+    run(check())
 
 
 @pytest.fixture(autouse=True)
