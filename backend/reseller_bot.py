@@ -14,6 +14,7 @@ from checkout import execute_checkout, stock_for
 from db import db, get_settings
 from gopay_provider import create_gopay_payment
 from inventory import decrypt_items
+from join_gate import build_gate_keyboard, check_user_membership, clear_cache_for_user
 from pricing import base_price
 from reseller_service import (decrypt_token, parse_price_template, price_template,
                               sellable_products, telegram_call, wholesale_price)
@@ -32,11 +33,33 @@ def _purchase_lock(bot_id, tid):
     return _purchase_locks[key]
 
 
-async def send(bot, tid, text, keyboard=None):
+async def send(bot, tid, text, keyboard=None, persistent=False):
+    member = None if persistent else await db.reseller_bot_users.find_one(
+        {"bot_id": bot["_id"], "telegram_id": tid}, {"last_ui_message_id": 1})
+    previous_id = (member or {}).get("last_ui_message_id")
+    if previous_id:
+        edit_payload = {"chat_id": tid, "message_id": previous_id, "text": text,
+                        "parse_mode": "HTML", "disable_web_page_preview": True}
+        if keyboard:
+            edit_payload["reply_markup"] = keyboard
+        edited = await telegram_call(decrypt_token(bot), "editMessageText", **edit_payload)
+        if edited.get("ok") or "message is not modified" in (edited.get("description") or "").lower():
+            return edited
     payload = {"chat_id": tid, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     if keyboard:
         payload["reply_markup"] = keyboard
-    return await telegram_call(decrypt_token(bot), "sendMessage", **payload)
+    sent = await telegram_call(decrypt_token(bot), "sendMessage", **payload)
+    if sent.get("ok") and not persistent:
+        new_id = (sent.get("result") or {}).get("message_id")
+        if new_id:
+            await db.reseller_bot_users.update_one({"bot_id": bot["_id"], "telegram_id": tid},
+                                                   {"$set": {"last_ui_message_id": new_id}})
+        if previous_id:
+            try:
+                await telegram_call(decrypt_token(bot), "deleteMessage", chat_id=tid, message_id=previous_id)
+            except Exception:
+                pass
+    return sent
 
 
 async def send_document(bot, tid, data, filename, caption=None):
@@ -125,6 +148,16 @@ async def current_price(bot, product):
 async def show_home(bot, tid):
     await send(bot, tid, f"👋 Selamat datang di <b>{escape(bot.get('name') or 'Toko Reseller')}</b>!\n"
                     "Pilih produk, isi saldo, dan pesan langsung di sini.", menu(bot, tid))
+
+
+async def ensure_reseller_join(bot, tid, force_refresh=False):
+    joined, missing = await check_user_membership(tid, force_refresh=force_refresh)
+    if joined:
+        return True
+    await send(bot, tid, "📢 <b>Join channel SellerBottel terlebih dahulu</b>\n"
+               "Setelah bergabung, tekan Saya sudah join untuk membuka katalog.",
+               build_gate_keyboard(missing))
+    return False
 
 
 async def show_catalog(bot, tid, page=0):
@@ -265,15 +298,25 @@ async def buy(bot, tid, product_id, qty=1):
             return
         order = result["order"]
         await send(bot, tid, f"✅ Pembayaran diterima. Invoice <code>{escape(order['invoice_id'])}</code>\n"
-                   f"Total: <b>{fmt_amount(total, 'IDR')}</b>")
+                   f"Total: <b>{fmt_amount(total, 'IDR')}</b>", persistent=True)
+        try:
+            await notify_admin(f"🛒 <b>Penjualan melalui bot reseller</b>\n"
+                               f"Bot: @{escape(bot.get('username') or '')}\n"
+                               f"Owner: <code>{bot['owner_tid']}</code> · Pembeli: <code>{tid}</code>\n"
+                               f"Invoice: <code>{escape(order['invoice_id'])}</code>\n"
+                               f"Produk: {escape(product.get('name') or 'Produk')} ×{qty}\n"
+                               f"Total: <b>{fmt_amount(total, 'IDR')}</b> · "
+                               f"Komisi: <b>{fmt_amount(pricing['commission'] * qty, 'IDR')}</b>")
+        except Exception:
+            logger.exception("Central reseller sale notification failed for %s", order["_id"])
         async def child_send(chat_id, text, kb=None):
-            return await send(bot, chat_id, text, kb)
+            return await send(bot, chat_id, text, kb, persistent=True)
         async def child_doc(chat_id, data, filename, caption=None):
             return await send_document(bot, chat_id, data, filename, caption)
         allocation = next((row for row in result.get("allocations", []) if row["product_id"] == product_id), None)
         if product.get("product_kind") == "service" or product.get("delivery_type") == "service":
             await db.purchases.update_one({"_id": order["_id"]}, {"$set": {"status": "service_waiting"}})
-            await send(bot, tid, "🛎️ Pesanan jasa diterima. Admin akan memproses pesanan ini.")
+            await send(bot, tid, "🛎️ Pesanan jasa diterima. Admin akan memproses pesanan ini.", persistent=True)
             await notify_admin(f"🛎️ Jasa reseller @{escape(bot['username'])}\nInvoice: <code>{escape(order['invoice_id'])}</code>\nCustomer: <code>{tid}</code>")
             return
         if allocation and allocation["kind"] == "inventory":
@@ -291,9 +334,9 @@ async def buy(bot, tid, product_id, qty=1):
         }})
         if delivered:
             await record_commission(bot, order)
-            await send(bot, tid, "✅ Produk berhasil dikirim. Terima kasih sudah berbelanja!")
+            await send(bot, tid, "✅ Produk berhasil dikirim. Terima kasih sudah berbelanja!", persistent=True)
         else:
-            await send(bot, tid, "⚠️ Pembayaran berhasil, tetapi pengiriman perlu bantuan admin.")
+            await send(bot, tid, "⚠️ Pembayaran berhasil, tetapi pengiriman perlu bantuan admin.", persistent=True)
 
 
 async def start_bank_deposit(bot, tid, amount):
@@ -325,7 +368,7 @@ async def receive_bank_proof(bot, tid, state_data, message):
                                   "status": "pending", "auto_verified": False, "created_at": now_iso()})
     await set_state(bot, tid)
     await send(bot, tid, f"🧾 Bukti diterima. ID deposit <code>{dep_id}</code>."
-               " Saldo masuk setelah admin pusat menyetujui.")
+               " Saldo masuk setelah admin pusat menyetujui.", persistent=True)
     await notify_admin(f"🏦 Deposit bank dari bot reseller @{escape(bot['username'])}\n"
                        f"ID: <code>{dep_id}</code>\nUser: <code>{tid}</code>\n"
                        f"Nominal: {fmt_amount(state_data['amount'], 'IDR')}")
@@ -537,8 +580,23 @@ async def process_reseller_update(bot, update):
                            "Pembelian dan deposit tersedia lagi setelah owner memperpanjang langganan.")
             return
         if "message" in update:
+            actor = (update["message"].get("from") or {}).get("id")
+            if actor and not await ensure_reseller_join(bot, int(actor)):
+                return
             await handle_message(bot, update["message"])
         elif "callback_query" in update:
+            callback = update["callback_query"]
+            actor = (callback.get("from") or {}).get("id")
+            if callback.get("data") == "gate:check":
+                if actor:
+                    await telegram_call(decrypt_token(bot), "answerCallbackQuery", callback_query_id=callback["id"])
+                    clear_cache_for_user(int(actor))
+                    if await ensure_reseller_join(bot, int(actor), force_refresh=True):
+                        await show_home(bot, int(actor))
+                return
+            if actor and not await ensure_reseller_join(bot, int(actor)):
+                await telegram_call(decrypt_token(bot), "answerCallbackQuery", callback_query_id=callback["id"])
+                return
             await handle_callback(bot, update["callback_query"])
     except Exception:
         logger.exception("Reseller update failed for bot %s", bot.get("_id"))

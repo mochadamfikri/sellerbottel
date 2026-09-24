@@ -18,7 +18,7 @@ from tgapi import (
     delete_message,
     send_photo_bytes,
 )
-from services import credit_deposit, reject_deposit, cancel_deposit, notify_admin, notify_transaction_channel, fmt_amount, now_iso, user_lang
+from services import credit_deposit, reject_deposit, cancel_deposit, notify_admin, notify_transaction_channel, notify_transaction_admin, fmt_amount, now_iso, user_lang
 from storage import get_object
 from i18n import t, LANG_NAMES
 from checkout import execute_checkout, stock_for
@@ -978,6 +978,13 @@ async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
                 t(lang, "delivery_attention", invoice=order["invoice_id"]),
                 kb=back_kb(lang),
             )
+        sale = {**order, "status": "service_waiting" if all_delivered else "delivery_failed"}
+        for notify, args in ((notify_transaction_admin, (sale, user_label(user))),
+                             (notify_transaction_channel, (sale,))):
+            try:
+                await notify(*args)
+            except Exception:
+                logger.exception("Central service sale notification failed")
         return
 
     final_status = "delivered" if all_delivered else "delivery_failed"
@@ -1009,21 +1016,13 @@ async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
             kb=back_kb(lang),
         )
 
-    names = ", ".join(f"{item['product']['name']} ×{item['qty']}" for item in result["items"])
-    await notify_admin(
-        f"🛒 <b>Penjualan Baru!</b>\n\n"
-        f"Invoice: <code>{order['invoice_id']}</code>\n"
-        f"Pembeli: {user_label(user)}\n"
-        f"Produk: {names}\n"
-        f"Total: <b>{fmt_amount(order['total'], order['currency'])}</b>\n"
-        f"Status: <b>{final_status}</b>"
-    )
-
-    if all_delivered:
+    sale = {**order, "status": final_status}
+    for notify, args in ((notify_transaction_admin, (sale, user_label(user))),
+                         (notify_transaction_channel, (sale,))):
         try:
-            await notify_transaction_channel(order)
+            await notify(*args)
         except Exception:
-            logger.exception("Transaction success channel notification failed")
+            logger.exception("Central sale notification failed")
 
 
 async def do_checkout(chat_id, user, cart_items, preserve_cart=False):

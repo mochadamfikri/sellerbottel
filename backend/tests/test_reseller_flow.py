@@ -20,6 +20,8 @@ import reseller_payout
 import reseller_service
 import reseller_signup
 import reseller_contest
+import reseller_routes
+import services
 from db import db
 
 
@@ -112,11 +114,14 @@ def test_ewallet_payout_has_fee_and_is_only_requested_once():
 def test_reseller_checkout_charges_sale_price_and_records_margin(monkeypatch):
     sent = []
 
-    async def fake_send(bot, tid, message, keyboard=None):
+    async def fake_send(bot, tid, message, keyboard=None, persistent=False):
         sent.append(message)
         return {"ok": True}
 
     monkeypatch.setattr(reseller_bot, "send", fake_send)
+    async def fake_admin(message):
+        sent.append(message)
+    monkeypatch.setattr(reseller_bot, "notify_admin", fake_admin)
 
     async def check():
         await db.settings.delete_many({})
@@ -144,6 +149,7 @@ def test_reseller_checkout_charges_sale_price_and_records_margin(monkeypatch):
         assert (await db.bot_users.find_one({"telegram_id": 88}))["balance_idr"] == 5000
         assert (await db.reseller_commissions.find_one({"_id": order["_id"]}))["amount"] == 7000
         assert any("berhasil dikirim" in message for message in sent)
+        assert any("Penjualan melalui bot reseller" in message for message in sent)
     run(check())
 
 
@@ -236,5 +242,154 @@ def test_contest_combines_owner_sales_and_requires_target(monkeypatch):
         assert (await db.reseller_contests.find_one({"_id": contest["_id"]}))["status"] == "winner_pending_transfer"
         assert not await reseller_contest.settle_contest(contest)
         assert len(notifications) == 2
+
+    run(check())
+
+
+def test_reseller_admin_id_receives_quote_and_qris(monkeypatch):
+    import bot as central_bot
+    sent = []
+    qris = []
+
+    async def fake_state(*args):
+        return None
+
+    async def fake_send(tid, message, keyboard=None):
+        sent.append((tid, message, keyboard))
+        return {"ok": True}
+
+    async def fake_qris(tid, user, bot):
+        qris.append((tid, bot["_id"]))
+
+    monkeypatch.setattr(central_bot, "set_state", fake_state)
+    monkeypatch.setattr(reseller_signup, "send_message", fake_send)
+    monkeypatch.setattr(reseller_signup, "send_subscription_qris", fake_qris)
+
+    async def check():
+        await db.settings.delete_many({})
+        await db.reseller_bots.delete_many({})
+        await db.settings.insert_one({"_id": "main", "reseller_enabled": True,
+                                      "reseller_bot_price_idr": 15000})
+        await db.reseller_bots.insert_one({"_id": "draft", "owner_tid": 1,
+                                           "username": "tester_bot", "status": "draft"})
+        await reseller_signup.receive_admin(1, {"state_data": {"bot_id": "draft"}, "telegram_id": 1}, "12345")
+        assert (await db.reseller_bots.find_one({"_id": "draft"}))["status"] == "pending_payment"
+        assert "Rp 15.000" in sent[0][1]
+        assert any("reseller:qris:draft" == button["callback_data"]
+                   for row in sent[0][2]["inline_keyboard"] for button in row)
+        assert qris == [(1, "draft")]
+
+    run(check())
+
+
+def test_reseller_join_gate_and_message_replacement(monkeypatch):
+    calls = []
+
+    async def fake_telegram(token, method, **payload):
+        calls.append(method)
+        if method == "sendMessage":
+            return {"ok": True, "result": {"message_id": 99}}
+        return {"ok": True}
+
+    async def fake_membership(tid, force_refresh=False):
+        return False, [{"channel_id": "-1001", "username": "sellerbottel", "title": "SellerBottel"}]
+
+    monkeypatch.setattr(reseller_bot, "telegram_call", fake_telegram)
+    monkeypatch.setattr(reseller_bot, "decrypt_token", lambda bot: "test-token")
+    monkeypatch.setattr(reseller_bot, "check_user_membership", fake_membership)
+
+    async def check():
+        await db.reseller_bot_users.delete_many({})
+        await db.reseller_bot_users.insert_one({"bot_id": "gate", "telegram_id": 77})
+        bot = {"_id": "gate", "status": "active", "expires_at":
+               (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}
+        update = {"message": {"from": {"id": 77}, "chat": {"type": "private"}, "text": "/start"}}
+        await reseller_bot.process_reseller_update(bot, update)
+        await reseller_bot.process_reseller_update(bot, update)
+        assert calls == ["sendMessage", "editMessageText"]
+        assert (await db.reseller_bot_users.find_one({"bot_id": "gate", "telegram_id": 77}))["last_ui_message_id"] == 99
+
+    run(check())
+
+
+def test_admin_can_block_bot_and_owner_cannot_renew(monkeypatch):
+    import tgapi
+
+    async def fake_message(*args, **kwargs):
+        return {"ok": True}
+
+    monkeypatch.setattr(tgapi, "send_message", fake_message)
+
+    async def check():
+        await db.reseller_bots.delete_many({})
+        await db.reseller_bots.insert_one({"_id": "fraud", "owner_tid": 1,
+                                           "status": "active", "username": "fraud_bot",
+                                           "expires_at": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat()})
+        await reseller_routes.block_reseller("fraud", reseller_routes.BlockInput(reason="Pemeriksaan transaksi"))
+        blocked = await db.reseller_bots.find_one({"_id": "fraud"})
+        assert blocked["status"] == "blocked"
+        try:
+            await reseller_service.begin_renewal(blocked)
+        except ValueError:
+            pass
+        else:
+            assert False, "Blocked bot must not renew"
+
+    run(check())
+
+
+def test_subscription_qris_is_sent_immediately_after_quote(monkeypatch):
+    photos = []
+
+    async def fake_payment(user, amount):
+        assert amount == 15000
+        return {"deposit": {"_id": "dep-1"}, "image": b"jpeg",
+                "payment_amount": 15312, "expires_at": datetime.now(timezone.utc)}
+
+    async def fake_photo(tid, image, filename, caption=None):
+        photos.append((tid, caption))
+        return {"ok": True}
+
+    monkeypatch.setenv("GOPAY_ENABLED", "true")
+    monkeypatch.setattr(reseller_signup, "create_gopay_payment", fake_payment)
+    monkeypatch.setattr(reseller_signup, "send_photo_bytes", fake_photo)
+
+    async def check():
+        await db.settings.delete_many({})
+        await db.reseller_bots.delete_many({})
+        await db.settings.insert_one({"_id": "main", "qris_enabled": True})
+        await db.reseller_bots.insert_one({"_id": "qris-bot", "owner_tid": 1,
+                                           "status": "pending_payment", "username": "tester_bot"})
+        bot = {"_id": "qris-bot", "username": "tester_bot", "fees": {"total": 15000}}
+        await reseller_signup.send_subscription_qris(1, {"telegram_id": 1}, bot)
+        assert (await db.reseller_bots.find_one({"_id": "qris-bot"}))["activation_deposit_id"] == "dep-1"
+        assert len(photos) == 1 and "15312" not in photos[0][1]
+        assert "15.312" in photos[0][1]
+
+    run(check())
+
+
+def test_central_sales_send_images_to_admin_and_channel(monkeypatch):
+    photos = []
+
+    async def fake_photo(tid, image, filename, caption=None):
+        photos.append((tid, image[:2], caption))
+        return {"ok": True}
+
+    async def fake_channel():
+        return "-1001"
+
+    monkeypatch.setattr(services, "send_photo_bytes", fake_photo)
+    monkeypatch.setattr(services, "_broadcast_channel_id", fake_channel)
+
+    async def check():
+        await db.settings.delete_many({})
+        await db.settings.insert_one({"_id": "main", "admin_telegram_id": 99})
+        order = {"invoice_id": "INV-1", "items": [{"name": "Produk A", "qty": 1}],
+                 "total": 15000, "currency": "IDR", "status": "delivered"}
+        await services.notify_transaction_admin(order, "Pembeli")
+        await services.notify_transaction_channel(order)
+        assert [row[0] for row in photos] == [99, "-1001"]
+        assert all(row[1] == b"\xff\xd8" for row in photos)
 
     run(check())

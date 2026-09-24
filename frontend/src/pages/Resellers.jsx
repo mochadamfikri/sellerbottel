@@ -98,7 +98,7 @@ export default function Resellers() {
         <div className="flex flex-wrap justify-between gap-2"><span className="font-semibold text-slate-100">@{bot.username}</span><span className="text-xs text-cyan-300">{bot.status}</span></div>
         <p className="text-xs text-slate-400 mt-1">Owner {bot.owner_tid} · Admin {bot.admin_tid || "-"} · {bot.user_count} pengguna · {bot.completed_orders} pesanan selesai</p>
         <p className="text-xs text-slate-500 mt-1">Penjualan {idr(bot.sales_idr)} · Komisi {idr(bot.profit_idr)} · Aktif sampai {bot.expires_at?.slice(0, 10) || "-"}</p>
-        <p className="text-xs text-slate-500 mt-1">Penjualan terakhir {bot.last_sale_at?.slice(0, 16) || "Belum ada"}{bot.inactivation_reason ? ` · ${bot.inactivation_reason}` : ""}</p>
+        <p className="text-xs text-slate-500 mt-1">Penjualan terakhir {bot.last_sale_at?.slice(0, 16) || "Belum ada"}{bot.inactivation_reason ? ` · ${bot.inactivation_reason}` : ""}{bot.blocked_reason ? ` · Diblokir: ${bot.blocked_reason}` : ""}</p>
       </button>)}{!bots.length && <p className="text-sm text-slate-500">Belum ada bot reseller.</p>}</div>
     </div>
 
@@ -111,8 +111,10 @@ export default function Resellers() {
       </div>
       <p className="text-xs text-slate-400">Admin ID {detail.admin_tid} · Markup default {idr(detail.default_markup_idr)} · {detail.price_count} harga produk khusus</p>
       <p className="text-xs text-slate-400">Penjualan terakhir: {detail.last_sale_at?.slice(0, 16) || "Belum ada"} · Siklus dibayar: {detail.last_cycle_paid_at?.slice(0, 16) || "-"}{detail.inactivation_reason ? ` · ${detail.inactivation_reason}` : ""}</p>
+      {detail.blocked_reason && <p className="text-xs text-red-300">Diblokir admin: {detail.blocked_reason}</p>}
       {detail.status === "active" && <button disabled={busy} onClick={() => act(`/admin/resellers/${detail._id}/pause`)} className="rounded-lg bg-amber-700 px-3 py-2 text-sm disabled:opacity-50">Jeda Bot</button>}
       {detail.status === "paused" && <button disabled={busy} onClick={() => act(`/admin/resellers/${detail._id}/resume`)} className="rounded-lg bg-emerald-700 px-3 py-2 text-sm disabled:opacity-50">Aktifkan Lagi</button>}
+      {detail.status !== "draft" && (detail.status !== "blocked" ? <button disabled={busy} onClick={() => { const reason = window.prompt("Alasan menonaktifkan bot reseller:", "Pemeriksaan admin"); if (reason !== null) act(`/admin/resellers/${detail._id}/block`, { reason }); }} className="rounded-lg bg-red-800 px-3 py-2 text-sm ml-2 disabled:opacity-50">⛔ Nonaktifkan Bot</button> : <button disabled={busy} onClick={() => act(`/admin/resellers/${detail._id}/unblock`)} className="rounded-lg bg-emerald-700 px-3 py-2 text-sm disabled:opacity-50">Buka Blokir</button>)}
       <div><h4 className="font-medium mb-2">Pengguna terbaru</h4><div className="max-h-36 overflow-auto text-xs text-slate-400 space-y-1">{detail.recent_users?.map((user) => <p key={user.telegram_id}>{user.first_name || user.username || "Pengguna"} · {user.telegram_id} · {user.last_seen_at?.slice(0, 16)}</p>)}{!detail.recent_users?.length && <p>Belum ada pengguna.</p>}</div></div>
       <div><h4 className="font-medium mb-2">Pesanan terbaru</h4><div className="max-h-40 overflow-auto text-xs text-slate-400 space-y-1">{detail.recent_orders?.map((order) => <div key={order._id} className="flex flex-wrap justify-between gap-2"><span>{order.invoice_id} · {order.user_tid} · {order.status} · {idr(order.total)}</span>{order.status === "service_waiting" && <button disabled={busy} onClick={() => act(`/admin/resellers/${detail._id}/orders/${order._id}/complete`)} className="text-cyan-300">Tandai jasa selesai</button>}</div>)}{!detail.recent_orders?.length && <p>Belum ada pesanan.</p>}</div></div>
     </div>}

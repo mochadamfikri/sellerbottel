@@ -30,6 +30,10 @@ class PayoutDecision(BaseModel):
     transfer_reference: str = Field(default="", max_length=120)
 
 
+class BlockInput(BaseModel):
+    reason: str = Field(default="Pemeriksaan admin", max_length=300)
+
+
 class ContestInput(BaseModel):
     name: str = Field(min_length=3, max_length=100)
     starts_at: datetime
@@ -89,6 +93,7 @@ async def bot_summary(bot: dict) -> dict:
             "last_sale_at": (latest_sale or {}).get("created_at"),
             "inactivated_at": bot.get("inactivated_at"),
             "inactivation_reason": bot.get("inactivation_reason"),
+            "blocked_reason": bot.get("blocked_reason"),
             "renewal_pending": bool(bot.get("renewal_pending")), "fees": bot.get("fees"),
             "user_count": count, "completed_orders": orders,
             "sales_idr": (amounts[0]["sales"] if amounts else 0),
@@ -239,6 +244,46 @@ async def pause_reseller(bot_id: str):
     if not result.modified_count:
         raise HTTPException(400, "Hanya bot aktif yang bisa dijeda.")
     return {"ok": True}
+
+
+@admin_router.post("/{bot_id}/block")
+async def block_reseller(bot_id: str, body: BlockInput):
+    bot = await db.reseller_bots.find_one_and_update(
+        {"_id": bot_id, "status": {"$in": ["active", "paused", "expired",
+                                            "inactive_no_sales", "pending_payment"]}},
+        {"$set": {"status": "blocked", "blocked_reason": body.reason.strip() or "Pemeriksaan admin",
+                  "blocked_at": now_iso(), "updated_at": now_iso()}})
+    if not bot:
+        raise HTTPException(400, "Bot tidak ditemukan atau sudah diblokir.")
+    try:
+        from tgapi import send_message
+        await send_message(bot["owner_tid"],
+                           f"⛔ Bot reseller @{escape(bot.get('username') or '')} dinonaktifkan oleh admin pusat. "
+                           "Hubungi admin pusat jika membutuhkan penjelasan.")
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@admin_router.post("/{bot_id}/unblock")
+async def unblock_reseller(bot_id: str):
+    bot = await db.reseller_bots.find_one({"_id": bot_id, "status": "blocked"})
+    if not bot:
+        raise HTTPException(400, "Bot tidak sedang diblokir.")
+    if bot.get("expires_at") and bot["expires_at"] > now_iso():
+        status = "active"
+        try:
+            await configure_webhook(bot)
+        except Exception as exc:
+            raise HTTPException(502, f"Webhook Telegram gagal: {exc}") from exc
+    elif bot.get("activated_at"):
+        status = "expired"
+    else:
+        status = "pending_payment"
+    await db.reseller_bots.update_one({"_id": bot_id, "status": "blocked"},
+                                      {"$set": {"status": status, "updated_at": now_iso()},
+                                       "$unset": {"blocked_reason": "", "blocked_at": ""}})
+    return {"ok": True, "status": status}
 
 
 @admin_router.post("/{bot_id}/resume")

@@ -93,7 +93,34 @@ async def receive_admin(tid, user, text):
         await send_message(tid, f"⚠️ {escape(str(exc))}")
         return
     await set_state(tid)
-    await send_message(tid, fee_text(bot), payment_keyboard(bot["_id"]))
+    result = await send_message(tid, fee_text(bot), payment_keyboard(bot["_id"]))
+    if not result.get("ok"):
+        logger.error("Reseller quote delivery failed for bot %s: %s", bot["_id"], result.get("description"))
+    await send_subscription_qris(tid, user, bot)
+
+
+async def send_subscription_qris(tid, user, bot):
+    settings = await get_settings()
+    if not settings.get("qris_enabled") or os.environ.get("GOPAY_ENABLED", "").lower() not in {"1", "true", "yes"}:
+        await send_message(tid, "🏦 QRIS belum tersedia. Bayar dari saldo IDR atau deposit melalui rekening SellerBottel.",
+                           payment_keyboard(bot["_id"]))
+        return
+    try:
+        payment = await create_gopay_payment(user, bot["fees"]["total"])
+        await db.reseller_bots.update_one({"_id": bot["_id"]},
+                                          {"$set": {"activation_deposit_id": payment["deposit"]["_id"]}})
+        result = await send_photo_bytes(tid, payment["image"], "reseller-subscription-qris.jpg",
+                                        caption=f"📱 <b>Bayar langganan bot @{escape(bot['username'])}</b>\n"
+                                                f"Biaya paket: {fmt_amount(bot['fees']['total'], 'IDR')}\n"
+                                                f"Total QRIS termasuk biaya transaksi: <b>{fmt_amount(payment['payment_amount'], 'IDR')}</b>\n"
+                                                f"Berlaku sampai {payment['expires_at'].strftime('%H:%M UTC')}.\n"
+                                                "Bot aktif otomatis setelah pembayaran terverifikasi.")
+        if not result.get("ok"):
+            raise RuntimeError(result.get("description") or "Gambar QRIS gagal dikirim")
+    except Exception:
+        logger.exception("Reseller subscription QRIS failed for bot %s", bot["_id"])
+        await send_message(tid, "⚠️ QRIS belum berhasil ditampilkan. Pilih Bayar via QRIS untuk mencoba lagi "
+                           "atau gunakan saldo IDR.", payment_keyboard(bot["_id"]))
 
 
 async def show_mine(tid):
@@ -145,9 +172,18 @@ async def handle_callback(tid, data, user):
         await send_message(tid, fee_text(bot), payment_keyboard(bot_id))
         return
     if action == "quote":
+        if bot.get("status") == "blocked":
+            await send_message(tid, "⛔ Bot ini dinonaktifkan admin pusat. Hubungi admin pusat.")
+            return
         await send_message(tid, fee_text(bot), payment_keyboard(bot_id))
         return
     if action == "pay":
+        if bot.get("status") == "blocked":
+            await send_message(tid, "⛔ Bot ini dinonaktifkan admin pusat. Pembayaran tidak tersedia.")
+            return
+        if bot.get("status") != "pending_payment" and not bot.get("renewal_pending"):
+            await send_message(tid, "✅ Bot ini sudah aktif atau belum menunggu pembayaran baru.")
+            return
         try:
             activated = await activate_paid_bot(bot)
         except Exception:
@@ -165,22 +201,13 @@ async def handle_callback(tid, data, user):
                                payment_keyboard(bot_id))
         return
     if action == "qris":
-        settings = await get_settings()
-        if not settings.get("qris_enabled") or os.environ.get("GOPAY_ENABLED", "").lower() not in {"1", "true", "yes"}:
-            await send_message(tid, "⚠️ QRIS sedang tidak tersedia. Deposit via rekening atau gunakan saldo IDR.")
+        if bot.get("status") == "blocked":
+            await send_message(tid, "⛔ Bot ini dinonaktifkan admin pusat. Pembayaran tidak tersedia.")
             return
-        try:
-            payment = await create_gopay_payment(user, bot["fees"]["total"])
-            await db.reseller_bots.update_one({"_id": bot_id},
-                                              {"$set": {"activation_deposit_id": payment["deposit"]["_id"]}})
-            await send_photo_bytes(tid, payment["image"], "reseller-subscription-qris.jpg",
-                                   caption=f"📱 <b>Langganan bot @{escape(bot['username'])}</b>\n"
-                                           f"Biaya paket: {fmt_amount(bot['fees']['total'], 'IDR')}\n"
-                                           f"Total QRIS termasuk biaya transaksi: <b>{fmt_amount(payment['payment_amount'], 'IDR')}</b>\n"
-                                           "Bot aktif otomatis setelah QRIS terverifikasi.")
-        except Exception:
-            logger.exception("Reseller subscription QRIS failed for bot %s", bot_id)
-            await send_message(tid, "⚠️ QRIS gagal dibuat. Coba lagi nanti.")
+        if bot.get("status") != "pending_payment" and not bot.get("renewal_pending"):
+            await send_message(tid, "✅ Bot ini sudah aktif atau belum menunggu pembayaran baru.")
+            return
+        await send_subscription_qris(tid, user, bot)
 
 
 async def scan_subscriptions():

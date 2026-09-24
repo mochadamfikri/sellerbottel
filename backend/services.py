@@ -134,10 +134,6 @@ async def _broadcast_channel_id():
 
 
 async def notify_transaction_channel(order: dict):
-    settings = await get_settings()
-    if not settings.get("transaction_success_channel_enabled", False):
-        return {"ok": False, "disabled": True}
-
     channel_id = await _broadcast_channel_id()
     if not channel_id:
         return {"ok": False, "error": "channel_not_configured"}
@@ -149,27 +145,49 @@ async def notify_transaction_channel(order: dict):
         total_qty += qty
         names.append(f"{item.get('name') or 'Product'} ×{qty}")
 
-    body = (
-        "🛒 <b>Transaction Succes!!</b>\n\n"
-        f"Invoice: {escape(str(order.get('invoice_id') or ''))}\n"
-        f"Produk: {escape(', '.join(names))}\n"
-        f"Total: {escape(fmt_amount(order.get('total') or 0, order.get('currency') or 'IDR'))}\n"
-        "Status: <b>completed</b>"
-    )
+    body = ("🛒 <b>Penjualan Bot Pusat</b>\n\n"
+            f"Invoice: <code>{escape(str(order.get('invoice_id') or ''))}</code>\n"
+            f"Produk: {escape(', '.join(names))}\n"
+            f"Total: <b>{escape(fmt_amount(order.get('total') or 0, order.get('currency') or 'IDR'))}</b>\n"
+            f"Status: <b>{escape(order.get('status') or 'paid')}</b>")
 
-    image = None
-    if settings.get("broadcast_auto_image_enabled", False):
-        try:
-            from broadcast_image import render_transaction_image
-            image = render_transaction_image(total_qty, order.get("total") or 0, order.get("currency") or "IDR")
-        except Exception:
-            image = None
+    image = _transaction_image(order, total_qty)
 
     if image:
         result = await send_photo_bytes(channel_id, image, "transaction-success.jpg", caption=body)
     else:
         result = await send_message(channel_id, body)
     return result
+
+
+def _transaction_image(order: dict, total_qty: int):
+    try:
+        from broadcast_image import render_transaction_image
+        return render_transaction_image(total_qty, order.get("total") or 0,
+                                        order.get("currency") or "IDR")
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Generate transaction image failed")
+        return None
+
+
+async def notify_transaction_admin(order: dict, buyer: str):
+    settings = await get_settings()
+    admin_id = settings.get("admin_telegram_id")
+    if not admin_id:
+        return {"ok": False, "error": "admin_not_configured"}
+    items = order.get("items") or []
+    names = ", ".join(f"{item.get('name') or 'Produk'} ×{item.get('qty') or 1}" for item in items)
+    caption = ("🛒 <b>Penjualan Bot Pusat</b>\n\n"
+               f"Invoice: <code>{escape(str(order.get('invoice_id') or ''))}</code>\n"
+               f"Pembeli: {escape(buyer)}\n"
+               f"Produk: {escape(names)}\n"
+               f"Total: <b>{fmt_amount(order.get('total') or 0, order.get('currency') or 'IDR')}</b>\n"
+               f"Status: <b>{escape(order.get('status') or 'paid')}</b>")
+    image = _transaction_image(order, sum(max(1, int(item.get("qty") or 1)) for item in items))
+    if image:
+        return await send_photo_bytes(admin_id, image, "transaction-success.jpg", caption=caption)
+    return await send_message(admin_id, caption)
 
 
 async def _product_channel_notification(product: dict, title: str, heading: str, stock: int | None = None):
