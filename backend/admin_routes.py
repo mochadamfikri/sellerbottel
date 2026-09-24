@@ -14,7 +14,7 @@ from db import db, get_settings
 from auth import get_current_admin, verify_password
 from rates import get_rate
 from pricing import price_for_product
-from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso, notify_product_created, notify_product_stock_updated
+from services import credit_deposit, reject_deposit, cancel_deposit, fmt_amount, now_iso, notify_product_created
 from tgapi import download_telegram_file, send_message, send_photo_bytes, tg
 from html import escape
 from inventory import (
@@ -754,12 +754,6 @@ async def import_inventory(
     result.pop("duplicates", None)
     result["stock"] = await available_count(pid)
     result["schema"] = schema
-    try:
-        updated_product = await db.products.find_one({"_id": pid})
-        if updated_product and result.get("created", 0) > 0:
-            await notify_product_stock_updated(updated_product, result["stock"])
-    except Exception:
-        logger.exception("Auto broadcast stock update gagal untuk produk %s", pid)
     return result
 
 
@@ -793,10 +787,6 @@ async def add_inventory_manual(pid: str, body: InventoryManualBody):
     if result["created"] != 1:
         raise HTTPException(409, "Data inventory sudah ada atau tidak valid.")
     stock = await available_count(pid)
-    try:
-        await notify_product_stock_updated(product, stock)
-    except Exception:
-        logger.exception("Auto broadcast stock update manual gagal untuk produk %s", pid)
     return {
         "ok": True,
         "schema": schema,
@@ -1115,6 +1105,8 @@ class SettingsBody(BaseModel):
     transaction_success_channel_enabled: bool = False
     broadcast_auto_image_enabled: bool = False
     broadcast_channel_id: str = ""
+    broadcast_group_ids: str = ""
+    stock_notifications_enabled: bool = True
     join_group_target: str = ""
 
 
@@ -1144,6 +1136,7 @@ async def update_settings(body: SettingsBody):
         data["join_gate_enabled"] = False
     data["required_channels"] = channels
     data["broadcast_channel_id"] = str(data.get("broadcast_channel_id") or "").strip()
+    data["broadcast_group_ids"] = str(data.get("broadcast_group_ids") or "").strip()
     data["join_group_target"] = str(data.get("join_group_target") or "").strip()
     await db.settings.update_one({"_id": "main"}, {"$set": data}, upsert=True)
     s = await get_settings()

@@ -1,211 +1,166 @@
-import { useCallback, useEffect, useState } from "react";
-import { Send, RefreshCw, Megaphone } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Send, RefreshCw, Image as ImageIcon } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "../lib/api";
 
+const cls = "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
+const initial = { message: "", product_ids: [], summaries: {}, target: "chats" };
+
 export default function Broadcasts() {
-  const [form, setForm] = useState({ text: "", lang: "all", status: "active", search: "", button_text: "", button_url: "", product_id: "", auto_image: false });
-  const [photo, setPhoto] = useState(null);
-  const [history, setHistory] = useState([]);
-  const [busy, setBusy] = useState(false);
-  const [channelMode, setChannelMode] = useState("manual");
-  const [channelText, setChannelText] = useState("");
-  const [productPreview, setProductPreview] = useState("");
-  const [autoTarget, setAutoTarget] = useState("channel");
-  const [autoContent, setAutoContent] = useState("both");
-  const [autoPreview, setAutoPreview] = useState("");
+  const [form, setForm] = useState(initial);
   const [products, setProducts] = useState([]);
-  const [channelProductId, setChannelProductId] = useState("");
-  const [channelAutoImage, setChannelAutoImage] = useState(false);
-  const [autoImageEnabled, setAutoImageEnabled] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [stockEvents, setStockEvents] = useState([]);
+  const [preview, setPreview] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
 
-  const load = () => api.get("/admin/broadcasts").then(({ data }) => setHistory(data));
-  const loadProductPreview = useCallback(async () => {
-    try {
-      const { data } = await api.get("/admin/broadcasts/channel-product-preview");
-      setProductPreview(data.text || "");
-    } catch (err) {
-      toast.error(formatApiErrorDetail(err.response?.data?.detail));
-    }
-  }, []);
-
-  const loadAutoPreview = useCallback(async () => {
-    try {
-      const { data } = await api.get("/admin/broadcasts/auto-preview", { params: { content: autoContent } });
-      setAutoPreview(data.text || "");
-    } catch (err) {
-      toast.error(formatApiErrorDetail(err.response?.data?.detail));
-    }
-  }, [autoContent]);
-
-  useEffect(() => {
-    if (channelMode === "products") loadProductPreview();
-    if (channelMode === "auto") loadAutoPreview();
-  }, [channelMode, autoContent, loadProductPreview, loadAutoPreview]);
-
-  useEffect(() => {
-    load();
+  const load = () => {
     api.get("/admin/products").then(({ data }) => setProducts(data || [])).catch(() => {});
-    api.get("/admin/settings").then(({ data }) => setAutoImageEnabled(!!data.broadcast_auto_image_enabled)).catch(() => {});
-  }, []);
+    api.get("/admin/broadcasts").then(({ data }) => setHistory(data || [])).catch(() => {});
+    api.get("/admin/broadcasts/stock-events").then(({ data }) => setStockEvents(data || [])).catch(() => {});
+  };
+  useEffect(() => { load(); }, []);
 
-  const submit = async () => {
-    if (!form.text.trim()) return;
-    setBusy(true);
-    try {
-      const previewFd = new FormData();
-      previewFd.append("lang", form.lang); previewFd.append("status", form.status); previewFd.append("search", form.search);
-      const { data: preview } = await api.post("/admin/broadcasts/preview", previewFd);
-      if (!window.confirm(`Broadcast akan dikirim ke ${preview.total} pengguna. Lanjutkan?`)) return;
-
-      const fd = new FormData();
-      Object.entries(form).forEach(([k, v]) => fd.append(k, v));
-      if (photo) fd.append("photo", photo);
-      await api.post("/admin/broadcasts", fd);
-      toast.success("Broadcast dimulai.");
-      setForm({ ...form, text: "", product_id: "", auto_image: false });
-      setPhoto(null);
-      load();
-    } catch (err) {
-      toast.error(formatApiErrorDetail(err.response?.data?.detail));
-    } finally { setBusy(false); }
+  const change = (value) => { setForm(value); setPreview(null); };
+  const toggleProduct = (product) => {
+    const selected = form.product_ids.includes(product._id);
+    if (!selected && form.product_ids.length >= 10) {
+      toast.error("Maksimal 10 produk dalam satu gambar.");
+      return;
+    }
+    const next = selected ? form.product_ids.filter((id) => id !== product._id) : [...form.product_ids, product._id];
+    const summaries = { ...form.summaries };
+    if (!selected && !summaries[product._id]) summaries[product._id] = String(product.description || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 180);
+    change({ ...form, product_ids: next, summaries });
   };
 
-  const cls = "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
+  const run = async (action) => {
+    if (!form.message.trim() && !form.product_ids.length) {
+      toast.error("Tulis pesan atau pilih produk.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/admin/broadcasts/compose/${action}`, form);
+      if (action === "preview") setPreview(data);
+      if (action === "test") toast.success("Pesan tes dikirim ke admin Telegram.");
+      if (action === "send") {
+        const failedChats = (data.chat_results || []).filter((row) => !row.ok);
+        if (failedChats.length) toast.error(`${failedChats.length} channel/grup gagal menerima pesan. Periksa riwayat dan izin bot.`);
+        else toast.success(`Broadcast dikirim. ${data.queued_users || 0} pengguna masuk antrean.`);
+        setForm(initial);
+        setPreview(null);
+        load();
+      }
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Broadcast gagal.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const available = products.filter((product) => product.active !== false &&
+    (product.product_kind === "service" || product.stock == null || product.stock > 0));
+  const filtered = available.filter((product) => product.name?.toLowerCase().includes(search.toLowerCase()));
+  const plainPreview = (preview?.text || "").replace(/<[^>]*>/g, "");
+
   return (
-    <>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
-          <div className="flex items-center gap-2"><Send size={18} className="text-cyan-400" /><h2 className="font-heading font-semibold">Broadcast Baru</h2></div>
-          <textarea rows={8} className={cls} placeholder="Pesan promosi..." value={form.text} onChange={(e) => setForm({ ...form, text: e.target.value })} />
-          <select className={cls} value={form.product_id} onChange={(e) => setForm({ ...form, product_id: e.target.value })}>
-            <option value="">Product terkait (opsional)</option>
-            {products.filter((p) => p.active).map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
-          </select>
-          <label className="flex items-center gap-3 text-sm text-slate-300">
-            <input type="checkbox" disabled={!autoImageEnabled} checked={!!form.auto_image} onChange={(e) => setForm({ ...form, auto_image: e.target.checked })} />
-            🖼️ Auto Generate Picture {autoImageEnabled ? "(ON)" : "(OFF di Pengaturan)"}
-          </label>
-          <div className="grid grid-cols-2 gap-3">
-            <select className={cls} value={form.lang} onChange={(e) => setForm({ ...form, lang: e.target.value })}><option value="all">Semua bahasa</option><option value="id">Indonesia</option><option value="en">English</option></select>
-            <select className={cls} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option value="active">Pengguna aktif</option><option value="all">Semua</option><option value="frozen">Dibekukan</option></select>
-          </div>
-          <input className={cls} placeholder="Cari username/nama (opsional)" value={form.search} onChange={(e) => setForm({ ...form, search: e.target.value })} />
-          <input type="file" accept="image/*" className={cls} onChange={(e) => setPhoto(e.target.files?.[0] || null)} />
-          <div className="grid grid-cols-2 gap-3">
-            <input className={cls} placeholder="Teks tombol" value={form.button_text} onChange={(e) => setForm({ ...form, button_text: e.target.value })} />
-            <input className={cls} placeholder="URL tombol" value={form.button_url} onChange={(e) => setForm({ ...form, button_url: e.target.value })} />
-          </div>
-          <button onClick={submit} disabled={busy || !form.text.trim()} className="w-full bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5">{busy ? "Mengirim..." : "Mulai Broadcast"}</button>
+    <div className="space-y-5">
+      <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-5 space-y-5">
+        <div>
+          <h2 className="font-heading text-lg font-semibold flex items-center gap-2"><Send size={19} className="text-cyan-400" /> Broadcast</h2>
+          <p className="text-sm text-slate-400 mt-1">Satu pesan dan satu gambar untuk produk pilihan. Periksa hasilnya sebelum mengirim.</p>
         </div>
-        <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
-          <div className="flex items-center gap-2">
-            <Megaphone size={18} className="text-cyan-400" />
-            <h2 className="font-heading font-semibold">Broadcast ke Channel / Pengguna</h2>
+        <div>
+          <label className="text-sm text-slate-300">Pesan utama</label>
+          <textarea rows={4} maxLength={1000} className={cls} placeholder="Tulis pesan untuk pembeli (opsional jika memilih produk)..." value={form.message} onChange={(event) => change({ ...form, message: event.target.value })} />
+        </div>
+        <div>
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <label className="text-sm text-slate-300">Pilih produk ({form.product_ids.length}/10)</label>
+            <input className={`${cls} max-w-xs`} placeholder="Cari produk..." value={search} onChange={(event) => setSearch(event.target.value)} />
           </div>
-          <p className="text-xs text-slate-500">Manual dan Product Aktif / Tersedia tetap dikirim ke channel. Broadcast otomatis dapat dikirim ke channel atau semua pengguna bot.</p>
-          <select className={cls} value={channelMode} onChange={(e) => setChannelMode(e.target.value)}>
-            <option value="manual">1. Manual</option>
-            <option value="products">2. Broadcast Semua Product Aktif / Tersedia</option>
-            <option value="product">3. Broadcast Product Pilihan</option>
-            <option value="auto">4. Broadcast Otomatis</option>
-            
-          </select>
-          {channelMode === "manual" ? (
-            <textarea rows={8} className={cls} placeholder="Tulis pesan untuk channel..." value={channelText} onChange={(e) => setChannelText(e.target.value)} />
-          ) : channelMode === "products" ? (
-            <div>
-              <p className="text-xs text-slate-400 mb-2">Preview pesan otomatis:</p>
-              <pre className="whitespace-pre-wrap text-sm text-slate-200 bg-slate-950 border border-slate-800 rounded-lg p-4 max-h-80 overflow-auto">{productPreview}</pre>
-              <p className="text-xs text-slate-500 mt-2">Digital hanya ditampilkan jika stock &gt; 0. Produk jasa ditampilkan sebagai Unlimited.</p>
-            </div>
-          ) : channelMode === "product" ? (
-            <div className="space-y-3">
-              <select className={cls} value={channelProductId} onChange={(e) => setChannelProductId(e.target.value)}>
-                <option value="">Pilih product</option>
-                {products.filter((p) => p.active).map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
-              </select>
-              <label className="flex items-center gap-3 text-sm text-slate-300">
-                <input type="checkbox" disabled={!autoImageEnabled} checked={channelAutoImage} onChange={(e) => setChannelAutoImage(e.target.checked)} />
-                🖼️ Auto Generate Picture
+          <div className="max-h-64 overflow-auto rounded-lg border border-slate-800 divide-y divide-slate-800">
+            {filtered.map((product) => (
+              <label key={product._id} className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-slate-800/50">
+                <input type="checkbox" checked={form.product_ids.includes(product._id)} onChange={() => toggleProduct(product)} />
+                <span className="flex-1 text-sm text-slate-200">{product.name}</span>
+                <span className="text-xs text-slate-500">{product.product_kind === "service" ? "Unlimited" : `Stok ${product.stock}`}</span>
               </label>
-              <p className="text-xs text-slate-500">Product pilihan dikirim ke channel. Gambar otomatis memakai tema hitam/ungu.</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-slate-400">Kirim ke</label>
-                  <select className={cls} value={autoTarget} onChange={(e) => setAutoTarget(e.target.value)}>
-                    <option value="channel">📢 Channel</option>
-                    <option value="users">👥 Semua Pengguna</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs text-slate-400">Yang dibroadcast</label>
-                  <select className={cls} value={autoContent} onChange={(e) => setAutoContent(e.target.value)}>
-                    <option value="discount">🏷️ Harga Diskon</option>
-                    <option value="stock">📦 Stock Tersedia</option>
-                    <option value="both">🏷️ Harga Diskon + 📦 Stock Tersedia</option>
-                  </select>
-                </div>
-              </div>
-              <div>
-                <p className="text-xs text-slate-400 mb-2">Preview pesan:</p>
-                <pre className="whitespace-pre-wrap text-sm text-slate-200 bg-slate-950 border border-slate-800 rounded-lg p-4 max-h-80 overflow-auto">{autoPreview}</pre>
-                <p className="text-xs text-slate-500 mt-2">Harga diskon dihitung dari harga aktif saat broadcast. Untuk pengguna, broadcast masuk queue dan pengguna yang sudah memblokir bot dilewati.</p>
-              </div>
-            </div>
-          )}
-          <button
-            type="button"
-            disabled={busy || (channelMode === "manual" && !channelText.trim()) || (channelMode === "product" && !channelProductId)}
-            onClick={async () => {
-              setBusy(true);
-              try {
-                const fd = new FormData();
-                fd.append("mode", channelMode);
-                if (channelMode === "manual") {
-                  fd.append("text", channelText);
-                } else if (channelMode === "product") {
-                  fd.append("product_id", channelProductId);
-                  fd.append("auto_image", channelAutoImage ? "true" : "false");
-                } else if (channelMode === "auto") {
-                  fd.append("target", autoTarget);
-                  fd.append("content", autoContent);
-                }
-                await api.post("/admin/broadcasts/channel", fd);
-                toast.success(channelMode === "auto" && autoTarget === "users"
-                  ? "Broadcast ke semua pengguna masuk antrian."
-                  : "Broadcast berhasil dikirim.");
-                if (channelMode === "manual") setChannelText("");
-                else if (channelMode === "products") await loadProductPreview();
-                else await loadAutoPreview();
-                load();
-              } catch (err) {
-                toast.error(formatApiErrorDetail(err.response?.data?.detail));
-              } finally {
-                setBusy(false);
-              }
-            }}
-            className="w-full bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5"
-          >
-            {busy ? "Mengirim..." : "📢 Kirim Broadcast"}
-          </button>
-        </div>
-        <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5">
-          <div className="flex items-center justify-between mb-4"><h2 className="font-heading font-semibold">Riwayat</h2><button onClick={load} className="p-2 text-slate-400 hover:text-slate-100"><RefreshCw size={15} /></button></div>
-          <div className="space-y-2">
-            {history.map((b) => (
-              <div key={b._id} className="border border-slate-800 rounded-lg p-3">
-                <div className="flex justify-between gap-2"><span className="text-xs text-slate-500">{b.status}</span><span className="font-mono text-xs text-slate-500">{b.success || 0}✓ {b.failed || 0}✗</span></div>
-                <p className="text-sm text-slate-200 mt-1 whitespace-pre-wrap line-clamp-3">{b.text}</p>
-              </div>
             ))}
-            {!history.length && <p className="text-sm text-slate-500">Belum ada broadcast.</p>}
+            {!filtered.length && <p className="p-3 text-sm text-slate-500">Tidak ada produk aktif dengan stok tersedia.</p>}
           </div>
+        </div>
+        {!!form.product_ids.length && (
+          <div className="space-y-3">
+            <p className="text-xs text-slate-400">Ringkasan otomatis dari deskripsi produk. Kamu bisa menyuntingnya untuk gambar dan pesan.</p>
+            {form.product_ids.map((id) => {
+              const product = products.find((item) => item._id === id);
+              return <div key={id}>
+                <label className="text-xs text-cyan-300">{product?.name || "Produk"}</label>
+                <textarea rows={2} maxLength={180} className={cls} value={form.summaries[id] || ""} onChange={(event) => change({ ...form, summaries: { ...form.summaries, [id]: event.target.value } })} />
+              </div>;
+            })}
+          </div>
+        )}
+        <div>
+          <label className="text-sm text-slate-300">Kirim ke</label>
+          <select className={cls} value={form.target} onChange={(event) => change({ ...form, target: event.target.value })}>
+            <option value="chats">Channel dan grup terhubung</option>
+            <option value="users">Semua pengguna bot</option>
+            <option value="both">Channel, grup, dan semua pengguna</option>
+          </select>
+        </div>
+        <button type="button" disabled={busy} onClick={() => run("preview")} className="w-full rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 py-3 font-semibold">{busy ? "Memproses..." : "Lihat Pratinjau"}</button>
+      </div>
+
+      {preview && <div className="rounded-xl border border-cyan-500/30 bg-slate-900/80 p-5 space-y-4">
+        <h3 className="font-semibold flex items-center gap-2"><ImageIcon size={18} className="text-cyan-400" /> Pratinjau sebelum kirim</h3>
+        {preview.image_data_url && <img src={preview.image_data_url} alt="Pratinjau gabungan produk" className="w-full max-w-lg rounded-lg border border-slate-700" />}
+        <pre className="whitespace-pre-wrap rounded-lg bg-slate-950 border border-slate-800 p-3 text-sm text-slate-200 max-h-72 overflow-auto">{plainPreview}</pre>
+        <p className="text-sm text-slate-400">Tujuan: {preview.chats?.length || 0} channel/grup dan {preview.user_count || 0} pengguna.</p>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" disabled={busy} onClick={() => run("test")} className="rounded-lg bg-slate-700 hover:bg-slate-600 px-4 py-2.5 disabled:opacity-50">Kirim Tes ke Admin</button>
+          <button type="button" disabled={busy} onClick={() => {
+            if (window.confirm(`Kirim ke ${preview.chats?.length || 0} channel/grup dan ${preview.user_count || 0} pengguna?`)) run("send");
+          }} className="rounded-lg bg-cyan-600 hover:bg-cyan-700 px-4 py-2.5 font-semibold disabled:opacity-50">Kirim Broadcast</button>
+        </div>
+      </div>}
+
+      <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-5">
+        <div className="flex justify-between mb-4"><h3 className="font-semibold">Riwayat Broadcast</h3><button type="button" onClick={load} title="Refresh"><RefreshCw size={16} /></button></div>
+        <div className="space-y-2">
+          {history.map((item) => <div key={item._id} className="border border-slate-800 rounded-lg p-3">
+            <div className="flex justify-between text-xs text-slate-500"><span>{item.status}</span><span>{item.success || 0} berhasil · {item.failed || 0} gagal</span></div>
+            <p className="text-sm text-slate-200 mt-1 whitespace-pre-wrap line-clamp-3">{String(item.text || "").replace(/<[^>]*>/g, "")}</p>
+          </div>)}
+          {!history.length && <p className="text-sm text-slate-500">Belum ada broadcast.</p>}
         </div>
       </div>
-    </>
+
+      <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-5">
+        <div className="flex justify-between mb-4"><h3 className="font-semibold">Notifikasi Stok</h3><button type="button" onClick={load} title="Refresh"><RefreshCw size={16} /></button></div>
+        <div className="space-y-2">
+          {stockEvents.map((event) => <div key={event._id} className="border border-slate-800 rounded-lg p-3 flex items-center justify-between gap-3">
+            <div className="text-sm text-slate-200">
+              <span className="font-semibold">{event.event_type === "restocked" ? "Restock" : "Stok habis"}</span>
+              <span className="text-slate-400"> · {event.from_count} → {event.to_count} · {event.status}</span>
+              <p className="text-xs text-slate-500">{event.product_name || event.product_id} · {event.delivered?.length || 0}/{event.targets?.length || 0} tujuan terkirim</p>
+            </div>
+            {event.status === "pending" && <button type="button" disabled={busy} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs disabled:opacity-50" onClick={async () => {
+              setBusy(true);
+              try {
+                await api.post(`/admin/broadcasts/stock-events/${event._id}/retry`);
+                toast.success("Pengiriman ulang diproses.");
+                load();
+              } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal mencoba ulang."); }
+              finally { setBusy(false); }
+            }}>Coba Lagi</button>}
+          </div>)}
+          {!stockEvents.length && <p className="text-sm text-slate-500">Belum ada perubahan stok yang perlu diumumkan.</p>}
+        </div>
+      </div>
+    </div>
   );
 }

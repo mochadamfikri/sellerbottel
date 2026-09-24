@@ -151,8 +151,10 @@ async def show_products(chat_id, user, page=1):
     page = max(1, int(page))
     page_size = 8
     query = {"active": True}
-    total_count = await db.products.count_documents(query)
-    products = await db.products.find(query).sort("created_at", -1).skip((page - 1) * page_size).limit(page_size).to_list(page_size)
+    all_products = await db.products.find(query).sort("created_at", -1).to_list(500)
+    ready = [product for product in all_products if await has_stock(product)]
+    total_count = len(ready)
+    products = ready[(page - 1) * page_size:page * page_size]
 
     if not products:
         await send_message(chat_id, t(lang, "no_products"), kb=back_kb(lang))
@@ -162,10 +164,9 @@ async def show_products(chat_id, user, page=1):
     for p in products:
         price = await product_price(p, user["currency"])
         sl = await stock_label(p, lang)
-        prefix = "❌ " if not await has_stock(p) else ""
         rows.append([
             {
-                "text": f"{prefix}{p['name']} — {fmt_amount(price, user['currency'])} ({t(lang,'stock_word')} {sl})",
+                "text": f"{p['name']} — {fmt_amount(price, user['currency'])} ({t(lang,'stock_word')} {sl})",
                 "callback_data": f"prod:{p['_id']}",
             }
         ])

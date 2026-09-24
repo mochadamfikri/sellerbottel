@@ -50,6 +50,8 @@ export default function SettingsPage() {
         transaction_success_channel_enabled: !!s.transaction_success_channel_enabled,
         broadcast_auto_image_enabled: !!s.broadcast_auto_image_enabled,
         broadcast_channel_id: String(s.broadcast_channel_id || ""),
+        broadcast_group_ids: String(s.broadcast_group_ids || ""),
+        stock_notifications_enabled: !!s.stock_notifications_enabled,
         join_group_target: String(s.join_group_target || ""),
       });
       setS(data);
@@ -180,11 +182,20 @@ export default function SettingsPage() {
             <div><p className="font-semibold text-slate-200">Auto Generate Picture</p><p className="text-xs text-slate-500 mt-1">Generate visual hitam/ungu untuk broadcast yang mendukung gambar otomatis.</p></div>
             <Switch checked={!!s.broadcast_auto_image_enabled} onCheckedChange={(v) => setS({ ...s, broadcast_auto_image_enabled: v })} />
           </div>
+          <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 flex items-center justify-between gap-4">
+            <div><p className="font-semibold text-slate-200">Notifikasi Stok Otomatis</p><p className="text-xs text-slate-500 mt-1">Kirim gambar ke channel/grup saat stok habis atau tersedia kembali.</p></div>
+            <Switch checked={s.stock_notifications_enabled !== false} onCheckedChange={(v) => setS({ ...s, stock_notifications_enabled: v })} />
+          </div>
         </div>
         <div>
           <label className="text-xs text-slate-400">Channel Broadcast ID</label>
           <input className={cls} placeholder="-1001234567890 atau @username" value={s.broadcast_channel_id || ""} onChange={(e) => setS({ ...s, broadcast_channel_id: e.target.value })} />
           <p className="text-[10px] text-slate-600 mt-1">Bot harus menjadi admin channel. Jika kosong, sistem masih bisa memakai required channel pertama yang aktif.</p>
+        </div>
+        <div>
+          <label className="text-xs text-slate-400">Grup Broadcast ID (satu per baris)</label>
+          <textarea rows={3} className={cls} placeholder="-1001234567890" value={s.broadcast_group_ids || ""} onChange={(e) => setS({ ...s, broadcast_group_ids: e.target.value })} />
+          <p className="text-[10px] text-slate-600 mt-1">Bot harus menjadi anggota grup dan diizinkan mengirim pesan. Channel dan grup ini dipakai untuk broadcast serta notifikasi stok.</p>
         </div>
         <div>
           <label className="text-xs text-slate-400">Target Join Group untuk akun Telegram terhubung</label>

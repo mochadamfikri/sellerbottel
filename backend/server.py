@@ -20,6 +20,8 @@ from promo_routes_accounts import router as promo_accounts_router
 from promo_campaign_routes import router as promo_campaign_router
 from promo_reply_routes import router as promo_reply_router
 from promo_runtime import start_promo_runtime, stop_promo_runtime
+from broadcast_composer import router as broadcast_composer_router
+from stock_monitor import run_stock_monitor, router as stock_events_router
 from error_handlers import register_error_handlers
 from inventory import encryption_status
 from bot import process_update, resume_service_waiters
@@ -86,6 +88,8 @@ app.include_router(api_router)
 app.include_router(auth_router)
 app.include_router(admin_user_router)
 app.include_router(admin_router)
+app.include_router(broadcast_composer_router)
+app.include_router(stock_events_router)
 
 if os.environ.get("PROMOTION_ENABLED", "").lower() in {"1", "true", "yes"}:
     app.include_router(promo_router)
@@ -124,6 +128,8 @@ async def startup():
     await ensure_indexes()
     await load_overrides(db.bot_messages)
     await seed_admin()
+    app.state.stock_monitor_stop = asyncio.Event()
+    app.state.stock_monitor_task = asyncio.create_task(run_stock_monitor(app.state.stock_monitor_stop))
 
     try:
         inv = await encryption_status()
@@ -196,6 +202,8 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown_db_client():
     await stop_promo_runtime()
+    app.state.stock_monitor_stop.set()
+    app.state.stock_monitor_task.cancel()
 
     stop = getattr(app.state, "gopay_stop", None)
     task = getattr(app.state, "gopay_task", None)
