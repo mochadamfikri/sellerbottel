@@ -4,7 +4,9 @@ import hmac
 from datetime import datetime, timezone
 from html import escape
 
+from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
 from auth import get_current_admin
@@ -218,7 +220,7 @@ async def reseller_detail(bot_id: str):
     summary["payments"] = await db.reseller_payments.find({"bot_id": bot_id}).sort("created_at", -1).limit(12).to_list(12)
     summary["payouts"] = await db.reseller_payouts.find({"bot_id": bot_id}).sort("created_at", -1).limit(20).to_list(20)
     summary["commission_balance"] = await __import__("reseller_payout").commission_balance(bot_id)
-    return summary
+    return jsonable_encoder(summary, custom_encoder={ObjectId: str})
 
 
 @admin_router.post("/{bot_id}/orders/{order_id}/complete")

@@ -1,5 +1,6 @@
 """Offline checks for reseller pricing, subscription charges, and payouts."""
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -391,5 +392,22 @@ def test_central_sales_send_images_to_admin_and_channel(monkeypatch):
         await services.notify_transaction_channel(order)
         assert [row[0] for row in photos] == [99, "-1001"]
         assert all(row[1] == b"\xff\xd8" for row in photos)
+
+    run(check())
+
+
+def test_admin_reseller_detail_serializes_mongo_object_ids():
+    async def check():
+        await db.reseller_bots.delete_many({})
+        await db.reseller_bot_users.delete_many({})
+        await db.reseller_bots.insert_one({"_id": "detail-test", "owner_tid": 1,
+                                           "username": "tester_bot", "status": "active",
+                                           "created_at": datetime.now(timezone.utc).isoformat()})
+        await db.reseller_bot_users.insert_one({"bot_id": "detail-test", "telegram_id": 2,
+                                                 "created_at": datetime.now(timezone.utc).isoformat()})
+        detail = await reseller_routes.reseller_detail("detail-test")
+        assert detail["recent_users"][0]["telegram_id"] == 2
+        assert isinstance(detail["recent_users"][0]["_id"], str)
+        json.dumps(detail)
 
     run(check())
