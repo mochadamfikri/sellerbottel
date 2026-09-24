@@ -73,18 +73,20 @@ export default function Discounts() {
         toast.error("Pilih minimal satu product atau pilih Semua Product.");
         return;
       }
-      if (editing) {
-        await api.put("/admin/discounts/" + editing, payload);
-      } else {
-        await api.post("/admin/discounts", payload);
+      const response = editing
+        ? await api.put("/admin/discounts/" + editing, payload)
+        : await api.post("/admin/discounts", payload);
+      const refreshed = (await api.get("/admin/discounts")).data || [];
+      if (!refreshed.some((rule) => rule._id === response.data?._id)) {
+        throw new Error("Aturan diskon belum terlihat di daftar setelah disimpan.");
       }
+      setDiscounts(refreshed);
       toast.success(editing ? "Discount diperbarui." : "Discount dibuat.");
       setForm(empty);
       setEditing(null);
       setAllProducts(true);
-      await load();
     } catch (err) {
-      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal menyimpan discount.");
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || err.message || "Gagal menyimpan discount.");
     } finally {
       setBusy(false);
     }
@@ -247,6 +249,7 @@ export default function Discounts() {
             <button onClick={() => { setEditing(null); setForm(empty); setAllProducts(true); }} className="px-4 rounded-lg border border-slate-800 text-slate-300">Batal</button>
           )}
         </div>
+        <p className="text-xs text-amber-300">Diskon berlaku di checkout setelah kamu menekan “Buat Discount” dan aturannya muncul di Daftar Discount dengan status Aktif.</p>
       </div>
 
       <div className="bg-slate-900/80 border border-slate-800 rounded-xl overflow-x-auto">

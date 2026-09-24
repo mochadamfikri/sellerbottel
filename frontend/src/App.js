@@ -10,6 +10,7 @@ import Deposits from "./pages/Deposits";
 import UsersPage from "./pages/Users";
 import SettingsPage from "./pages/SettingsPage";
 import Broadcasts from "./pages/Broadcasts";
+import CentralBroadcasts from "./pages/CentralBroadcasts";
 import Discounts from "./pages/Discounts";
 import Messages from "./pages/Messages";
 import Orders from "./pages/Orders";
@@ -40,6 +41,7 @@ function App() {
           <Route path="/users" element={<Protected title="Kelola Pengguna"><UsersPage /></Protected>} />
           <Route path="/settings" element={<Protected title="Pengaturan"><SettingsPage /></Protected>} />
           <Route path="/broadcasts" element={<Protected title="Broadcast"><Broadcasts /></Protected>} />
+          <Route path="/central-broadcasts" element={<Protected title="Broadcast Terpusat"><CentralBroadcasts /></Protected>} />
           <Route path="/discounts" element={<Protected title="Discount"><Discounts /></Protected>} />
           <Route path="/messages" element={<Protected title="Bot Messages"><Messages /></Protected>} />
           <Route path="/promotions" element={<Protected title="Promosi / Cari Pelanggan"><Promotions /></Protected>} />

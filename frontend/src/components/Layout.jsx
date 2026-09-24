@@ -16,6 +16,7 @@ const nav = [
   { to: "/users", label: "Pengguna", icon: Users },
   { to: "/discounts", label: "Discount", icon: Percent },
   { to: "/broadcasts", label: "Broadcast", icon: Megaphone },
+  { to: "/central-broadcasts", label: "Broadcast Terpusat", icon: Megaphone },
   { to: "/resellers", label: "Bot Reseller", icon: Bot },
   { to: "/promotions", label: "Promosi / Cari Pelanggan", icon: Megaphone },
   { to: "/messages", label: "Bot Messages", icon: MessageSquareText },

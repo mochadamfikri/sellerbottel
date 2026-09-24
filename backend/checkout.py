@@ -193,7 +193,7 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
         candidate_coupon_discount = min(coupon_discount(coupon, eligible_base), eligible_base)
 
         if candidate_coupon_discount > eligible_product_discount:
-            coupon_discount_amount = round(candidate_coupon_discount, 2)
+            coupon_discount_amount = round(candidate_coupon_discount - eligible_product_discount, 2)
             total = round(current_subtotal - coupon_discount_amount, 2)
         else:
             coupon = None

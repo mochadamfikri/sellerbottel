@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from auth import get_current_admin
 from broadcast_image import render_message_poster, render_product_collection, render_sales_report
 from broadcast_reports import format_report, sales_summary
+from central_broadcast import build_central_content, options as central_options
 from checkout import stock_for
 from db import db, get_settings
 from services import _broadcast_channel_id, base_price, fmt_amount, now_iso
@@ -21,13 +22,16 @@ router = APIRouter(prefix="/api/admin/broadcasts/compose", dependencies=[Depends
 
 
 class ComposeBody(BaseModel):
-    kind: Literal["message", "best_sellers", "daily_recap"] = "message"
+    kind: Literal["message", "best_sellers", "daily_recap", "system_update"] = "message"
     period: Literal["7d", "30d", "all"] = "30d"
     day: str | None = None
     message: str = ""
     product_ids: list[str] = Field(default_factory=list)
     summaries: dict[str, str] = Field(default_factory=dict)
     target: Literal["chats", "users", "both"] = "chats"
+    topic: str = ""
+    reference_id: str = ""
+    title: str = ""
 
 
 def clean_description(value: str, limit: int = 180) -> str:
@@ -48,6 +52,9 @@ async def configured_chats() -> list[str]:
 
 
 async def build_content(body: ComposeBody):
+    if body.kind == "system_update":
+        text, image = await build_central_content(body)
+        return text, image, []
     if body.kind != "message":
         try:
             summary = await sales_summary(body.kind, body.period, body.day)
@@ -95,9 +102,14 @@ async def build_content(body: ComposeBody):
     return text, image, products
 
 
+@router.get("/central-options")
+async def get_central_options():
+    return await central_options()
+
+
 async def send_composed(chat_id: str | int, text: str, image: bytes | None):
     if image:
-        caption = text if len(text) <= 1024 else "📢 <b>Pilihan produk tersedia</b> — rincian ada di pesan berikutnya."
+        caption = text if len(text) <= 1024 else "📢 <b>Info SellerBottel</b> — rincian lengkap ada di pesan berikutnya."
         result = await send_photo_bytes(chat_id, image, "pilihan-produk.jpg", caption=caption)
         if not result.get("ok"):
             return result
@@ -159,6 +171,8 @@ async def send(body: ComposeBody):
         raise HTTPException(400, "Channel/grup broadcast belum diisi di Pengaturan.")
     user_count = await db.bot_users.count_documents({"blocked": {"$ne": True}}) if body.target in {"users", "both"} else 0
     doc = {"_id": str(uuid.uuid4()), "text": text, "status": "running", "broadcast_type": body.kind,
+           "broadcast_topic": body.topic if body.kind == "system_update" else None,
+           "reference_id": body.reference_id if body.kind == "system_update" else None,
            "broadcast_target": body.target, "product_ids": [p["id"] for p in products],
            "total": user_count + len(chats), "success": 0, "failed": 0, "blocked": 0,
            "created_at": now_iso(), "finished_at": None}

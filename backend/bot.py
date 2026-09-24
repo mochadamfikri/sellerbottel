@@ -208,10 +208,15 @@ async def show_product_detail(chat_id, user, pid):
     if not p:
         await send_message(chat_id, t(lang, "product_not_found"), kb=back_kb(lang))
         return
-    price = await product_price(p, user["currency"])
+    pricing = await price_for_product(p, user["currency"])
+    price = pricing["unit_price"]
     type_label = t(lang, {"file": "type_file", "link": "type_link", "license": "type_license", "inventory": "type_inventory"}.get(p["delivery_type"], "type_file"))
     text = t(lang, "prod_detail", name=p["name"], desc=p.get("description", ""), type=type_label,
              price=fmt_amount(price, user["currency"]), stock=await stock_label(p, lang))
+    if pricing["discount_per_unit"] > 0:
+        text += (f"\n\n🎉 <b>Diskon aktif: {escape(str(pricing.get('discount_name') or 'Promo'))}</b>\n"
+                 f"Harga normal: <s>{fmt_amount(pricing['base_unit_price'], user['currency'])}</s>\n"
+                 f"Hemat: <b>{fmt_amount(pricing['discount_per_unit'], user['currency'])}</b> per unit")
     rows = []
     if await has_stock(p):
         rows.append([{"text": t(lang, "btn_buy", price=fmt_amount(price, user["currency"])), "callback_data": f"buy:{pid}"}])
@@ -236,17 +241,20 @@ async def show_cart(chat_id, user):
             [{"text": t(lang, "btn_products"), "callback_data": "menu:products"}],
             [{"text": t(lang, "btn_main"), "callback_data": "menu:main"}]]})
         return
-    lines, total, rows = [], 0.0, []
+    lines, total, total_discount, rows = [], 0.0, 0.0, []
     valid_cart = []
     for item in cart:
         p = await db.products.find_one({"_id": item["pid"], "active": True})
         if not p:
             continue
         valid_cart.append(item)
-        price = await product_price(p, user["currency"], item["qty"])
-        subtotal = price * item["qty"]
+        pricing = await price_for_product(p, user["currency"], item["qty"])
+        subtotal = pricing["unit_price"] * item["qty"]
         total += subtotal
-        lines.append(f"• {p['name']} ×{item['qty']} — {fmt_amount(subtotal, user['currency'])}")
+        lines.append(f"• {escape(str(p['name']))} ×{item['qty']} — {fmt_amount(subtotal, user['currency'])}")
+        if pricing["discount_total"] > 0:
+            total_discount += pricing["discount_total"]
+            lines.append(f"  🎉 {escape(str(pricing.get('discount_name') or 'Diskon'))}: hemat {fmt_amount(pricing['discount_total'], user['currency'])}")
         rows.append([
             {"text": "➖", "callback_data": f"qtydec:{item['pid']}"},
             {"text": f"{p['name'][:20]} ×{item['qty']}", "callback_data": f"prod:{item['pid']}"},
@@ -261,7 +269,10 @@ async def show_cart(chat_id, user):
     rows.append([{"text": "🎟️ Gunakan Kupon", "callback_data": "coupon:apply"}])
     rows.append([{"text": t(lang, "btn_checkout", total=fmt_amount(total, user["currency"])), "callback_data": "checkout"}])
     rows.append([{"text": t(lang, "btn_clear"), "callback_data": "cartclear"}, {"text": t(lang, "btn_menu_short"), "callback_data": "menu:main"}])
-    text = t(lang, "cart_title") + "\n\n" + "\n".join(lines) + "\n\n" + t(lang, "cart_total", total=fmt_amount(total, user["currency"]))
+    text = t(lang, "cart_title") + "\n\n" + "\n".join(lines)
+    if total_discount:
+        text += f"\n\n💸 Total diskon: <b>{fmt_amount(total_discount, user['currency'])}</b>"
+    text += "\n\n" + t(lang, "cart_total", total=fmt_amount(total, user["currency"]))
     await send_message(chat_id, text, kb={"inline_keyboard": rows})
 
 
@@ -1950,6 +1961,11 @@ async def handle_message(message):
             await send_message(chat_id, frozen_text(user))
         else:
             await show_main_menu(chat_id, user)
+        return
+
+    if text == "/id":
+        await send_message(chat_id, f"🪪 Telegram User ID kamu: <code>{user['telegram_id']}</code>\n"
+                           "Gunakan ID ini sebagai admin saat mendaftarkan bot reseller.")
         return
 
     if not await ensure_join_gate(chat_id, user):

@@ -18,11 +18,17 @@ def _active_date(doc):
     try:
         starts = doc.get("starts_at")
         ends = doc.get("ends_at")
-        if starts and now < datetime.fromisoformat(starts):
+        starts = datetime.fromisoformat(starts) if starts else None
+        ends = datetime.fromisoformat(ends) if ends else None
+        if starts and starts.tzinfo is None:
+            starts = starts.replace(tzinfo=timezone.utc)
+        if ends and ends.tzinfo is None:
+            ends = ends.replace(tzinfo=timezone.utc)
+        if starts and now < starts:
             return False
-        if ends and now > datetime.fromisoformat(ends):
+        if ends and now > ends:
             return False
-    except ValueError:
+    except (ValueError, TypeError):
         return False
     return doc.get("active", True)
 
@@ -87,12 +93,13 @@ async def price_for_product(product, currency, quantity=1):
         unit_price = round(max(0.0, base - discount_per_unit), 2)
     else:
         unit_price = round(max(0.0, base - discount_per_unit))
+    applied_discount = round(base - unit_price, 2)
 
     return {
         "base_unit_price": base,
         "unit_price": unit_price,
-        "discount_per_unit": round(discount_per_unit, 2),
-        "discount_total": round(discount_per_unit * quantity, 2),
+        "discount_per_unit": applied_discount,
+        "discount_total": round(applied_discount * quantity, 2),
         "discount_id": best["discount_id"] if best else None,
         "discount_name": best["name"] if best else None,
     }

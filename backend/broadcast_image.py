@@ -199,3 +199,26 @@ def render_message_poster(message):
     out = BytesIO()
     image.save(out, format="JPEG", quality=88, optimize=True)
     return out.getvalue()
+
+
+def render_announcement_image(title, highlights, label="UPDATE SISTEM"):
+    """Create a branded poster for a centralized broadcast template."""
+    width, height = 1200, 700
+    image = Image.new("RGB", (width, height), BG)
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((45, 45, 1155, 655), 30, fill=PANEL, outline=(69, 46, 102), width=2)
+    draw.rounded_rectangle((78, 75, 94, 145), 7, fill=PURPLE)
+    draw.text((120, 78), "IDSE NETWORK CONNECT HUB", font=_font(28, True), fill=PURPLE)
+    draw.text((80, 157), _fit(draw, label.upper(), _font(30, True), 1040), font=_font(30, True), fill=GREEN)
+    title_font = _font(57, True)
+    for index, line in enumerate(_wrap_lines(draw, title, title_font, 1030, 2)):
+        draw.text((80, 210 + index * 69), _fit(draw, line, title_font, 1030), font=title_font, fill=WHITE)
+    top = 390
+    for value in [str(item).strip() for item in highlights if str(item).strip()][:3]:
+        draw.rounded_rectangle((80, top, 1120, top + 66), 15, fill=BG)
+        draw.ellipse((104, top + 27, 116, top + 39), fill=PURPLE)
+        draw.text((138, top + 15), _fit(draw, value, _font(29, True), 940), font=_font(29, True), fill=WHITE)
+        top += 78
+    out = BytesIO()
+    image.save(out, format="JPEG", quality=89, optimize=True)
+    return out.getvalue()
