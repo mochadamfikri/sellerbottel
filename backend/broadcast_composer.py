@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from auth import get_current_admin
-from broadcast_image import render_product_collection
+from broadcast_image import render_message_poster, render_product_collection, render_sales_report
 from broadcast_reports import format_report, sales_summary
 from checkout import stock_for
 from db import db, get_settings
@@ -53,7 +53,7 @@ async def build_content(body: ComposeBody):
             summary = await sales_summary(body.kind, body.period, body.day)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return format_report(body.kind, summary), None, []
+        return format_report(body.kind, summary), render_sales_report(body.kind, summary), []
     ids = body.product_ids
     if len(ids) != len(set(ids)) or len(ids) > 10:
         raise HTTPException(400, "Pilih maksimal 10 produk tanpa duplikat.")
@@ -76,20 +76,22 @@ async def build_content(body: ComposeBody):
         products.append({"id": pid, "name": str(product.get("name") or "Produk"),
                          "summary": summary, "price": price, "stock": stock})
 
-    lines = [escape(message)] if message else []
+    lines = ["📣 <b>Pengumuman</b>", f"<blockquote>{escape(message)}</blockquote>"] if message else []
     if products:
+        if not lines:
+            lines.append("🛍️ <b>Pilihan Produk</b>")
         if lines:
             lines.append("")
         for index, product in enumerate(products, 1):
-            lines.append(f"<b>{index}. {escape(product['name'])}</b> — {escape(product['price'])}")
+            lines.append(f"✨ <b>{index}. {escape(product['name'])}</b> — {escape(product['price'])}")
             if product["summary"]:
-                lines.append(escape(product["summary"]))
+                lines.append(f"<blockquote>{escape(product['summary'])}</blockquote>")
             if product["stock"] is not None:
-                lines.append(f"Stok: {int(product['stock'])}")
+                lines.append(f"📦 Stok: {int(product['stock'])}")
             lines.append("")
         lines.append("🛒 Order: @Idse_MarketBot")
     text = "\n".join(lines).strip()
-    image = render_product_collection(products) if products else None
+    image = render_product_collection(products) if products else render_message_poster(message)
     return text, image, products
 
 

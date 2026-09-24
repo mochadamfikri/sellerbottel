@@ -17,8 +17,11 @@ motor.AsyncIOMotorClient = AsyncMongoMockClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import broadcast_reports
+import broadcast_composer
 import daily_recap
 from db import db
+from PIL import Image
+from io import BytesIO
 
 
 def run(coro):
@@ -49,7 +52,24 @@ def test_best_sellers_exclude_unfinished_and_allocate_discount():
         assert data["products"][0] == {"name": "Produk A", "qty": 3, "sales": {"IDR": 7500, "USD": 2.5}}
         assert "Produk A" in broadcast_reports.format_report("daily_recap", data)
         assert "Rp 15.000 + $2.50" in broadcast_reports.format_report("daily_recap", data)
-        assert "Total terjual: 3 unit" in broadcast_reports.format_report("best_sellers", data)
+        assert "Terjual: <b>3 unit</b>" in broadcast_reports.format_report("best_sellers", data)
+        assert "<blockquote>" in broadcast_reports.format_report("daily_recap", data)
+        for kind in ("daily_recap", "best_sellers"):
+            text, image, _ = await broadcast_composer.build_content(
+                broadcast_composer.ComposeBody(kind=kind, day="2026-09-23", period="all")
+            )
+            assert "<blockquote>" in text
+            assert Image.open(BytesIO(image)).format == "JPEG"
+    run(check())
+
+
+def test_text_broadcast_also_gets_generated_image():
+    async def check():
+        text, image, _ = await broadcast_composer.build_content(
+            broadcast_composer.ComposeBody(message="Promo pilihan hari ini")
+        )
+        assert "<blockquote>Promo pilihan hari ini</blockquote>" in text
+        assert Image.open(BytesIO(image)).format == "JPEG"
     run(check())
 
 

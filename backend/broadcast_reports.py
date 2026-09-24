@@ -68,16 +68,21 @@ def amounts(values: dict) -> str:
 def format_report(kind: str, summary: dict) -> str:
     if kind == "daily_recap":
         top = summary["products"][0] if summary["products"] else None
-        return (f"📊 <b>Rekap Harian Bot — {escape(summary['label'])} WIB</b>\n\n"
-                f"Total penjualan: <b>{escape(amounts(summary['totals']))}</b>\n"
-                f"Produk terjual: <b>{summary['units']}</b> unit\n"
-                f"Produk terlaris hari ini: <b>{escape(top['name']) if top else 'Belum ada'}</b>"
-                + (f" ({top['qty']} unit)" if top else ""))
-    lines = [f"🏆 <b>Produk Terlaris — {escape(summary['label'])}</b>"]
+        return (f"📊 <b>Rekap Penjualan Harian</b>\n🗓️ {escape(summary['label'])} WIB\n\n"
+                "<blockquote>"
+                f"💰 Total penjualan: <b>{escape(amounts(summary['totals']))}</b>\n"
+                f"📦 Produk terjual: <b>{summary['units']} unit</b>\n"
+                f"🏆 Produk terlaris: <b>{escape(top['name']) if top else 'Belum ada'}</b>"
+                + (f" ({top['qty']} unit)" if top else "")
+                + "</blockquote>\n\n✅ Berdasarkan pesanan yang selesai dikirim.")
+    lines = [f"🏆 <b>Produk Terlaris</b>\n🗓️ {escape(summary['label'])}"]
     if not summary["products"]:
-        lines.append("\nBelum ada produk terjual pada periode ini.")
+        lines.append("\n<blockquote>📭 Belum ada produk terjual pada periode ini.</blockquote>")
     for index, row in enumerate(summary["products"][:5], 1):
         lines.extend(["", f"{index}. <b>{escape(row['name'])}</b>",
-                      f"Total terjual: {row['qty']} unit",
-                      f"Total penjualan: {escape(amounts(row['sales']))}"])
+                      "<blockquote>"
+                      f"📦 Terjual: <b>{row['qty']} unit</b>\n"
+                      f"💰 Penjualan: <b>{escape(amounts(row['sales']))}</b>"
+                      "</blockquote>"])
+    lines.append("\n✅ Berdasarkan pesanan yang selesai dikirim.")
     return "\n".join(lines)

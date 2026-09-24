@@ -137,3 +137,65 @@ def render_product_collection(products, title="PILIHAN PRODUK"):
     out = BytesIO()
     image.save(out, format="JPEG", quality=88, optimize=True)
     return out.getvalue()
+
+
+def render_sales_report(kind, summary):
+    """Generate a readable Telegram poster from the same numbers as the message."""
+    from broadcast_reports import amounts
+
+    daily = kind == "daily_recap"
+    width = 1200
+    rows = summary.get("products", [])[:5]
+    height = 760 if daily else 325 + 160 * max(1, len(rows))
+    image = Image.new("RGB", (width, height), BG)
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((45, 45, width - 45, height - 45), 30, fill=PANEL, outline=(69, 46, 102), width=2)
+    draw.rounded_rectangle((75, 75, 89, 148), 7, fill=PURPLE)
+    draw.text((110, 78), "IDSE NETWORK CONNECT HUB", font=_font(26, True), fill=PURPLE)
+    title = "REKAP PENJUALAN HARIAN" if daily else "PRODUK TERLARIS"
+    draw.text((80, 155), title, font=_font(51, True), fill=WHITE)
+    draw.text((82, 220), str(summary.get("label") or ""), font=_font(28), fill=MUTED)
+
+    if daily:
+        cards = [
+            ("TOTAL PENJUALAN", amounts(summary.get("totals") or {})),
+            ("PRODUK TERJUAL", f"{int(summary.get('units') or 0):,} unit"),
+            ("PRODUK TERLARIS", (rows[0]["name"] if rows else "Belum ada penjualan")),
+        ]
+        for index, (label, value) in enumerate(cards):
+            top = 285 + index * 130
+            draw.rounded_rectangle((80, top, 1120, top + 112), 19, fill=BG, outline=(59, 42, 80), width=2)
+            draw.text((110, top + 15), label, font=_font(22, True), fill=MUTED)
+            draw.text((110, top + 49), _fit(draw, value, _font(40, True), 960), font=_font(40, True), fill=GREEN if index == 0 else WHITE)
+        draw.text((84, 677), "Berdasarkan pesanan selesai  |  WIB", font=_font(19), fill=MUTED)
+    else:
+        if not rows:
+            draw.rounded_rectangle((80, 285, 1120, 445), 22, fill=BG)
+            draw.text((115, 342), "Belum ada penjualan pada periode ini", font=_font(30, True), fill=MUTED)
+        for index, row in enumerate(rows):
+            top = 285 + index * 160
+            draw.rounded_rectangle((80, top, 1120, top + 139), 20, fill=BG, outline=(59, 42, 80), width=2)
+            draw.text((108, top + 21), f"{index + 1:02d}", font=_font(40, True), fill=PURPLE)
+            draw.text((185, top + 17), _fit(draw, row["name"], _font(34, True), 890), font=_font(34, True), fill=WHITE)
+            draw.text((185, top + 76), f"{int(row['qty']):,} unit terjual", font=_font(24, True), fill=MUTED)
+            revenue = _fit(draw, amounts(row.get("sales") or {}), _font(27, True), 540)
+            draw.text((630, top + 75), revenue, font=_font(27, True), fill=GREEN)
+    out = BytesIO()
+    image.save(out, format="JPEG", quality=88, optimize=True)
+    return out.getvalue()
+
+
+def render_message_poster(message):
+    """Automatically attach a simple image to text-only broadcasts."""
+    width, height = 1200, 630
+    image = Image.new("RGB", (width, height), BG)
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((45, 45, 1155, 585), 30, fill=PANEL, outline=(69, 46, 102), width=2)
+    draw.rounded_rectangle((80, 80, 95, 147), 7, fill=PURPLE)
+    draw.text((120, 89), "IDSE NETWORK CONNECT HUB", font=_font(28, True), fill=PURPLE)
+    draw.text((80, 175), "PENGUMUMAN", font=_font(60, True), fill=WHITE)
+    for index, line in enumerate(_wrap_lines(draw, message, _font(31), 990, 5)):
+        draw.text((85, 285 + index * 48), _fit(draw, line, _font(31), 990), font=_font(31), fill=MUTED)
+    out = BytesIO()
+    image.save(out, format="JPEG", quality=88, optimize=True)
+    return out.getvalue()

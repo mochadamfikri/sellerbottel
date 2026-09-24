@@ -100,6 +100,7 @@ export default function Broadcasts() {
               <span className="block mt-1 text-xs text-slate-400">{type.detail}</span>
             </button>)}
           </div>
+          <p className="text-xs text-slate-500 mt-2">Setiap jenis broadcast membuat satu gambar otomatis. Pesan memakai emoji dan kutipan Telegram.</p>
         </div>
         {form.kind === "best_sellers" && <div>
           <label className="text-sm text-slate-300">Periode penjualan</label>
