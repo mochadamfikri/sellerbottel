@@ -214,7 +214,8 @@ def test_contest_combines_owner_sales_and_requires_target(monkeypatch):
         inside = (now - timedelta(days=1, hours=12)).isoformat()
         outside = (now - timedelta(hours=12)).isoformat()
         await db.reseller_bots.insert_many([
-            {"_id": "b1", "owner_tid": 1, "username": "one"},
+            {"_id": "b1", "owner_tid": 1, "username": "one", "created_at": start,
+             "payout_destination": {"type": "BANK", "provider": "BCA", "number": "12345678", "name": "Owner"}},
             {"_id": "b2", "owner_tid": 1, "username": "two"},
             {"_id": "b3", "owner_tid": 2, "username": "three"},
         ])
@@ -231,6 +232,7 @@ def test_contest_combines_owner_sales_and_requires_target(monkeypatch):
         assert ranking[0]["eligible"] and not ranking[1]["eligible"]
         result = await reseller_contest.settle_contest(contest)
         assert result["winner"]["owner_tid"] == 1
+        assert result["winner"]["payout_destination"]["number"] == "12345678"
         assert (await db.reseller_contests.find_one({"_id": contest["_id"]}))["status"] == "winner_pending_transfer"
         assert not await reseller_contest.settle_contest(contest)
         assert len(notifications) == 2

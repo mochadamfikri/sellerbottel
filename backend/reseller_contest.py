@@ -68,6 +68,11 @@ async def settle_contest(contest):
             return None
     ranking = await leaderboard(contest)
     winner = next((row for row in ranking if row["eligible"]), None)
+    if winner:
+        payee_bot = await db.reseller_bots.find_one(
+            {"owner_tid": winner["owner_tid"], "payout_destination.number": {"$exists": True}},
+            {"payout_destination": 1}, sort=[("created_at", -1)])
+        winner = {**winner, "payout_destination": (payee_bot or {}).get("payout_destination")}
     update = {"status": "winner_pending_transfer" if winner else "no_winner",
               "settled_at": now_iso(), "final_leaderboard": ranking,
               "winner": winner}
@@ -77,11 +82,19 @@ async def settle_contest(contest):
         return None
     try:
         if winner:
+            destination = winner.get("payout_destination") or {}
+            destination_text = (
+                f"Tujuan: {escape(destination.get('provider') or '')} "
+                f"<code>{escape(destination.get('number') or '')}</code> "
+                f"a.n. {escape(destination.get('name') or '')}. "
+                if destination else "Tujuan belum diatur owner. "
+            )
             await notify_admin(
                 f"🏆 <b>Kontes reseller selesai: {escape(contest['name'])}</b>\n"
                 f"Pemenang owner <code>{winner['owner_tid']}</code> · "
                 f"omzet {fmt_amount(winner['sales_idr'], 'IDR')}\n"
                 f"Hadiah {fmt_amount(contest['prize_idr'], 'IDR')}. "
+                + destination_text +
                 "Transfer manual lalu tandai dibayar di Admin Panel → Bot Reseller.")
             await send_message(winner["owner_tid"],
                                f"🏆 Selamat! Kamu menang kontes reseller "
