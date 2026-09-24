@@ -30,6 +30,7 @@ from fastapi import APIRouter, FastAPI  # noqa: E402
 
 import admin_routes  # noqa: E402
 import inventory  # noqa: E402
+import inventory_transform  # noqa: E402
 from auth import get_current_admin  # noqa: E402
 from db import db  # noqa: E402
 from error_handlers import register_error_handlers  # noqa: E402
@@ -49,6 +50,7 @@ async def _boom():
 app = FastAPI()
 app.dependency_overrides[get_current_admin] = lambda: {"email": "admin@example.com"}
 app.include_router(admin_routes.router)
+app.include_router(inventory_transform.router)
 app.include_router(boom)
 register_error_handlers(app)
 
@@ -219,6 +221,84 @@ def test_csv_import():
     res = upload("import", csv_data.encode(), filename="data.csv", mime="text/csv")
     assert res.status_code == 200, res.text
     assert res.json()["created"] == 4
+
+
+def test_transform_inventory_fixed_password_and_domain_only_selected_email_column():
+    from fastapi import UploadFile
+
+    data = make_xlsx([
+        ("a@old.com", "oldpw1", "recovery@gmail.com", "2fa1"),
+        ("b@other.com", "oldpw2", "backup@yahoo.com", "2fa2"),
+    ])
+    def make_upload():
+        return UploadFile(file=io.BytesIO(data), filename="stock.xlsx")
+
+    inspected = run(inventory_transform.inspect_inventory_file(PID, make_upload()))
+    assert inspected == {"schema": list(HEADER), "row_count": 2,
+                         "email_columns": ["email", "recovery_email"],
+                         "password_columns": ["password"]}
+    assert "oldpw" not in str(inspected)
+    transformed = run(inventory_transform.transform_inventory_file(
+        PID, make_upload(), old_domain="old.com", new_domain="new.com",
+        email_column="email", password_column="password",
+        password_mode="fixed", fixed_password="Fixed!123"))
+    assert transformed.headers["x-rows"] == "2"
+    assert transformed.headers["x-domain-changes"] == "1"
+    assert transformed.headers["x-password-changes"] == "2"
+    content = transformed.body
+    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+    rows = list(wb.active.values)
+    assert rows[0] == HEADER
+    assert rows[1] == ("a@new.com", "Fixed!123", "recovery@gmail.com", "2fa1")
+    assert rows[2] == ("b@other.com", "Fixed!123", "backup@yahoo.com", "2fa2")
+    assert run(db.inventory_items.count_documents({"product_id": PID})) == 0
+
+
+def test_transform_inventory_random_password_is_12_chars_and_importable():
+    import string
+    from fastapi import UploadFile
+
+    data = ("email,kata sandi,recovery_email\n"
+            "a@old.com,first,backup@gmail.com\n"
+            "b@old.com,second,backup@yahoo.com\n").encode()
+    transformed = run(inventory_transform.transform_inventory_file(
+        PID, UploadFile(file=io.BytesIO(data), filename="stock.csv"),
+        old_domain="", new_domain="@new.com", email_column="email",
+        password_column="kata sandi", password_mode="random", fixed_password=""))
+    content = transformed.body
+    rows = list(openpyxl.load_workbook(io.BytesIO(content), data_only=True).active.values)
+    assert rows[1][0] == "a@new.com" and rows[2][0] == "b@new.com"
+    assert rows[1][2] == "backup@gmail.com"
+    passwords = [row[1] for row in rows[1:]]
+    assert passwords[0] != passwords[1]
+    for password in passwords:
+        assert len(password) == 12
+        assert any(char in string.ascii_uppercase for char in password)
+        assert any(char in string.ascii_lowercase for char in password)
+        assert any(char in string.digits for char in password)
+        assert any(char in inventory_transform.PASSWORD_SPECIAL for char in password)
+    class InMemoryUpload:
+        filename = "transformed.xlsx"
+
+        async def read(self):
+            return content
+
+    schema, records = run(admin_routes._parse_inventory_input(InMemoryUpload(), "", {}))
+    assert schema == ["email", "kata sandi", "recovery_email"]
+    assert len(records) == 2
+
+
+def test_transform_inventory_rejects_missing_password_header():
+    from fastapi import HTTPException, UploadFile
+
+    data = make_xlsx([("a@x.com", "old")], header=("email", "token"))
+    with pytest.raises(HTTPException) as exc:
+        run(inventory_transform.transform_inventory_file(
+            PID, UploadFile(file=io.BytesIO(data), filename="stock.xlsx"),
+            old_domain="", new_domain="", email_column="", password_column="token",
+            password_mode="random", fixed_password=""))
+    assert exc.value.status_code == 400
+    assert "password, kata sandi, atau sandi" in exc.value.detail
 
 
 def test_txt_import_uses_existing_schema():

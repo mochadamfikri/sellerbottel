@@ -16,6 +16,15 @@ export default function Inventory() {
   const [busy, setBusy] = useState(false);
   const [manualData, setManualData] = useState({});
   const [fileName, setFileName] = useState("");
+  const [transformFile, setTransformFile] = useState(null);
+  const [transformInfo, setTransformInfo] = useState(null);
+  const [oldDomain, setOldDomain] = useState("");
+  const [newDomain, setNewDomain] = useState("");
+  const [emailColumn, setEmailColumn] = useState("");
+  const [passwordColumn, setPasswordColumn] = useState("");
+  const [passwordMode, setPasswordMode] = useState("random");
+  const [fixedPassword, setFixedPassword] = useState("");
+  const [showFixedPassword, setShowFixedPassword] = useState(false);
   const actionLock = useRef(false);
   const fileInputRef = useRef(null);
 
@@ -59,6 +68,14 @@ export default function Inventory() {
     setFileName("");
     setPreview(null);
     setManualData({});
+    setTransformFile(null);
+    setTransformInfo(null);
+    setOldDomain("");
+    setNewDomain("");
+    setEmailColumn("");
+    setPasswordColumn("");
+    setPasswordMode("random");
+    setFixedPassword("");
   };
 
   const validateFile = async (selectedFile = file, selectedPid = pid) => {
@@ -146,6 +163,57 @@ export default function Inventory() {
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal menghapus item.");
     }
+  };
+
+  const inspectTransform = async () => {
+    if (!pid || !transformFile) { toast.error("Pilih produk dan file yang akan diolah."); return; }
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", transformFile, transformFile.name);
+      const { data } = await api.post(`/admin/products/${pid}/inventory/transform/inspect`, fd);
+      setTransformInfo(data);
+      setEmailColumn(data.email_columns?.find((name) => name.toLowerCase() === "email") || data.email_columns?.[0] || "");
+      setPasswordColumn(data.password_columns?.[0] || "");
+      if (!data.password_columns?.length) setPasswordMode("keep");
+      toast.success(`${data.row_count} baris terbaca. Pilih perubahan lalu unduh hasilnya.`);
+    } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail) || "File gagal dibaca."); }
+    finally { setBusy(false); }
+  };
+
+  const downloadTransformed = async () => {
+    if (!transformFile || !transformInfo) { toast.error("Baca kolom file terlebih dahulu."); return; }
+    if (!newDomain.trim() && passwordMode === "keep") { toast.error("Isi domain baru atau pilih pengubahan sandi."); return; }
+    if (newDomain.trim() && !emailColumn) { toast.error("File tidak punya kolom email yang bisa diubah."); return; }
+    if (passwordMode !== "keep" && !passwordColumn) { toast.error("File tidak punya header password/kata sandi/sandi."); return; }
+    if (passwordMode === "fixed" && !fixedPassword) { toast.error("Isi nilai sandi tetap."); return; }
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", transformFile, transformFile.name);
+      fd.append("old_domain", oldDomain.trim());
+      fd.append("new_domain", newDomain.trim());
+      fd.append("email_column", newDomain.trim() ? emailColumn : "");
+      fd.append("password_column", passwordMode === "keep" ? "" : passwordColumn);
+      fd.append("password_mode", passwordMode);
+      fd.append("fixed_password", passwordMode === "fixed" ? fixedPassword : "");
+      const response = await api.post(`/admin/products/${pid}/inventory/transform`, fd, { responseType: "blob" });
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `inventory-transformed-${(selectedProduct?.name || "produk").replace(/[^a-z0-9_-]+/gi, "-")}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      toast.success(`File diunduh: ${response.headers["x-rows"] || transformInfo.row_count} baris, ${response.headers["x-domain-changes"] || 0} domain, ${response.headers["x-password-changes"] || 0} sandi diubah.`);
+    } catch (err) {
+      let detail = err.response?.data?.detail;
+      if (err.response?.data instanceof Blob) {
+        try { detail = JSON.parse(await err.response.data.text()).detail; } catch (_) { /* empty */ }
+      }
+      toast.error(formatApiErrorDetail(detail) || "Gagal mengolah file inventory.");
+    } finally { setBusy(false); }
   };
 
   const selectedStock = selectedProduct?.stock_mode === "manual"
@@ -269,6 +337,37 @@ export default function Inventory() {
             </>
           )}
         </div>
+      </div>
+
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
+        <div><h2 className="font-heading font-semibold flex items-center gap-2"><Upload size={17} className="text-cyan-400" /> Pengolah File Inventory</h2>
+          <p className="text-xs text-slate-500 mt-1">Unggah XLSX/CSV/TXT, ubah domain email dan/atau sandi, lalu unduh XLSX hasilnya. Data stok yang sudah tersimpan tidak berubah. Periksa file hasil sebelum mengimpor lewat Upload Bulk di atas. Pengubahan file tidak mengganti sandi akun pada layanan aslinya.</p></div>
+        <div className="grid gap-3 lg:grid-cols-2">
+          <div><label className="text-xs text-slate-400">File yang akan diolah</label><input type="file" accept=".xlsx,.csv,.txt" className={cls} onChange={(event) => { setTransformFile(event.target.files?.[0] || null); setTransformInfo(null); }} /></div>
+          <div className="flex items-end"><button type="button" disabled={busy || !pid || !transformFile} onClick={inspectTransform} className="w-full rounded-lg bg-slate-700 hover:bg-slate-600 px-4 py-2.5 text-sm disabled:opacity-40">Baca Kolom File</button></div>
+        </div>
+        {transformInfo && <>
+          <p className="text-xs text-cyan-300">{transformInfo.row_count} baris · header: {transformInfo.schema.join(" · ")}</p>
+          <div className="grid gap-3 md:grid-cols-3">
+            <div><label className="text-xs text-slate-400">Domain lama (opsional)</label><input className={cls} placeholder="gmail.com" value={oldDomain} onChange={(event) => setOldDomain(event.target.value)} /></div>
+            <div><label className="text-xs text-slate-400">Domain baru</label><input className={cls} placeholder="contoh.com" value={newDomain} onChange={(event) => setNewDomain(event.target.value)} /></div>
+            <div><label className="text-xs text-slate-400">Kolom email yang diubah</label><select className={cls} value={emailColumn} onChange={(event) => setEmailColumn(event.target.value)}>
+              <option value="">Tidak ada</option>{(transformInfo.email_columns || []).map((field) => <option key={field} value={field}>{field}</option>)}
+            </select></div>
+          </div>
+          <p className="text-xs text-slate-500">Jika domain lama kosong, semua alamat pada kolom email terpilih memakai domain baru. Kolom email pemulihan hanya berubah bila dipilih.</p>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div><label className="text-xs text-slate-400">Pengubahan kata sandi</label><select className={cls} value={passwordMode} onChange={(event) => setPasswordMode(event.target.value)}>
+              <option value="random">Acak 12 karakter per baris</option><option value="fixed">Nilai tetap untuk semua baris</option><option value="keep">Tidak diubah</option>
+            </select></div>
+            <div><label className="text-xs text-slate-400">Kolom sandi</label><select className={cls} value={passwordColumn} onChange={(event) => setPasswordColumn(event.target.value)} disabled={passwordMode === "keep"}>
+              <option value="">Pilih kolom</option>{(transformInfo.password_columns || []).map((field) => <option key={field} value={field}>{field}</option>)}
+            </select></div>
+          </div>
+          {passwordMode === "fixed" && <div><label className="text-xs text-slate-400">Nilai sandi tetap</label><div className="flex gap-2"><input className={cls} type={showFixedPassword ? "text" : "password"} value={fixedPassword} onChange={(event) => setFixedPassword(event.target.value)} placeholder="Isi sandi yang dipakai untuk setiap baris" /><button type="button" className="rounded-lg bg-slate-700 px-3 text-xs" onClick={() => setShowFixedPassword(!showFixedPassword)}>{showFixedPassword ? "Sembunyikan" : "Lihat"}</button></div></div>}
+          {passwordMode === "random" && <p className="text-xs text-slate-400">Setiap baris mendapat sandi berbeda sepanjang 12 karakter, berisi huruf besar, huruf kecil, angka, dan karakter spesial.</p>}
+          <button type="button" disabled={busy} onClick={downloadTransformed} className="rounded-lg bg-cyan-600 hover:bg-cyan-700 px-4 py-2.5 text-sm font-semibold disabled:opacity-40">Buat dan Unduh XLSX Hasil</button>
+        </>}
       </div>
 
       <div className="bg-slate-900/80 border border-slate-800 rounded-xl overflow-hidden">
