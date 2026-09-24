@@ -20,7 +20,7 @@ JAKARTA = ZoneInfo("Asia/Jakarta")
 
 
 class RecapConfig(BaseModel):
-    enabled: bool = True
+    enabled: bool = False
     time: str = Field(default="00:05", pattern=r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
     target: Literal["chats", "users", "both"] = "chats"
 
@@ -28,7 +28,7 @@ class RecapConfig(BaseModel):
 @router.get("/config")
 async def get_config():
     settings = await get_settings()
-    return {"enabled": settings.get("daily_recap_enabled", True),
+    return {"enabled": settings.get("daily_recap_enabled", False),
             "time": settings.get("daily_recap_time", "00:05"),
             "target": settings.get("daily_recap_target", "chats")}
 
@@ -45,7 +45,7 @@ async def set_config(body: RecapConfig):
 async def send_due_recap(now=None):
     now = now or datetime.now(JAKARTA)
     settings = await get_settings()
-    if not settings.get("daily_recap_enabled", True):
+    if not settings.get("daily_recap_enabled", False):
         return False
     scheduled = str(settings.get("daily_recap_time") or "00:05")
     hour, minute = (int(value) for value in scheduled.split(":"))

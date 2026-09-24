@@ -14,7 +14,7 @@ export default function Broadcasts() {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
-  const [recapConfig, setRecapConfig] = useState({ enabled: true, time: "00:05", target: "chats" });
+  const [recapConfig, setRecapConfig] = useState({ enabled: false, time: "00:05", target: "chats" });
   const [savingConfig, setSavingConfig] = useState(false);
 
   const load = () => {
@@ -148,19 +148,19 @@ export default function Broadcasts() {
 
       <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-5 space-y-4">
         <div>
-          <h3 className="font-semibold">Rekap Harian Otomatis</h3>
-          <p className="text-sm text-slate-400 mt-1">Mengirim hasil penjualan hari sebelumnya menurut waktu WIB. Pesanan dihitung setelah selesai dikirim.</p>
+          <h3 className="font-semibold">Jadwal Rekap Harian</h3>
+          <p className="text-sm text-slate-400 mt-1">Pilih kirim manual saja atau kirim otomatis setiap hari. Rekap memakai waktu WIB dan menghitung pesanan yang selesai dikirim.</p>
         </div>
-        <label className="flex items-center gap-2 text-sm text-slate-200">
-          <input type="checkbox" checked={recapConfig.enabled} onChange={(event) => setRecapConfig({ ...recapConfig, enabled: event.target.checked })} /> Aktifkan rekap otomatis
-        </label>
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div><label className="text-sm text-slate-300">Cara kirim rekap</label><select className={cls} value={recapConfig.enabled ? "auto" : "manual"} onChange={(event) => setRecapConfig({ ...recapConfig, enabled: event.target.value === "auto" })}>
+          <option value="manual">Hanya manual</option><option value="auto">Otomatis setiap hari</option>
+        </select></div>
+        {recapConfig.enabled ? <div className="grid gap-3 sm:grid-cols-2">
           <div><label className="text-sm text-slate-300">Jam kirim (WIB)</label><input type="time" className={cls} value={recapConfig.time} onChange={(event) => setRecapConfig({ ...recapConfig, time: event.target.value })} /></div>
           <div><label className="text-sm text-slate-300">Kirim otomatis ke</label><select className={cls} value={recapConfig.target} onChange={(event) => setRecapConfig({ ...recapConfig, target: event.target.value })}>
             <option value="chats">Channel dan grup terhubung</option><option value="users">Semua pengguna bot</option><option value="both">Channel, grup, dan semua pengguna</option>
           </select></div>
-        </div>
-        <button type="button" disabled={savingConfig} onClick={saveConfig} className="rounded-lg bg-slate-700 hover:bg-slate-600 px-4 py-2.5 text-sm disabled:opacity-50">{savingConfig ? "Menyimpan..." : "Simpan Jadwal"}</button>
+        </div> : <p className="text-sm text-slate-400">Untuk mengirim, pilih “Rekap penjualan harian” di atas, pilih penerima, lalu lihat pratinjau.</p>}
+        <button type="button" disabled={savingConfig} onClick={saveConfig} className="rounded-lg bg-slate-700 hover:bg-slate-600 px-4 py-2.5 text-sm disabled:opacity-50">{savingConfig ? "Menyimpan..." : "Simpan Pengaturan"}</button>
       </div>
 
       {preview && <div className="rounded-xl border border-cyan-500/30 bg-slate-900/80 p-5 space-y-4">
