@@ -920,8 +920,11 @@ async def cancel_deposit_api(dep_id: str):
 @router.get("/deposits/{dep_id}/proof")
 async def deposit_proof(dep_id: str):
     dep = await db.deposits.find_one({"_id": dep_id})
-    if not dep or not dep.get("proof_file_id"):
+    if not dep or not (dep.get("proof_file_id") or dep.get("proof_storage_path")):
         raise HTTPException(404, "Bukti tidak ditemukan")
+    if dep.get("proof_storage_path"):
+        data, content_type = await get_object(dep["proof_storage_path"])
+        return Response(content=data, media_type=content_type)
     data = await download_telegram_file(dep["proof_file_id"])
     if not data:
         raise HTTPException(502, "Gagal mengambil file dari Telegram")

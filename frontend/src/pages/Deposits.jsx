@@ -97,7 +97,7 @@ export default function Deposits() {
                     <a href={explorer(d)} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-cyan-400 hover:underline font-mono text-xs">
                       {d.tx_hash.slice(0, 10)}... <ExternalLink size={11} />
                     </a>
-                  ) : d.proof_file_id ? (
+                  ) : (d.proof_file_id || d.proof_storage_path) ? (
                     <button data-testid={`view-proof-btn-${d._id}`} onClick={() => viewProof(d)} className="flex items-center gap-1 text-cyan-400 hover:underline text-xs">
                       <Eye size={13} /> Lihat foto
                     </button>

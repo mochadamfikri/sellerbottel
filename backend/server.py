@@ -22,6 +22,8 @@ from promo_reply_routes import router as promo_reply_router
 from promo_runtime import start_promo_runtime, stop_promo_runtime
 from broadcast_composer import router as broadcast_composer_router
 from daily_recap import router as daily_recap_router, run_daily_recap
+from reseller_routes import admin_router as reseller_admin_router, webhook_router as reseller_webhook_router
+from reseller_signup import run_subscription_monitor
 from stock_monitor import run_stock_monitor, router as stock_events_router
 from error_handlers import register_error_handlers
 from inventory import encryption_status
@@ -91,6 +93,8 @@ app.include_router(admin_user_router)
 app.include_router(admin_router)
 app.include_router(broadcast_composer_router)
 app.include_router(daily_recap_router)
+app.include_router(reseller_admin_router)
+app.include_router(reseller_webhook_router)
 app.include_router(stock_events_router)
 
 if os.environ.get("PROMOTION_ENABLED", "").lower() in {"1", "true", "yes"}:
@@ -134,6 +138,8 @@ async def startup():
     app.state.stock_monitor_task = asyncio.create_task(run_stock_monitor(app.state.stock_monitor_stop))
     app.state.daily_recap_stop = asyncio.Event()
     app.state.daily_recap_task = asyncio.create_task(run_daily_recap(app.state.daily_recap_stop))
+    app.state.reseller_monitor_stop = asyncio.Event()
+    app.state.reseller_monitor_task = asyncio.create_task(run_subscription_monitor(app.state.reseller_monitor_stop))
 
     try:
         inv = await encryption_status()
@@ -210,6 +216,8 @@ async def shutdown_db_client():
     app.state.stock_monitor_task.cancel()
     app.state.daily_recap_stop.set()
     app.state.daily_recap_task.cancel()
+    app.state.reseller_monitor_stop.set()
+    app.state.reseller_monitor_task.cancel()
 
     stop = getattr(app.state, "gopay_stop", None)
     task = getattr(app.state, "gopay_task", None)

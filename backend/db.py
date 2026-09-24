@@ -40,6 +40,11 @@ DEFAULT_SETTINGS = {
     "daily_recap_enabled": False,
     "daily_recap_time": "00:05",
     "daily_recap_target": "chats",
+    "reseller_enabled": False,
+    "reseller_bot_price_idr": 0,
+    "reseller_admin_fee_idr": 0,
+    "reseller_platform_fee_idr": 0,
+    "reseller_wholesale_reduction_idr": 2000,
     "join_group_target": "",
 }
 
@@ -81,6 +86,13 @@ async def ensure_indexes():
     await db.stock_events.create_index([("status", 1), ("created_at", 1)])
     await db.processed_updates.create_index("update_id", unique=True)
     await db.processed_updates_bot2.create_index("update_id", unique=True)
+    await db.reseller_bots.create_index("telegram_bot_id", unique=True)
+    await db.reseller_bots.create_index([("owner_tid", 1), ("created_at", -1)])
+    await db.reseller_bot_users.create_index([("bot_id", 1), ("telegram_id", 1)], unique=True)
+    await db.reseller_updates.create_index([("bot_id", 1), ("update_id", 1)], unique=True)
+    await db.purchases.create_index([("reseller_bot_id", 1), ("created_at", -1)])
+    await db.reseller_commissions.create_index([("bot_id", 1), ("status", 1)])
+    await db.reseller_payouts.create_index([("status", 1), ("created_at", -1)])
     try:
         await db.gopay_payments.drop_index("active_payment_amount_1")
     except Exception:

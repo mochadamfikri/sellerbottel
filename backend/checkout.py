@@ -117,7 +117,8 @@ def _cart_after_purchase(cart, purchased_items):
     return remaining
 
 
-async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=None):
+async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=None,
+                           unit_price_overrides=None, order_metadata=None):
     currency = user["currency"]
     field = CUR_FIELD[currency]
     order_id = str(uuid.uuid4())
@@ -145,6 +146,13 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
             }
 
         pricing = await price_for_product(product, currency, qty)
+        if unit_price_overrides and product["_id"] in unit_price_overrides:
+            override = float(unit_price_overrides[product["_id"]])
+            if override <= 0:
+                return {"ok": False, "error": "price", "message": "Harga jual tidak valid."}
+            pricing = {"unit_price": override, "base_unit_price": override,
+                       "discount_per_unit": 0, "discount_total": 0,
+                       "discount_id": None, "discount_name": None}
         price = pricing["unit_price"]
         items.append({
             "product": product,
@@ -226,6 +234,10 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
         "source_code": user.get("traffic_source_code"),
         "source_kind": user.get("traffic_source_kind"),
     }
+    if order_metadata:
+        order.update({key: order_metadata[key] for key in (
+            "reseller_bot_id", "reseller_admin_tid", "reseller_wholesale", "reseller_margin"
+        ) if key in order_metadata})
     await db.purchases.insert_one(order)
 
     if coupon:

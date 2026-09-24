@@ -50,11 +50,22 @@ async def credit_deposit(deposit: dict, note: str = ""):
     )
 
     lang = await user_lang(deposit["user_tid"])
-    await send_message(
-        deposit["user_tid"],
-        t(lang, "dep_approved", amount=fmt_amount(amount, deposit["currency"])),
-    )
+    await _send_deposit_notice(deposit, t(lang, "dep_approved", amount=fmt_amount(amount, deposit["currency"])))
     return True
+
+
+async def _send_deposit_notice(deposit: dict, message: str):
+    bot_id = deposit.get("reseller_bot_id")
+    if bot_id:
+        try:
+            bot = await db.reseller_bots.find_one({"_id": bot_id})
+            if bot:
+                from reseller_bot import send as send_reseller
+                await send_reseller(bot, deposit["user_tid"], message)
+        except Exception:
+            pass  # Balance and deposit status must not depend on Telegram delivery.
+    else:
+        await send_message(deposit["user_tid"], message)
 
 
 async def reject_deposit(deposit: dict, note: str = ""):
@@ -63,7 +74,7 @@ async def reject_deposit(deposit: dict, note: str = ""):
     }})
     lang = await user_lang(deposit["user_tid"])
     reason = t(lang, "reason_label", r=note) if note else ""
-    await send_message(deposit["user_tid"], t(lang, "dep_rejected", amount=fmt_amount(deposit["amount"], deposit["currency"]), reason=reason))
+    await _send_deposit_notice(deposit, t(lang, "dep_rejected", amount=fmt_amount(deposit["amount"], deposit["currency"]), reason=reason))
 
 
 async def cancel_deposit(deposit: dict):
@@ -91,10 +102,7 @@ async def cancel_deposit(deposit: dict):
     )
 
     lang = await user_lang(deposit["user_tid"])
-    await send_message(
-        deposit["user_tid"],
-        t(lang, "dep_cancelled", amount=fmt_amount(amount, deposit["currency"])),
-    )
+    await _send_deposit_notice(deposit, t(lang, "dep_cancelled", amount=fmt_amount(amount, deposit["currency"])))
     return True
 
 

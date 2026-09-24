@@ -65,6 +65,7 @@ def main_menu_kb(lang):
         [{"text": t(lang, "btn_deposit"), "callback_data": "menu:deposit"}, {"text": t(lang, "btn_balance"), "callback_data": "menu:balance"}],
         [{"text": t(lang, "btn_stock"), "callback_data": "menu:stock"}, {"text": t(lang, "btn_history"), "callback_data": "menu:history"}],
         [{"text": t(lang, "btn_settings"), "callback_data": "menu:settings"}, {"text": t(lang, "btn_help"), "callback_data": "menu:help"}],
+        [{"text": "🤖 Bikin Bot Sendiri", "callback_data": "reseller:entry"}],
     ]}
 
 
@@ -467,14 +468,14 @@ async def deliver_product(chat_id, p, lang, send_message_fn=None, send_document_
                 t(lang, "deliver_link", name=p["name"], content=p.get("content", "")),
             )
             return bool(result.get("ok"))
-        result = await send_message(
+        result = await send_message_fn(
             chat_id,
             t(lang, "deliver_license", name=p["name"], content=p.get("content", "")),
         )
         return bool(result.get("ok"))
     except Exception:
         logger.exception("product delivery failed")
-        await send_message(chat_id, t(lang, "deliver_fail", name=p["name"]))
+        await send_message_fn(chat_id, t(lang, "deliver_fail", name=p["name"]))
         return False
 
 
@@ -1747,6 +1748,17 @@ async def handle_callback(cb):
     if not await ensure_join_gate(chat_id, user):
         return
 
+    if data.startswith("reseller:"):
+        from reseller_signup import handle_callback as reseller_callback, show_entry
+        if user.get("frozen"):
+            await send_message(chat_id, frozen_text(user))
+            return
+        if data == "reseller:entry":
+            await show_entry(chat_id, user)
+        else:
+            await reseller_callback(chat_id, data, user)
+        return
+
     if data.startswith("service:wait:"):
         return
 
@@ -1977,6 +1989,14 @@ async def handle_message(message):
         return
 
     state = user.get("state")
+    if state == "reseller_token":
+        from reseller_signup import receive_token
+        await receive_token(chat_id, message)
+        return
+    if state == "reseller_admin":
+        from reseller_signup import receive_admin
+        await receive_admin(chat_id, user, text)
+        return
     if state == "coupon_code":
         code = text.strip().upper()
         if not code:
