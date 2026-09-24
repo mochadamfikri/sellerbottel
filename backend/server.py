@@ -35,6 +35,7 @@ from tgapi import tg
 from gopay_provider import run_gopay_monitor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
