@@ -250,6 +250,9 @@ async def add_records(product_id: str, records: list[dict], schema: list[str]):
             }
         },
     )
+    if created:
+        from stock_monitor import schedule_stock_scan
+        schedule_stock_scan(product_id)
     return {
         "created": created,
         "skipped": len(duplicates) + race_duplicates,
@@ -314,6 +317,9 @@ async def reserve_items(product_id: str, quantity: int, reservation_id: str):
 
 
 async def release_items(reservation_id: str):
+    product_ids = {item["product_id"] async for item in db.inventory_items.find(
+        {"reservation_id": reservation_id, "status": "reserved"}, {"product_id": 1}
+    )}
     await db.inventory_items.update_many(
         {"reservation_id": reservation_id, "status": "reserved"},
         {
@@ -324,6 +330,10 @@ async def release_items(reservation_id: str):
             }
         },
     )
+    if product_ids:
+        from stock_monitor import schedule_stock_scan
+        for product_id in product_ids:
+            schedule_stock_scan(product_id)
 
 
 async def commit_items(
@@ -331,6 +341,9 @@ async def commit_items(
     order_id: str,
     user_tid: int,
 ):
+    product_ids = {item["product_id"] async for item in db.inventory_items.find(
+        {"reservation_id": reservation_id, "status": "reserved"}, {"product_id": 1}
+    )}
     await db.inventory_items.update_many(
         {"reservation_id": reservation_id, "status": "reserved"},
         {
@@ -343,3 +356,7 @@ async def commit_items(
             }
         },
     )
+    if product_ids:
+        from stock_monitor import schedule_stock_scan
+        for product_id in product_ids:
+            schedule_stock_scan(product_id)

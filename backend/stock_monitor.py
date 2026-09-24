@@ -17,13 +17,17 @@ from tgapi import send_photo_bytes
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/broadcasts/stock-events", dependencies=[Depends(get_current_admin)])
+monitor_lock = asyncio.Lock()
 
 
-async def scan_stock():
+async def scan_stock(product_id: str | None = None):
     settings = await get_settings()
     enabled = settings.get("stock_notifications_enabled", True)
     chats = await configured_chats() if enabled else []
-    async for product in db.products.find({"active": True}):
+    query = {"active": True}
+    if product_id:
+        query["_id"] = product_id
+    async for product in db.products.find(query):
         if product.get("product_kind") == "service" or product.get("delivery_type") == "service":
             continue
         stock = await stock_for(product)
@@ -99,8 +103,9 @@ async def deliver_pending():
 async def run_stock_monitor(stop: asyncio.Event):
     while not stop.is_set():
         try:
-            await scan_stock()
-            await deliver_pending()
+            async with monitor_lock:
+                await scan_stock()
+                await deliver_pending()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -109,6 +114,19 @@ async def run_stock_monitor(stop: asyncio.Event):
             await asyncio.wait_for(stop.wait(), timeout=30)
         except asyncio.TimeoutError:
             pass
+
+
+def schedule_stock_scan(product_id: str):
+    """React promptly to writes; the periodic scan remains a recovery path."""
+    async def run():
+        try:
+            async with monitor_lock:
+                await scan_stock(product_id)
+                await deliver_pending()
+        except Exception:
+            logger.exception("Stock scan gagal untuk produk %s", product_id)
+
+    asyncio.create_task(run())
 
 
 @router.get("")
@@ -124,6 +142,7 @@ async def retry_stock_event(event_id: str):
     if event.get("status") == "sent":
         return {"ok": True, "status": "sent"}
     await db.stock_events.update_one({"_id": event_id}, {"$set": {"status": "pending"}})
-    await deliver_pending()
+    async with monitor_lock:
+        await deliver_pending()
     current = await db.stock_events.find_one({"_id": event_id})
     return {"ok": current.get("status") == "sent", "status": current.get("status")}

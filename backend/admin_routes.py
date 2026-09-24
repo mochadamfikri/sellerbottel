@@ -216,6 +216,8 @@ async def create_product(
         "inventory_enabled": inventory_enabled,
         "inventory_schema": [],
         "inventory_mode": inventory_mode if product_kind == "digital" else "table",
+        "stock_notice_available": False if product_kind == "digital" else None,
+        "stock_notice_count": 0,
         "created_at": now_iso(),
     }
     await db.products.insert_one(prod)
@@ -302,6 +304,9 @@ async def update_product(
         })
 
     await db.products.update_one({"_id": pid}, {"$set": updates})
+    if active and product_kind == "digital":
+        from stock_monitor import schedule_stock_scan
+        schedule_stock_scan(pid)
     result = await db.products.find_one({"_id": pid})
     if result and _is_inventory_product(result):
         result["inventory_stock"] = await available_count(pid)
@@ -847,6 +852,8 @@ async def delete_inventory_item(pid: str, item_id: str):
     })
     if result.deleted_count != 1:
         raise HTTPException(400, "Item hanya bisa dihapus saat masih tersedia.")
+    from stock_monitor import schedule_stock_scan
+    schedule_stock_scan(pid)
     return {"ok": True, "stock": await available_count(pid)}
 
 
