@@ -188,7 +188,7 @@ def test_bot2_product_menu_and_product_detail_are_callable(monkeypatch):
     run(bot2.show_products(123, 1))
     run(bot2.show_product(123, "p1"))
 
-    assert any("LIST PRODUCT" in (args[1] if len(args) > 1 else "") for args, _ in sent)
+    assert any("STOCK PRODUCT" in (args[1] if len(args) > 1 else "") for args, _ in sent)
     assert any("EMAIL KAMPUS" in (args[1] if len(args) > 1 else "") for args, _ in sent)
 
 
