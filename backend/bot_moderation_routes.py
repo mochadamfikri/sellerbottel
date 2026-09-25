@@ -1,4 +1,5 @@
 import asyncio
+import re
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -30,8 +31,8 @@ async def list_users(search: str = Query("", max_length=120), blocked_only: bool
     term = search.strip()
     if term:
         ors = [
-            {"username": {"$regex": term.lstrip("@"), "$options": "i"}},
-            {"first_name": {"$regex": term, "$options": "i"}},
+            {"username": {"$regex": re.escape(term.lstrip("@")), "$options": "i"}},
+            {"first_name": {"$regex": re.escape(term), "$options": "i"}},
         ]
         if term.lstrip("-").isdigit():
             ors.append({"telegram_id": int(term)})
