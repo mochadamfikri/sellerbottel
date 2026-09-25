@@ -177,7 +177,7 @@ async def send(body: ComposeBody):
     chats = await configured_chats() if body.target in {"chats", "both"} else []
     if body.target in {"chats", "both"} and not chats:
         raise HTTPException(400, "Channel/grup broadcast belum diisi di Pengaturan.")
-    user_count = await db.bot_users.count_documents({"blocked": {"$ne": True}}) if body.target in {"users", "both"} else 0
+    user_count = await db.bot_users.count_documents(_broadcast_user_query()) if body.target in {"users", "both"} else 0
     doc = {"_id": str(uuid.uuid4()), "text": text, "status": "running", "broadcast_type": body.kind,
            "broadcast_topic": body.topic if body.kind == "system_update" else None,
            "reference_id": body.reference_id if body.kind == "system_update" else None,
