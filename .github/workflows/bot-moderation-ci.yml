@@ -2,6 +2,10 @@ name: Bot Moderation CI
 
 on:
   pull_request:
+  push:
+    branches:
+      - "feature/bot-moderation-panel"
+
     paths:
       - "backend/**"
       - "frontend/**"
