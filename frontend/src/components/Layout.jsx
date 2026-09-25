@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Package, Wallet, Users, Settings, LogOut, Bot, Megaphone,
-  Percent, MessageSquareText, ClipboardList, Boxes, BarChart3, Menu, X
+  Percent, MessageSquareText, ClipboardList, Boxes, BarChart3, Menu, X, ShieldOff
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
@@ -20,6 +20,7 @@ const nav = [
   { to: "/resellers", label: "Bot Reseller", icon: Bot },
   { to: "/promotions", label: "Promosi / Cari Pelanggan", icon: Megaphone },
   { to: "/messages", label: "Bot Messages", icon: MessageSquareText },
+  { to: "/bot-moderation", label: "Tindak Lanjut Bot", icon: ShieldOff },
   { to: "/settings", label: "Pengaturan", icon: Settings },
 ];
 
