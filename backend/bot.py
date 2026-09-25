@@ -15,9 +15,9 @@ from tgapi import (
     send_message as tg_send_message,
     edit_message as tg_edit_message,
     answer_callback,
-    send_document,
+    send_document as tg_send_document,
     delete_message,
-    send_photo_bytes,
+    send_photo_bytes as tg_send_photo_bytes,
 )
 from services import credit_deposit, reject_deposit, cancel_deposit, notify_admin, notify_transaction_channel, notify_transaction_admin, fmt_amount, now_iso, user_lang
 from storage import get_object
@@ -52,6 +52,18 @@ async def _remember_bot_message(chat_id, response):
         )
     except Exception:
         logger.debug("Could not remember outgoing bot message", exc_info=True)
+
+
+async def send_document(chat_id, data, filename, caption=None):
+    result = await tg_send_document(chat_id, data, filename, caption=caption)
+    await _remember_bot_message(chat_id, result)
+    return result
+
+
+async def send_photo_bytes(chat_id, data, filename="photo.jpg", caption=None, kb=None):
+    result = await tg_send_photo_bytes(chat_id, data, filename, caption=caption, kb=kb)
+    await _remember_bot_message(chat_id, result)
+    return result
 
 
 async def send_message(chat_id, text, kb=None):
