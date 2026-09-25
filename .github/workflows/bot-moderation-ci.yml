@@ -21,6 +21,8 @@ jobs:
           python-version: "3.12"
       - name: Compile backend Python
         run: python -m compileall -q backend
+      - name: Compile bot moderation module explicitly
+        run: python -m py_compile backend/bot.py backend/bot_moderation_routes.py backend/db.py backend/server.py
 
   frontend-build:
     runs-on: ubuntu-latest
