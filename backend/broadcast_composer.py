@@ -21,6 +21,14 @@ from tgapi import send_message, send_photo_bytes
 router = APIRouter(prefix="/api/admin/broadcasts/compose", dependencies=[Depends(get_current_admin)])
 
 
+def _broadcast_user_query(query: dict | None = None):
+    """Return the canonical eligible-recipient filter for every broadcast flow."""
+    safe_query = dict(query or {})
+    safe_query["blocked"] = {"$ne": True}
+    safe_query["silent_blocked"] = {"$ne": True}
+    return safe_query
+
+
 class ComposeBody(BaseModel):
     kind: Literal["message", "best_sellers", "daily_recap", "system_update"] = "message"
     period: Literal["7d", "30d", "all"] = "30d"
@@ -121,7 +129,7 @@ async def send_composed(chat_id: str | int, text: str, image: bytes | None):
 
 async def _send_users(broadcast_id: str, text: str, image: bytes | None, chat_success: int, chat_failed: int):
     success, failed, blocked = chat_success, chat_failed, 0
-    async for user in db.bot_users.find({"blocked": {"$ne": True}}, {"telegram_id": 1}):
+    async for user in db.bot_users.find(_broadcast_user_query(), {"telegram_id": 1}):
         try:
             result = await send_composed(user["telegram_id"], text, image)
             if result.get("ok"):
@@ -146,7 +154,7 @@ async def _send_users(broadcast_id: str, text: str, image: bytes | None, chat_su
 async def preview(body: ComposeBody):
     text, image, products = await build_content(body)
     chats = await configured_chats() if body.target in {"chats", "both"} else []
-    user_count = await db.bot_users.count_documents({"blocked": {"$ne": True}}) if body.target in {"users", "both"} else 0
+    user_count = await db.bot_users.count_documents(_broadcast_user_query()) if body.target in {"users", "both"} else 0
     return {"text": text, "products": products, "chats": chats, "user_count": user_count,
             "image_data_url": "data:image/jpeg;base64," + base64.b64encode(image).decode() if image else None}
 
