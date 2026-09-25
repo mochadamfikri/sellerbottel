@@ -62,6 +62,9 @@ async def ensure_indexes():
         pass
 
     await db.bot_users.create_index("telegram_id", unique=True)
+    await db.bot_users.create_index("silent_blocked")
+    await db.bot_chat_messages.create_index([("chat_id", 1), ("message_id", 1)], unique=True)
+    await db.bot_chat_messages.create_index([("chat_id", 1), ("created_at", -1)])
     await db.deposits.create_index(
         "tx_hash",
         unique=True,

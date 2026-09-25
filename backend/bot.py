@@ -15,9 +15,9 @@ from tgapi import (
     send_message as tg_send_message,
     edit_message as tg_edit_message,
     answer_callback,
-    send_document,
+    send_document as tg_send_document,
     delete_message,
-    send_photo_bytes,
+    send_photo_bytes as tg_send_photo_bytes,
 )
 from services import credit_deposit, reject_deposit, cancel_deposit, notify_admin, notify_transaction_channel, notify_transaction_admin, fmt_amount, now_iso, user_lang
 from storage import get_object
@@ -34,16 +34,51 @@ logger = logging.getLogger("bot")
 _EDIT_TARGETS = {}
 
 
+async def _remember_bot_message(chat_id, response):
+    try:
+        result = (response or {}).get("result") or {}
+        message_id = result.get("message_id")
+        if message_id is None:
+            return
+        await db.bot_chat_messages.update_one(
+            {"chat_id": int(chat_id), "message_id": int(message_id)},
+            {"$set": {
+                "chat_id": int(chat_id),
+                "message_id": int(message_id),
+                "direction": "out",
+                "created_at": datetime.now(timezone.utc),
+            }},
+            upsert=True,
+        )
+    except Exception:
+        logger.debug("Could not remember outgoing bot message", exc_info=True)
+
+
+async def send_document(chat_id, data, filename, caption=None):
+    result = await tg_send_document(chat_id, data, filename, caption=caption)
+    await _remember_bot_message(chat_id, result)
+    return result
+
+
+async def send_photo_bytes(chat_id, data, filename="photo.jpg", caption=None, kb=None):
+    result = await tg_send_photo_bytes(chat_id, data, filename, caption=caption, kb=kb)
+    await _remember_bot_message(chat_id, result)
+    return result
+
+
 async def send_message(chat_id, text, kb=None):
     message_id = _EDIT_TARGETS.pop(chat_id, None)
     if message_id is not None:
         try:
             result = await tg_edit_message(chat_id, message_id, text, kb=kb)
             if result.get("ok"):
+                await _remember_bot_message(chat_id, result)
                 return result
         except Exception:
             logger.exception("Failed to edit callback message; falling back to sendMessage")
-    return await tg_send_message(chat_id, text, kb=kb)
+    result = await tg_send_message(chat_id, text, kb=kb)
+    await _remember_bot_message(chat_id, result)
+    return result
 
 
 _CHECKOUT_LOCKS = {}
@@ -1854,6 +1889,17 @@ async def handle_callback(cb):
     data = cb.get("data", "")
     chat_id = cb["message"]["chat"]["id"]
 
+    blocked = await db.bot_users.find_one(
+        {"telegram_id": cb["from"]["id"], "silent_blocked": True},
+        {"_id": 1},
+    )
+    if blocked:
+        try:
+            await answer_callback(cb["id"])
+        except Exception:
+            pass
+        return
+
     if data.startswith("adm:"):
         _, action, dep_id = data.split(":", 2)
         await handle_admin_callback(cb, action, dep_id)
@@ -2058,6 +2104,29 @@ async def handle_message(message):
 
     chat_id = message["chat"]["id"]
     message_id = message.get("message_id")
+
+    if message_id is not None:
+        try:
+            await db.bot_chat_messages.update_one(
+                {"chat_id": int(chat_id), "message_id": int(message_id)},
+                {"$set": {
+                    "chat_id": int(chat_id),
+                    "message_id": int(message_id),
+                    "direction": "in",
+                    "created_at": datetime.now(timezone.utc),
+                }},
+                upsert=True,
+            )
+        except Exception:
+            logger.debug("Could not remember incoming bot message", exc_info=True)
+
+    blocked = await db.bot_users.find_one(
+        {"telegram_id": message["from"]["id"], "silent_blocked": True},
+        {"_id": 1},
+    )
+    if blocked:
+        return
+
     user = await get_user(message["from"])
     lang = user.get("lang", "id")
     text = (message.get("text") or "").strip()
