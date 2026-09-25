@@ -206,12 +206,13 @@ def test_listing_with_wrong_key_returns_clear_error():
     assert "tidak cocok" in res.json()["detail"]
 
 
-def test_header_mismatch_returns_400_with_detail():
+def test_updated_header_redefines_product_schema():
     assert upload("import", make_xlsx(sample_rows(2))).status_code == 200
     other = make_xlsx([("a@x.com", "p")], header=("email", "password"))
     res = upload("import", other)
-    assert res.status_code == 400
-    assert "Header inventory tidak cocok" in res.json()["detail"]
+    assert res.status_code == 200, res.text
+    assert res.json()["created"] == 1
+    assert res.json()["schema"] == ["email", "password"]
 
 
 def test_csv_import():
