@@ -1607,6 +1607,12 @@ async def delete_discount(did: str):
 
 # ============ BROADCAST ============
 
+def _broadcast_user_query(query: dict | None = None):
+    safe_query = dict(query or {})
+    safe_query["silent_blocked"] = {"$ne": True}
+    return safe_query
+
+
 async def _broadcast_worker(
     broadcast_id: str,
     query: dict,
@@ -1617,9 +1623,18 @@ async def _broadcast_worker(
     button_url: str | None,
 ):
     success = failed = blocked = 0
+    query = _broadcast_user_query(query)
     cursor = db.bot_users.find(query, {"telegram_id": 1})
     async for user in cursor:
         tid = user["telegram_id"]
+
+        # Re-check immediately before sending. This covers a user being
+        # silent-blocked after the broadcast job was queued.
+        if await db.bot_users.find_one(
+            {"telegram_id": tid, "silent_blocked": True},
+            {"_id": 1},
+        ):
+            continue
         kb = None
         if button_text and button_url:
             kb = {"inline_keyboard": [[{"text": button_text, "url": button_url}]]}
@@ -1666,7 +1681,7 @@ async def _broadcast_worker(
 
 @router.post("/broadcasts/preview")
 async def broadcast_preview(lang: str = Form("all"), search: str = Form(""), status: str = Form("all")):
-    query = {}
+    query = _broadcast_user_query()
     if lang in ("id", "en"): query["lang"] = lang
     if status == "active": query.update({"frozen": {"$ne": True}, "blocked": {"$ne": True}})
     elif status == "frozen": query["frozen"] = True
@@ -1691,7 +1706,7 @@ async def create_broadcast(
         raise HTTPException(400, "Pesan broadcast kosong")
     if auto_image and not (await get_settings()).get("broadcast_auto_image_enabled", False):
         raise HTTPException(400, "Auto Generate Picture sedang OFF di Pengaturan.")
-    query = {}
+    query = _broadcast_user_query()
     if lang in ("id", "en"):
         query["lang"] = lang
     if status == "active":
@@ -1927,7 +1942,7 @@ async def broadcast_channel(
                 "text": body,
             }
 
-        query = {"blocked": {"$ne": True}}
+        query = _broadcast_user_query({"blocked": {"$ne": True}})
         total = await db.bot_users.count_documents(query)
         doc = {
             "_id": str(uuid.uuid4()),
