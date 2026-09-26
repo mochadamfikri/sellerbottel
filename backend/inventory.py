@@ -339,7 +339,8 @@ async def release_items(reservation_id: str):
 async def commit_items(
     reservation_id: str,
     order_id: str,
-    user_tid: int,
+    user_tid: int | None,
+    customer_id: str | None = None,
 ):
     product_ids = {item["product_id"] async for item in db.inventory_items.find(
         {"reservation_id": reservation_id, "status": "reserved"}, {"product_id": 1}
@@ -352,6 +353,7 @@ async def commit_items(
                 "reservation_id": None,
                 "order_id": order_id,
                 "user_tid": user_tid,
+                "customer_id": customer_id,
                 "sold_at": now_iso(),
             }
         },

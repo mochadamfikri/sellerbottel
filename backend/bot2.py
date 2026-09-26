@@ -15,7 +15,7 @@ from pricing import price_for_product
 from services import fmt_amount
 from checkout import next_invoice_id, stock_for
 from bot import deliver_inventory, deliver_product, build_invoice_text
-from gopay_provider import _run_node
+from gopay_provider import _run_node, qris_expiry_minutes
 
 logger = logging.getLogger("bot2")
 
@@ -630,7 +630,8 @@ async def create_bot2_checkout(chat_id, user, pid, qty, note=''):
     admin_fee = max(1, int(round(subtotal * 0.007)))
     platform_code = secrets.randbelow(900) + 100
     payment_amount = subtotal + admin_fee + platform_code
-    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+    expires_in_minutes = await qris_expiry_minutes()
+    expires = datetime.now(timezone.utc) + timedelta(minutes=expires_in_minutes)
     payment_id = str(uuid.uuid4())
 
     order = {
@@ -658,6 +659,7 @@ async def create_bot2_checkout(chat_id, user, pid, qty, note=''):
         "status": "pending_payment",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "expires_at": expires.isoformat(),
+        "expires_in_minutes": expires_in_minutes,
         "paid_at": None,
         "delivered_at": None,
         "delivery_error": None,
@@ -729,6 +731,9 @@ async def show_checkout_qr(chat_id, user, order_id):
     if not order:
         await send2(chat_id, "❌ Transaksi tidak ditemukan atau sudah selesai.", kb=menu_keyboard())
         return
+    if order.get("expires_at", "") <= datetime.now(timezone.utc).isoformat():
+        await _expire_bot2_orders()
+        return
     payment = await db.gopay_payments.find_one({"_id": order.get("payment_id"), "payment_scope": PAYMENT_SCOPE})
     if not payment:
         await send2(chat_id, "❌ Data pembayaran tidak ditemukan.", kb=menu_keyboard())
@@ -738,7 +743,7 @@ async def show_checkout_qr(chat_id, user, order_id):
     text = (
         "【 TRANSAKSI PENDING 】\n"
         f"• ID payment: <code>{payment['_id']}</code>\n"
-        "• Service Payment: QRIS\n"
+        "• Metode: QRIS All Payment\n"
         f"• Harga/Unit: {int(order['items'][0]['unit_price'])}\n"
         f"• Harga Total: {int(order['total']):,}\n"
         f"• Jumlah: {int(order['items'][0]['qty'])}\n"
@@ -746,7 +751,9 @@ async def show_checkout_qr(chat_id, user, order_id):
         f"• Note: Pembelian stok via QRIS (auto)\n"
         f"• Total Dibayar: {int(payment['payment_amount']):,}\n"
         f"• Invoice: <code>{invoice}</code>\n"
-        f"• Bayar sebelum: {escape(expires)}"
+        f"• Bayar sebelum: {escape(expires)}\n"
+        f"⏳ QR hanya berlaku {int(order.get('expires_in_minutes') or 5)} menit.\n\n"
+        "Cara bayar: pindai QR melalui aplikasi e-wallet atau mobile banking yang mendukung QRIS."
     )
     state = await db.bot_users.find_one({"telegram_id": user["telegram_id"]}, {"bot2_state_data": 1})
     encoded = ((state or {}).get("bot2_state_data") or {}).get("qr_base64")
@@ -755,7 +762,13 @@ async def show_checkout_qr(chat_id, user, order_id):
     else:
         data = await asyncio.to_thread(_run_node, "create_qris.mjs", [str(payment["payment_amount"])])
         image = base64.b64decode(data["image_base64"])
-    await send_photo2(chat_id, image, "bot2-qris.jpg", caption=text, kb=menu_keyboard())
+    sent_qr = await send_photo2(chat_id, image, "qris-all-payment.jpg", caption=text, kb=menu_keyboard())
+    if sent_qr.get("ok"):
+        qr_message_id = (sent_qr.get("result") or {}).get("message_id")
+        if qr_message_id:
+            await _remember_last_message(chat_id, qr_message_id)
+            await db.purchases.update_one({"_id": order_id}, {"$set": {"qr_message_id": qr_message_id}})
+            await db.gopay_payments.update_one({"_id": payment["_id"]}, {"$set": {"qr_message_id": qr_message_id}})
 
 
 async def deliver_order(chat_id, order):
@@ -859,7 +872,8 @@ async def create_bot2_deposit_qr(chat_id, user, amount):
     payment_amount = int(amount + admin_fee + platform_code)
     payment_id = str(uuid.uuid4())
     deposit_id = str(uuid.uuid4())
-    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+    expires_in_minutes = await qris_expiry_minutes()
+    expires = datetime.now(timezone.utc) + timedelta(minutes=expires_in_minutes)
     now = datetime.now(timezone.utc).isoformat()
     await db.deposits.insert_one({
         "_id": deposit_id,
@@ -879,6 +893,7 @@ async def create_bot2_deposit_qr(chat_id, user, amount):
         "created_at": now,
         "decided_at": None,
         "expires_at": expires.isoformat(),
+        "expires_in_minutes": expires_in_minutes,
     })
     try:
         await db.gopay_payments.insert_one({
@@ -913,10 +928,18 @@ async def create_bot2_deposit_qr(chat_id, user, amount):
         f"• Nominal saldo: {fmt_amount(amount, 'IDR')}\n"
         f"• Fee: {admin_fee + platform_code:,}\n"
         f"• Total Dibayar: {payment_amount:,}\n"
-        "• Service Payment: QRIS\n"
-        f"• Bayar sebelum: {expires.isoformat()}"
+        "• Metode: QRIS All Payment\n"
+        f"• Bayar sebelum: {expires.isoformat()}\n"
+        f"⏳ QR hanya berlaku {expires_in_minutes} menit.\n\n"
+        "Cara bayar: pindai QR melalui aplikasi e-wallet atau mobile banking yang mendukung QRIS."
     )
-    await send_photo2(chat_id, image, "bot2-deposit-qris.jpg", caption=caption, kb=menu_keyboard())
+    sent_qr = await send_photo2(chat_id, image, "qris-all-payment.jpg", caption=caption, kb=menu_keyboard())
+    if sent_qr.get("ok"):
+        qr_message_id = (sent_qr.get("result") or {}).get("message_id")
+        if qr_message_id:
+            await _remember_last_message(chat_id, qr_message_id)
+            await db.deposits.update_one({"_id": deposit_id}, {"$set": {"qr_message_id": qr_message_id, "payment_id": payment_id}})
+            await db.gopay_payments.update_one({"_id": payment_id}, {"$set": {"qr_message_id": qr_message_id}})
 
 
 async def create_manual_deposit(user, amount, proof_file_id):
@@ -1273,25 +1296,59 @@ async def _expire_bot2_orders():
     now = datetime.now(timezone.utc).isoformat()
     cursor = db.purchases.find({"bot2": True, "payment_scope": PAYMENT_SCOPE, "status": "pending_payment", "expires_at": {"$lte": now}})
     async for order in cursor:
+        changed = await db.purchases.update_one(
+            {"_id": order["_id"], "status": "pending_payment"},
+            {"$set": {"status": "expired", "expired_at": now}},
+        )
+        if changed.modified_count != 1:
+            continue
         await release_items(f"bot2:{order['_id']}")
         await db.gopay_payments.update_one(
             {"_id": order.get("payment_id"), "payment_scope": PAYMENT_SCOPE, "status": "pending"},
-            {"$set": {"status": "expired"}, "$unset": {"active_payment_amount": ""}},
+            {"$set": {"status": "expired", "expired_at": now}, "$unset": {"active_payment_amount": ""}},
         )
-        await db.purchases.update_one(
-            {"_id": order["_id"], "status": "pending_payment"},
-            {"$set": {"status": "expired"}},
-        )
+        try:
+            if order.get("qr_message_id"):
+                try:
+                    await delete2(order["user_tid"], order["qr_message_id"])
+                except Exception:
+                    logger.exception("Could not delete expired Bot2 checkout QR")
+            await send2(
+                order["user_tid"],
+                f"⌛ <b>Pembayaran invoice {escape(str(order.get('invoice_id') or '-'))} sudah expired.</b>\n"
+                "Kode QR tidak berlaku, silakan request QR baru.",
+                kb=menu_keyboard(), force_new=True,
+            )
+        except Exception:
+            logger.exception("Could not notify Bot2 checkout QR expiry")
 
 
 async def _expire_bot2_deposits():
     now = datetime.now(timezone.utc).isoformat()
     cursor = db.deposits.find({"bot2": True, "method": "gopay", "payment_id": {"$exists": True}, "status": "pending", "expires_at": {"$lte": now}})
     async for dep in cursor:
+        changed = await db.deposits.update_one(
+            {"_id": dep["_id"], "status": "pending"},
+            {"$set": {"status": "expired", "decided_at": now}},
+        )
+        if changed.modified_count != 1:
+            continue
         payment = await db.gopay_payments.find_one({"_id": dep.get("payment_id"), "payment_scope": PAYMENT_SCOPE})
         if payment:
-            await db.gopay_payments.update_one({"_id": payment["_id"], "status": "pending"}, {"$set": {"status": "expired"}, "$unset": {"active_payment_amount": ""}})
-        await db.deposits.update_one({"_id": dep["_id"], "status": "pending"}, {"$set": {"status": "expired", "decided_at": datetime.now(timezone.utc).isoformat()}})
+            await db.gopay_payments.update_one({"_id": payment["_id"], "status": "pending"}, {"$set": {"status": "expired", "expired_at": now}, "$unset": {"active_payment_amount": ""}})
+        try:
+            if dep.get("qr_message_id"):
+                try:
+                    await delete2(dep["user_tid"], dep["qr_message_id"])
+                except Exception:
+                    logger.exception("Could not delete expired Bot2 deposit QR")
+            await send2(
+                dep["user_tid"],
+                "⌛ <b>Deposit sudah expired.</b>\nKode QR tidak berlaku, silakan request QR baru.",
+                kb=menu_keyboard(), force_new=True,
+            )
+        except Exception:
+            logger.exception("Could not notify Bot2 deposit QR expiry")
 
 
 async def run_bot2_payment_monitor(stop_event: asyncio.Event):

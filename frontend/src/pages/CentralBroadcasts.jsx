@@ -81,7 +81,7 @@ export default function CentralBroadcasts() {
         <select className={cls} value={form.reference_id} onChange={(event) => change({ ...form, reference_id: event.target.value })}>
           <option value="">-- Pilih --</option>{choices.map((item) => <option key={item._id} value={item._id}>{item.name || item.code}</option>)}
         </select>{!choices.length && <p className="text-xs text-amber-300 mt-1">Belum ada data aktif untuk jenis pengumuman ini.</p>}</div>}
-      {form.topic === "announcement" && <div><label className="text-sm text-slate-300">Judul pembaruan</label><input className={cls} maxLength={80} value={form.title} onChange={(event) => change({ ...form, title: event.target.value })} placeholder="Contoh: Fitur Baru SellerBottel" /></div>}
+      {form.topic === "announcement" && <div><label className="text-sm text-slate-300">Judul pembaruan</label><input className={cls} maxLength={80} value={form.title} onChange={(event) => change({ ...form, title: event.target.value })} placeholder="Contoh: Fitur Baru IDSE Digital Product" /></div>}
       <div><label className="text-sm text-slate-300">{form.topic === "announcement" ? "Isi pengumuman" : "Catatan tambahan (opsional)"}</label>
         <textarea rows={form.topic === "announcement" ? 5 : 3} maxLength={700} className={cls}
           placeholder={form.topic === "announcement" ? "Jelaskan pembaruan yang ingin diumumkan..." : "Tambahkan pesan khusus bila perlu..."}

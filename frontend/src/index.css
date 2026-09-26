@@ -12,6 +12,11 @@ body {
     -moz-osx-font-smoothing: grayscale;
 }
 
+.storefront-font {
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", sans-serif;
+}
+
 code {
     font-family:
         source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;

@@ -19,6 +19,7 @@ import Reports from "./pages/Reports";
 import Promotions from "./pages/Promotions";
 import Resellers from "./pages/Resellers";
 import BotModeration from "./pages/BotModeration";
+import Storefront from "./pages/Storefront";
 
 function Protected({ children, title }) {
   const { user } = useAuth();
@@ -27,13 +28,32 @@ function Protected({ children, title }) {
   return <Layout title={title}>{children}</Layout>;
 }
 
+function HomeRoute() {
+  // Keep the existing admin landing page on the maintenance hostname.
+  if (window.location.hostname === "idsedm.duckdns.org") {
+    return <Protected title="Ringkasan"><Overview /></Protected>;
+  }
+  return <Storefront />;
+}
+
 function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route path="/" element={<Protected title="Ringkasan"><Overview /></Protected>} />
+          <Route path="/" element={<HomeRoute />} />
+          <Route path="/store" element={<Storefront />} />
+          <Route path="/store/products" element={<Storefront view="products" />} />
+          <Route path="/store/product/:productId" element={<Storefront view="detail" />} />
+          <Route path="/store/cart" element={<Storefront view="cart" />} />
+          <Route path="/store/login" element={<Storefront view="login" />} />
+          <Route path="/store/register" element={<Storefront view="register" />} />
+          <Route path="/store/orders" element={<Storefront view="orders" />} />
+          <Route path="/store/transactions" element={<Storefront view="transactions" />} />
+          <Route path="/store/deposit" element={<Storefront view="deposit" />} />
+          <Route path="/store/profile" element={<Storefront view="profile" />} />
+          <Route path="/admin" element={<Protected title="Ringkasan"><Overview /></Protected>} />
           <Route path="/products" element={<Protected title="Kelola Produk"><Products /></Protected>} />
           <Route path="/orders" element={<Protected title="Orders"><Orders /></Protected>} />
           <Route path="/reports" element={<Protected title="Rekap & Laporan"><Reports /></Protected>} />

@@ -35,6 +35,10 @@ export default function SettingsPage() {
         bank_account_number: s.bank_account_number,
         bank_account_holder: s.bank_account_holder,
         qris_enabled: !!s.qris_enabled,
+        store_qris_enabled: !!s.store_qris_enabled,
+        gopay_qr_timeout_minutes: Number(s.gopay_qr_timeout_minutes || 5),
+        whatsapp_contact_number: String(s.whatsapp_contact_number || "+628123456789"),
+        telegram_contact_target: String(s.telegram_contact_target || ""),
         bank_enabled: !!s.bank_enabled,
         min_deposit_usd: parseFloat(s.min_deposit_usd),
         min_deposit_idr: parseFloat(s.min_deposit_idr),
@@ -69,6 +73,22 @@ export default function SettingsPage() {
     <div className="space-y-5">
       <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
         <div>
+          <h2 className="font-heading font-semibold">Kontak mengambang di Front Store</h2>
+          <p className="text-xs text-slate-500 mt-1">Atur tujuan tombol WhatsApp dan Telegram. Widget akan hilang otomatis setelah 2 menit atau saat pengunjung menutupnya.</p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="block text-xs text-slate-400">Nomor WhatsApp
+            <input className={cls} type="tel" inputMode="tel" placeholder="+628123456789" value={s.whatsapp_contact_number ? (String(s.whatsapp_contact_number).startsWith("+") ? String(s.whatsapp_contact_number) : `+${s.whatsapp_contact_number}`) : "+628123456789"} onChange={(e) => setS({ ...s, whatsapp_contact_number: e.target.value })} />
+            <span className="mt-1 block text-[11px] text-slate-600">Pengunjung diarahkan ke nomor ini dengan pesan produk terisi otomatis.</span>
+          </label>
+          <label className="block text-xs text-slate-400">Username / link Telegram
+            <input className={cls} placeholder="@username atau https://t.me/username" value={s.telegram_contact_target || ""} onChange={(e) => setS({ ...s, telegram_contact_target: e.target.value })} />
+            <span className="mt-1 block text-[11px] text-slate-600">Kosongkan untuk menyembunyikan tombol Telegram.</span>
+          </label>
+        </div>
+      </div>
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4">
+        <div>
           <h2 className="font-heading font-semibold">Gateway Pembayaran</h2>
           <p className="text-xs text-slate-500 mt-1">Atur metode deposit IDR yang tampil di bot. Jika keduanya OFF, bot menampilkan notifikasi gateway sedang mengalami gangguan.</p>
         </div>
@@ -79,8 +99,8 @@ export default function SettingsPage() {
               <div className="flex gap-3">
                 <div className="w-9 h-9 rounded-lg bg-cyan-500/10 flex items-center justify-center"><QrCode size={18} className="text-cyan-400" /></div>
                 <div>
-                  <p className="font-semibold text-slate-200">QRIS +0.7% otomatis</p>
-                  <p className="text-xs text-slate-500 mt-1">Nominal QR dibuat otomatis dan pembayaran dipantau oleh GoPay Merchant.</p>
+                  <p className="font-semibold text-slate-200">QRIS All Payment +0.7% otomatis</p>
+                  <p className="text-xs text-slate-500 mt-1">Nominal QR dibuat otomatis dan status pembayaran dipantau oleh gateway yang terhubung.</p>
                 </div>
               </div>
               <Switch checked={!!s.qris_enabled} onCheckedChange={(v) => setS({ ...s, qris_enabled: v })} />
@@ -88,6 +108,13 @@ export default function SettingsPage() {
             <div className="mt-3 text-xs">
               <span className={s.qris_enabled ? "text-emerald-400" : "text-slate-600"}>{s.qris_enabled ? "ON" : "OFF"}</span>
               {s.qris_enabled && <span className="text-slate-600 ml-2">Pastikan GOPAY_ENABLED di server aktif.</span>}
+            </div>
+            <div className="mt-4 max-w-xs">
+              <label className="text-xs text-slate-400" htmlFor="gopay-qr-timeout">Masa berlaku QR (menit)</label>
+              <input id="gopay-qr-timeout" type="number" min="1" max="60" step="1" className={cls}
+                value={s.gopay_qr_timeout_minutes ?? 5}
+                onChange={(e) => setS({ ...s, gopay_qr_timeout_minutes: e.target.value })} />
+              <p className="mt-1 text-xs text-slate-600">Nilai awal 5 menit. Perubahan berlaku untuk QR baru.</p>
             </div>
           </div>
 
@@ -104,6 +131,16 @@ export default function SettingsPage() {
             </div>
             <div className="mt-3 text-xs"><span className={s.bank_enabled ? "text-emerald-400" : "text-slate-600"}>{s.bank_enabled ? "ON" : "OFF"}</span></div>
           </div>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex gap-3">
+              <div className="w-9 h-9 rounded-lg bg-emerald-500/10 flex items-center justify-center"><QrCode size={18} className="text-emerald-400" /></div>
+              <div><p className="font-semibold text-slate-200">QRIS Front Store</p><p className="mt-1 text-xs text-slate-500">Pengaturan ini hanya untuk deposit dan checkout web; tidak mengubah metode pembayaran bot.</p></div>
+            </div>
+            <Switch checked={!!s.store_qris_enabled} onCheckedChange={(v) => setS({ ...s, store_qris_enabled: v })} />
+          </div>
+          <p className={`mt-3 text-xs ${s.store_qris_enabled ? "text-emerald-400" : "text-slate-600"}`}>{s.store_qris_enabled ? "ON" : "OFF"}{s.store_qris_enabled && " · Pastikan GOPAY_ENABLED di server aktif."}</p>
         </div>
       </div>
 

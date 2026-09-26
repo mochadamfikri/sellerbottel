@@ -3,7 +3,7 @@ import api, { fmtAmount, fmtDate, formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 
-const statuses = ["all", "pending", "paid", "delivered", "delivery_failed", "failed", "refunded"];
+const statuses = ["all", "pending", "pending_payment", "paid", "service_waiting", "delivered", "delivery_failed", "failed", "refunded"];
 
 export default function Orders() {
   const [status, setStatus] = useState("all");
@@ -32,11 +32,30 @@ export default function Orders() {
     } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }
   };
 
+  const completeService = async (o) => {
+    if (!window.confirm(`Tandai pesanan jasa ${o.invoice_id} selesai? Email penyelesaian akan dikirim setelah status selesai.`)) return;
+    try {
+      const { data } = await api.post("/admin/orders/" + o._id + "/complete");
+      toast.success(data.email_sent ? "Pesanan selesai dan email terkirim." : "Pesanan selesai. Email belum terkirim; periksa konfigurasi SMTP.");
+      await load();
+      if (detail?._id === o._id) await openDetail(o);
+    } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }
+  };
+
+  const retryEmail = async (o) => {
+    try {
+      await api.post("/admin/orders/" + o._id + "/email/retry");
+      toast.success("Email order berhasil dikirim ulang.");
+      await load();
+      if (detail?._id === o._id) await openDetail(o);
+    } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail)); }
+  };
+
   return (
     <>
       <div className="flex gap-2 flex-wrap">
         {statuses.map((s) => <button key={s} onClick={() => setStatus(s)} className={status === s ? "px-3 py-1.5 rounded-lg border border-cyan-500/40 text-cyan-400 text-xs" : "px-3 py-1.5 rounded-lg border border-slate-800 text-slate-400 text-xs"}>{s}</button>)}
-        <input className="ml-auto w-64 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" placeholder="Invoice / username / Telegram ID" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input className="ml-auto w-64 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" placeholder="Invoice / email / username / Telegram ID" value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
       <div className="bg-slate-900/80 border border-slate-800 rounded-xl overflow-x-auto">
         <table className="w-full text-left text-sm">
@@ -44,13 +63,15 @@ export default function Orders() {
           <tbody>
             {orders.map((o) => <tr key={o._id} className="border-b border-slate-800/60">
               <td className="px-4 py-3 font-mono text-cyan-400">{o.invoice_id}</td>
-              <td className="px-4 py-3 text-xs">{o.username || o.user_tid}<div className="text-slate-500">{o.user_tid}</div></td>
+              <td className="px-4 py-3 text-xs">{o.customer_email || o.username || o.user_tid || "-"}<div className="text-slate-500">{o.user_tid || (o.customer_id ? "Akun web" : "-")}</div></td>
               <td className="px-4 py-3 text-xs">{(o.items || []).map((i) => i.name + " ×" + i.qty).join(", ")}</td>
               <td className="px-4 py-3 font-mono">{fmtAmount(o.total, o.currency)}</td>
               <td className="px-4 py-3"><span className="text-xs uppercase">{o.status}</span></td>
               <td className="px-4 py-3 text-xs text-slate-500">{fmtDate(o.created_at)}</td>
               <td className="px-4 py-3 text-right flex gap-2 justify-end">
                 <button className="text-cyan-400 text-xs" onClick={() => openDetail(o)}>Detail</button>
+                {o.status === "service_waiting" && <button className="text-emerald-400 text-xs" onClick={() => completeService(o)}>Selesaikan</button>}
+                {o.status === "delivered" && o.delivery_email_status === "failed" && <button className="text-amber-400 text-xs" onClick={() => retryEmail(o)}>Kirim email ulang</button>}
                 {(o.status === "failed" || o.status === "delivery_failed") && <button className="text-rose-400 text-xs" onClick={() => refund(o)}>Refund</button>}
               </td>
             </tr>)}
@@ -67,7 +88,7 @@ export default function Orders() {
               <div className="grid grid-cols-2 gap-3">
                 <div><span className="text-slate-500">Invoice</span><div className="font-mono text-cyan-400">{detail.invoice_id}</div></div>
                 <div><span className="text-slate-500">Order ID</span><div className="font-mono text-xs break-all">{detail._id}</div></div>
-                <div><span className="text-slate-500">User</span><div>{detail.username || "-"} · {detail.user_tid}</div></div>
+                <div><span className="text-slate-500">User</span><div>{detail.customer_email || detail.username || "-"}<div className="text-xs text-slate-500">{detail.user_tid || (detail.customer_id ? "Akun web" : "-")}</div></div></div>
                 <div><span className="text-slate-500">Tanggal</span><div>{fmtDate(detail.created_at)}</div></div>
                 <div><span className="text-slate-500">Status</span><div className="uppercase">{detail.status}</div></div>
                 <div><span className="text-slate-500">Pembayaran</span><div>{detail.payment_method} · {detail.currency}</div></div>
@@ -90,6 +111,8 @@ export default function Orders() {
                 <div>Paid at: {detail.paid_at ? fmtDate(detail.paid_at) : "-"}</div>
                 <div>Delivered at: {detail.delivered_at ? fmtDate(detail.delivered_at) : "-"}</div>
                 <div>Delivery error: {detail.delivery_error || "-"}</div>
+                <div>Email order: {detail.delivery_email_status || "-"}</div>
+                <div>Email error: {detail.delivery_email_error || "-"}</div>
               </div>
             </div>
           )}

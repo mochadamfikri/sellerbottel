@@ -14,6 +14,8 @@ const empty = {
   stock_mode: "auto",
   inventory_mode: "table",
   stock: "",
+  minimum_purchase_qty: 1,
+  image_url: "",
   delivery_type: "link",
   content: "",
   wait_minutes: 5,
@@ -28,6 +30,9 @@ export default function Products() {
   const [form, setForm] = useState(empty);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [imageFile, setImageFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState("");
+  const [removeImage, setRemoveImage] = useState(false);
 
   const [importOpen, setImportOpen] = useState(false);
   const [importFile, setImportFile] = useState(null);
@@ -58,6 +63,9 @@ export default function Products() {
 
   const openCreate = () => {
     setForm(empty);
+    setImageFile(null);
+    setImagePreview("");
+    setRemoveImage(false);
     setEditId(null);
     setOpen(true);
   };
@@ -73,11 +81,16 @@ export default function Products() {
       stock_mode: p.stock_mode === "manual" ? "manual" : "auto",
       inventory_mode: p.inventory_mode === "telegram_session" ? "telegram_session" : "table",
       stock: p.manual_stock ?? p.stock ?? "",
+      minimum_purchase_qty: p.minimum_purchase_qty ?? 1,
+      image_url: p.image_url || "",
       delivery_type: p.delivery_type || "link",
       content: p.service_message_template || p.content || "",
       wait_minutes: p.service_wait_minutes || 5,
       active: p.active !== false,
     });
+    setImageFile(null);
+    setImagePreview(p.image_url || "");
+    setRemoveImage(false);
     setEditId(p._id);
     setOpen(true);
   };
@@ -99,6 +112,9 @@ export default function Products() {
       fd.append("service_wait_minutes", form.product_kind === "service" ? String(form.wait_minutes || 5) : "");
       fd.append("service_message_template", form.product_kind === "service" ? form.content : "");
       fd.append("active", form.active);
+      fd.append("minimum_purchase_qty", String(form.minimum_purchase_qty || 1));
+      if (imageFile) fd.append("image", imageFile);
+      if (editId) fd.append("remove_image", removeImage ? "true" : "false");
 
       if (editId) {
         await api.put("/admin/products/" + editId, fd);
@@ -290,8 +306,13 @@ export default function Products() {
             {products.map((p) => (
               <tr key={p._id} className="border-b border-slate-800/60 hover:bg-slate-800/30 align-top">
                 <td className="px-4 py-3">
-                  <p className="font-medium text-slate-200">{p.name}</p>
-                  <p className="text-xs text-slate-500 line-clamp-2">{p.description}</p>
+                  <div className="flex items-start gap-3">
+                    {p.image_url ? <img src={p.image_url} alt="" className="h-12 w-12 shrink-0 rounded-md object-cover bg-slate-800" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} /> : null}
+                    <div>
+                      <p className="font-medium text-slate-200">{p.name}</p>
+                      <p className="text-xs text-slate-500 line-clamp-2">{p.description}</p>
+                    </div>
+                  </div>
                 </td>
                 <td className="px-4 py-3">
                   <span className="inline-flex items-center gap-2 text-xs text-slate-300">
@@ -434,6 +455,15 @@ export default function Products() {
             </div>
 
             <div>
+              <label className="text-xs text-slate-400">Foto Produk (JPG, PNG, WEBP · maks. 5 MB)</label>
+              <p className="mt-1 text-xs text-slate-500">Gambar otomatis diseragamkan ke kanvas 1200 × 1200 px tanpa memotong isi.</p>
+              <input type="file" accept="image/jpeg,image/png,image/webp" className={cls} onChange={(e) => { const f = e.target.files?.[0] || null; setImageFile(f); setRemoveImage(false); setImagePreview(f ? URL.createObjectURL(f) : form.image_url || ""); }} />
+              {imagePreview && <img src={imagePreview} alt="Pratinjau foto produk" className="mt-3 h-36 w-full rounded-lg border border-slate-700 bg-white object-contain p-2" />}
+              {editId && form.image_url && !imageFile && !removeImage && <button type="button" onClick={() => { setRemoveImage(true); setImagePreview(""); }} className="mt-2 text-xs font-medium text-rose-600 hover:text-rose-700">Hapus foto produk</button>}
+              {removeImage && <div className="mt-2 flex items-center justify-between rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"><span>Foto akan dihapus saat perubahan disimpan.</span><button type="button" onClick={() => { setRemoveImage(false); setImagePreview(form.image_url); }} className="font-semibold underline">Batalkan</button></div>}
+            </div>
+
+            <div>
               <label className="text-xs text-slate-400">Deskripsi</label>
               <textarea rows={3} className={cls} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
             </div>
@@ -447,6 +477,12 @@ export default function Products() {
                 <label className="text-xs text-slate-400">Harga IDR (opsional)</label>
                 <input type="number" className={cls} value={form.price_idr} onChange={(e) => setForm({ ...form, price_idr: e.target.value })} />
               </div>
+            </div>
+
+            <div>
+              <label className="text-xs text-slate-400">Minimum pembelian (pcs)</label>
+              <input type="number" min="1" max="1000" step="1" className={cls} value={form.minimum_purchase_qty} onChange={(e) => setForm({ ...form, minimum_purchase_qty: e.target.value })} />
+              <p className="mt-1 text-[11px] text-slate-500">Berlaku hanya untuk produk ini. Pembeli harus memasukkan jumlah minimal saat checkout.</p>
             </div>
 
             {form.product_kind === "digital" ? (

@@ -5,6 +5,11 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 load_dotenv(Path(__file__).parent / '.env')
 
+try:
+    _qris_default_minutes = max(1, min(60, int(os.environ.get("GOPAY_QR_TIMEOUT_MINUTES", "5"))))
+except (TypeError, ValueError):
+    _qris_default_minutes = 5
+
 client = AsyncIOMotorClient(os.environ['MONGO_URL'])
 db = client[os.environ['DB_NAME']]
 
@@ -25,6 +30,11 @@ DEFAULT_SETTINGS = {
     "cached_rate": 16000.0,
     "rate_updated_at": None,
     "qris_enabled": os.environ.get("GOPAY_ENABLED", "").lower() in {"1", "true", "yes"},
+    # Storefront QRIS can be enabled independently so web settings never change bot methods.
+    "store_qris_enabled": os.environ.get("STORE_QRIS_ENABLED", os.environ.get("GOPAY_ENABLED", "")).lower() in {"1", "true", "yes"},
+    "gopay_qr_timeout_minutes": _qris_default_minutes,
+    "whatsapp_contact_number": "+628123456789",
+    "telegram_contact_target": "",
     "bank_enabled": True,
     "stats_reset_at": None,
     "join_gate_enabled": True,
@@ -62,6 +72,10 @@ async def ensure_indexes():
         pass
 
     await db.bot_users.create_index("telegram_id", unique=True)
+    await db.store_customers.create_index("email", unique=True)
+    await db.store_customers.create_index("telegram_id", unique=True, partialFilterExpression={"telegram_id": {"$type": "number"}})
+    await db.store_email_codes.create_index([("email", 1), ("purpose", 1)], unique=True)
+    await db.store_email_codes.create_index("expires_at", expireAfterSeconds=86400)
     await db.bot_users.create_index("silent_blocked")
     await db.bot_chat_messages.create_index([("chat_id", 1), ("message_id", 1)], unique=True)
     await db.bot_chat_messages.create_index([("chat_id", 1), ("created_at", -1)])
@@ -71,8 +85,14 @@ async def ensure_indexes():
         partialFilterExpression={"tx_hash": {"$type": "string"}},
     )
     await db.deposits.create_index([("user_tid", 1), ("created_at", -1)])
+    await db.deposits.create_index([("customer_id", 1), ("created_at", -1)])
     await db.purchases.create_index("invoice_id", unique=True, sparse=True)
     await db.purchases.create_index([("user_tid", 1), ("created_at", -1)])
+    await db.purchases.create_index(
+        [("customer_id", 1), ("idempotency_key", 1)], unique=True,
+        name="store_customer_idempotency_unique",
+        partialFilterExpression={"idempotency_key": {"$type": "string"}},
+    )
     await db.login_attempts.create_index("identifier", unique=True)
     await db.products.create_index([("active", 1), ("created_at", -1)])
     await db.inventory_items.create_index([("product_id", 1), ("status", 1)])

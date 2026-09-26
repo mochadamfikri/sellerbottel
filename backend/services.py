@@ -24,20 +24,96 @@ async def user_lang(tid) -> str:
     return (u or {}).get("lang") or "id"
 
 
+async def apply_pending_wallet_merge(customer_id: str) -> bool:
+    """Apply an email account's captured wallet transfer to its Telegram wallet once."""
+    customer = await db.store_customers.find_one({"_id": customer_id})
+    if not customer or not customer.get("telegram_id"):
+        return False
+    transfer = customer.get("wallet_merge") or {}
+    merge_id = transfer.get("id")
+    if not merge_id or transfer.get("status") == "complete":
+        return bool(merge_id and transfer.get("status") == "complete")
+
+    telegram_id = customer["telegram_id"]
+    await db.bot_users.update_one(
+        {"telegram_id": telegram_id},
+        {"$setOnInsert": {"telegram_id": telegram_id, "balance_idr": 0, "balance_usd": 0}},
+        upsert=True,
+    )
+    result = await db.bot_users.update_one(
+        {"telegram_id": telegram_id, "wallet_merge_ids": {"$ne": merge_id}},
+        {
+            "$inc": {
+                "balance_idr": float(transfer.get("amount_idr") or 0),
+                "balance_usd": float(transfer.get("amount_usd") or 0),
+            },
+            "$addToSet": {"wallet_merge_ids": merge_id},
+        },
+    )
+    if result.modified_count != 1:
+        bot_user = await db.bot_users.find_one(
+            {"telegram_id": telegram_id, "wallet_merge_ids": merge_id}, {"_id": 1}
+        )
+        if not bot_user:
+            return False
+
+    await db.store_customers.update_one(
+        {"_id": customer_id, "wallet_merge.id": merge_id, "wallet_merge.status": {"$ne": "complete"}},
+        {"$set": {"wallet_merge.status": "complete", "wallet_merge.completed_at": now_iso()}},
+    )
+    return True
+
+
 async def credit_deposit(deposit: dict, note: str = ""):
     amount = deposit.get("credited_amount") or deposit["amount"]
     field = CUR_FIELD[deposit["currency"]]
     deposit_id = deposit["_id"]
 
-    user_result = await db.bot_users.update_one(
-        {"telegram_id": deposit["user_tid"], "deposit_credit_ids": {"$ne": deposit_id}},
-        {"$inc": {field: amount}, "$addToSet": {"deposit_credit_ids": deposit_id}},
-    )
-
-    if user_result.modified_count == 0:
-        user = await db.bot_users.find_one({"telegram_id": deposit["user_tid"]}, {"deposit_credit_ids": 1})
-        if not user or deposit_id not in user.get("deposit_credit_ids", []):
+    customer_id = deposit.get("customer_id")
+    if customer_id:
+        customer = await db.store_customers.find_one({"_id": customer_id})
+        if not customer:
             return False
+        if customer.get("telegram_id"):
+            await apply_pending_wallet_merge(customer_id)
+            telegram_id = customer["telegram_id"]
+            user_result = await db.bot_users.update_one(
+                {"telegram_id": telegram_id, "deposit_credit_ids": {"$ne": deposit_id}},
+                {"$inc": {field: amount}, "$addToSet": {"deposit_credit_ids": deposit_id}},
+            )
+            user = await db.bot_users.find_one({"telegram_id": telegram_id}, {"deposit_credit_ids": 1})
+            if user_result.modified_count == 0 and (not user or deposit_id not in user.get("deposit_credit_ids", [])):
+                return False
+        else:
+            user_result = await db.store_customers.update_one(
+                {"_id": customer_id, "telegram_id": {"$exists": False}, "deposit_credit_ids": {"$ne": deposit_id}},
+                {"$inc": {field: amount}, "$addToSet": {"deposit_credit_ids": deposit_id}},
+            )
+            if user_result.modified_count == 0:
+                latest = await db.store_customers.find_one({"_id": customer_id})
+                if latest and latest.get("telegram_id"):
+                    await apply_pending_wallet_merge(customer_id)
+                    telegram_id = latest["telegram_id"]
+                    user_result = await db.bot_users.update_one(
+                        {"telegram_id": telegram_id, "deposit_credit_ids": {"$ne": deposit_id}},
+                        {"$inc": {field: amount}, "$addToSet": {"deposit_credit_ids": deposit_id}},
+                    )
+                    credited = await db.bot_users.find_one({"telegram_id": telegram_id}, {"deposit_credit_ids": 1})
+                    if user_result.modified_count == 0 and (not credited or deposit_id not in credited.get("deposit_credit_ids", [])):
+                        return False
+                else:
+                    credited = await db.store_customers.find_one({"_id": customer_id}, {"deposit_credit_ids": 1})
+                    if not credited or deposit_id not in credited.get("deposit_credit_ids", []):
+                        return False
+    else:
+        user_result = await db.bot_users.update_one(
+            {"telegram_id": deposit["user_tid"], "deposit_credit_ids": {"$ne": deposit_id}},
+            {"$inc": {field: amount}, "$addToSet": {"deposit_credit_ids": deposit_id}},
+        )
+        if user_result.modified_count == 0:
+            user = await db.bot_users.find_one({"telegram_id": deposit["user_tid"]}, {"deposit_credit_ids": 1})
+            if not user or deposit_id not in user.get("deposit_credit_ids", []):
+                return False
 
     await db.deposits.update_one(
         {"_id": deposit_id, "status": "pending"},
@@ -49,12 +125,15 @@ async def credit_deposit(deposit: dict, note: str = ""):
         }},
     )
 
-    lang = await user_lang(deposit["user_tid"])
-    await _send_deposit_notice(deposit, t(lang, "dep_approved", amount=fmt_amount(amount, deposit["currency"])))
+    if deposit.get("user_tid"):
+        lang = await user_lang(deposit["user_tid"])
+        await _send_deposit_notice(deposit, t(lang, "dep_approved", amount=fmt_amount(amount, deposit["currency"])))
     return True
 
 
 async def _send_deposit_notice(deposit: dict, message: str):
+    if not deposit.get("user_tid"):
+        return
     bot_id = deposit.get("reseller_bot_id")
     if bot_id:
         try:
@@ -72,9 +151,10 @@ async def reject_deposit(deposit: dict, note: str = ""):
     await db.deposits.update_one({"_id": deposit["_id"]}, {"$set": {
         "status": "rejected", "decided_at": now_iso(), "note": note,
     }})
-    lang = await user_lang(deposit["user_tid"])
-    reason = t(lang, "reason_label", r=note) if note else ""
-    await _send_deposit_notice(deposit, t(lang, "dep_rejected", amount=fmt_amount(deposit["amount"], deposit["currency"]), reason=reason))
+    if deposit.get("user_tid"):
+        lang = await user_lang(deposit["user_tid"])
+        reason = t(lang, "reason_label", r=note) if note else ""
+        await _send_deposit_notice(deposit, t(lang, "dep_rejected", amount=fmt_amount(deposit["amount"], deposit["currency"]), reason=reason))
 
 
 async def cancel_deposit(deposit: dict):
@@ -82,18 +162,24 @@ async def cancel_deposit(deposit: dict):
     field = CUR_FIELD[deposit["currency"]]
     deposit_id = deposit["_id"]
 
-    result = await db.bot_users.update_one(
-        {
-            "telegram_id": deposit["user_tid"],
-            field: {"$gte": amount},
-            "deposit_debit_ids": {"$ne": deposit_id},
-        },
+    if deposit.get("customer_id"):
+        customer = await db.store_customers.find_one({"_id": deposit["customer_id"]})
+        if not customer:
+            raise ValueError("Akun pelanggan tidak ditemukan.")
+        if customer.get("telegram_id"):
+            await apply_pending_wallet_merge(deposit["customer_id"])
+            wallet, query = db.bot_users, {"telegram_id": customer["telegram_id"]}
+        else:
+            wallet, query = db.store_customers, {"_id": deposit["customer_id"], "telegram_id": {"$exists": False}}
+    else:
+        wallet, query = db.bot_users, {"telegram_id": deposit["user_tid"]}
+    result = await wallet.update_one(
+        {**query, field: {"$gte": amount}, "deposit_debit_ids": {"$ne": deposit_id}},
         {"$inc": {field: -amount}, "$addToSet": {"deposit_debit_ids": deposit_id}},
     )
-
     if result.modified_count == 0:
-        user = await db.bot_users.find_one({"telegram_id": deposit["user_tid"]}, {"deposit_debit_ids": 1})
-        if not user or deposit_id not in user.get("deposit_debit_ids", []):
+        user = await wallet.find_one({**query, "deposit_debit_ids": deposit_id}, {"_id": 1})
+        if not user:
             raise ValueError("Saldo pengguna tidak cukup atau deposit sudah dibatalkan.")
 
     await db.deposits.update_one(
@@ -101,8 +187,9 @@ async def cancel_deposit(deposit: dict):
         {"$set": {"status": "cancelled", "decided_at": now_iso()}},
     )
 
-    lang = await user_lang(deposit["user_tid"])
-    await _send_deposit_notice(deposit, t(lang, "dep_cancelled", amount=fmt_amount(amount, deposit["currency"])))
+    if deposit.get("user_tid"):
+        lang = await user_lang(deposit["user_tid"])
+        await _send_deposit_notice(deposit, t(lang, "dep_cancelled", amount=fmt_amount(amount, deposit["currency"])))
     return True
 
 

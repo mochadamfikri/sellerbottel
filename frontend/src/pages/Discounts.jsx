@@ -10,11 +10,24 @@ const empty = {
   value: "",
   min_qty: 1,
   max_qty: "",
+  priority: 0,
   fixed_currency: "IDR",
+  starts_at: "",
+  ends_at: "",
   active: true,
 };
 
 const cls = "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
+
+const toLocalInput = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+};
+
+const fromLocalInput = (value) => value ? new Date(value).toISOString() : null;
 
 export default function Discounts() {
   const [discounts, setDiscounts] = useState([]);
@@ -59,13 +72,18 @@ export default function Discounts() {
         product_ids: allProducts ? [] : form.product_ids,
         mode: form.mode,
         value: parseFloat(form.value),
-        min_qty: form.mode === "fixed" ? parseInt(form.min_qty || 1, 10) : 1,
-        max_qty: form.mode === "fixed" && form.max_qty ? parseInt(form.max_qty, 10) : null,
+        min_qty: parseInt(form.min_qty || 1, 10),
+        max_qty: form.max_qty ? parseInt(form.max_qty, 10) : null,
         fixed_currency: form.mode === "fixed" ? form.fixed_currency : null,
+        starts_at: fromLocalInput(form.starts_at),
+        ends_at: fromLocalInput(form.ends_at),
         active: form.active,
-        priority: 0,
+        priority: parseInt(form.priority || 0, 10),
       };
-      if (!payload.name || !Number.isFinite(payload.value) || payload.value <= 0) {
+      if (!payload.name || !Number.isFinite(payload.value) || payload.value <= 0 ||
+          (form.starts_at && Number.isNaN(new Date(form.starts_at).getTime())) ||
+          (form.ends_at && Number.isNaN(new Date(form.ends_at).getTime())) ||
+          (form.starts_at && form.ends_at && new Date(form.ends_at) <= new Date(form.starts_at))) {
         toast.error("Nama dan nilai discount wajib diisi.");
         return;
       }
@@ -103,8 +121,11 @@ export default function Discounts() {
       value: String(d.value ?? ""),
       min_qty: d.min_qty ?? 1,
       max_qty: d.max_qty ?? "",
+      priority: d.priority ?? 0,
       fixed_currency: d.fixed_currency || "IDR",
       active: d.active !== false,
+      starts_at: toLocalInput(d.starts_at),
+      ends_at: toLocalInput(d.ends_at),
     });
   };
 
@@ -195,11 +216,15 @@ export default function Discounts() {
         </div>
 
         {form.mode === "percent" ? (
-          <div>
+          <div className="space-y-3">
             <label className="text-xs text-slate-400">Nilai Persentase</label>
             <div className="relative">
               <input type="number" min="0.01" max="100" step="0.01" className={cls + " pr-10"} placeholder="10" value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} />
               <span className="absolute right-3 top-2.5 text-xs text-slate-500">%</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div><label className="text-xs text-slate-400">Quantity minimum</label><input type="number" min="1" className={cls} value={form.min_qty} onChange={(e) => setForm({ ...form, min_qty: e.target.value })} /></div>
+              <div><label className="text-xs text-slate-400">Quantity maksimum (opsional)</label><input type="number" min="1" className={cls} value={form.max_qty} onChange={(e) => setForm({ ...form, max_qty: e.target.value })} /></div>
             </div>
           </div>
         ) : (
@@ -236,6 +261,23 @@ export default function Discounts() {
           </div>
         )}
 
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-slate-400">Mulai promo (opsional)</label>
+            <input type="datetime-local" className={cls} value={form.starts_at} onChange={(e) => setForm({ ...form, starts_at: e.target.value })} />
+          </div>
+          <div>
+            <label className="text-xs text-slate-400">Berakhir (opsional)</label>
+            <input type="datetime-local" className={cls} value={form.ends_at} onChange={(e) => setForm({ ...form, ends_at: e.target.value })} />
+          </div>
+        </div>
+
+        <div>
+          <label className="text-xs text-slate-400">Prioritas aturan</label>
+          <input type="number" min="-1000" max="1000" className={cls} value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })} />
+          <p className="text-[11px] text-slate-500 mt-1">Jika beberapa aturan cocok, prioritas tertinggi dipakai; jika sama, diskon nominal terbesar yang dipakai.</p>
+        </div>
+
         <label className="flex items-center gap-2 text-sm text-slate-300">
           <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} />
           Discount aktif
@@ -271,9 +313,8 @@ export default function Discounts() {
                   {d.product_ids?.length ? d.product_ids.map((id) => productMap[id] || id).join(", ") : "Semua Product"}
                 </td>
                 <td className="px-4 py-3 font-mono text-xs">
-                  {d.mode === "percent"
-                    ? String(d.value) + "%"
-                    : String(d.fixed_currency || "currency") + " " + String(d.value) + "/unit mulai ×" + String(d.min_qty || 1) + (d.max_qty ? " sampai ×" + String(d.max_qty) : "+")}
+                  {(d.mode === "percent" ? String(d.value) + "%" : String(d.fixed_currency || "currency") + " " + String(d.value) + "/unit") +
+                    " · qty " + String(d.min_qty || 1) + (d.max_qty ? "–" + String(d.max_qty) : "+") + " · prioritas " + String(d.priority || 0)}
                 </td>
                 <td className="px-4 py-3"><span className={d.active ? "text-emerald-400" : "text-slate-600"}>{d.active ? "Aktif" : "Off"}</span></td>
                 <td className="px-4 py-3 text-right">

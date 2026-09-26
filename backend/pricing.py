@@ -42,7 +42,7 @@ async def price_for_product(product, currency, quantity=1):
     )
 
     best = None
-    best_priority = None
+    best_rank = None
     async for discount in cursor:
         if not _active_date(discount):
             continue
@@ -81,12 +81,15 @@ async def price_for_product(product, currency, quantity=1):
             "discount_per_unit": discount_per_unit,
         }
 
-        if best is None:
+        rank = (
+            int(discount.get("priority", 0)),
+            round(float(discount_per_unit), 8),
+            int(discount.get("min_qty", 1)),
+            str(discount.get("_id") or ""),
+        )
+        if best_rank is None or rank > best_rank:
             best = candidate
-            best_priority = (
-                int(discount.get("priority", 0)),
-                int(discount.get("min_qty", 1)),
-            )
+            best_rank = rank
 
     discount_per_unit = best["discount_per_unit"] if best else 0.0
     if currency == "USD":

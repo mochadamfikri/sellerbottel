@@ -17,6 +17,21 @@ from services import credit_deposit, notify_admin, now_iso, user_lang
 NODE_DIR = os.path.join(os.path.dirname(__file__), "gobiz")
 
 
+async def qris_expiry_minutes():
+    """Return the admin-configured QRIS lifetime, falling back to .env / five minutes."""
+    settings = await get_settings()
+    raw = settings.get("gopay_qr_timeout_minutes")
+    if raw is None:
+        raw = os.environ.get("GOPAY_QR_TIMEOUT_MINUTES")
+    try:
+        if raw is None:
+            raw = os.environ.get("QRIS_EXPIRY_MINUTES", "5")
+        minutes = int(raw)
+    except (TypeError, ValueError):
+        minutes = 5
+    return min(60, max(1, minutes))
+
+
 def _parse_node_json(stdout):
     text = (stdout or "").strip()
     if not text:
@@ -83,7 +98,11 @@ async def create_gopay_payment(user, amount, platform_code=None):
 
     deposit_id = str(uuid.uuid4())
     payment_id = str(uuid.uuid4())
-    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+    customer_id = user.get("customer_id")
+    telegram_id = user.get("telegram_id")
+    payment_scope = "store" if customer_id else "bot1"
+    expires_in_minutes = await qris_expiry_minutes()
+    expires = datetime.now(timezone.utc) + timedelta(minutes=expires_in_minutes)
 
     active_amount = None
     selected_code = None
@@ -93,11 +112,12 @@ async def create_gopay_payment(user, amount, platform_code=None):
             suffix = secrets.randbelow(900) + 100
         candidate = deposit_total + suffix
         try:
-            await db.gopay_payments.insert_one({
+            payment_doc = {
                 "_id": payment_id,
-                "payment_scope": "bot1",
+                "payment_scope": payment_scope,
                 "deposit_id": deposit_id,
-                "user_tid": user["telegram_id"],
+                "user_tid": telegram_id,
+                "customer_id": customer_id,
                 "base_amount": amount,
                 "payment_amount": candidate,
                 "active_payment_amount": candidate,
@@ -106,7 +126,8 @@ async def create_gopay_payment(user, amount, platform_code=None):
                 "created_at": now_iso(),
                 "expires_at": expires.isoformat(),
                 "confirmed_at": None,
-            })
+            }
+            await db.gopay_payments.insert_one(payment_doc)
             active_amount = candidate
             selected_code = suffix
             break
@@ -118,7 +139,8 @@ async def create_gopay_payment(user, amount, platform_code=None):
 
     deposit = {
         "_id": deposit_id,
-        "user_tid": user["telegram_id"],
+        "user_tid": telegram_id,
+        "customer_id": customer_id,
         "username": user.get("username", ""),
         "first_name": user.get("first_name", ""),
         "method": "gopay",
@@ -135,7 +157,7 @@ async def create_gopay_payment(user, amount, platform_code=None):
         "proof_file_id": None,
         "status": "pending",
         "auto_verified": True,
-        "note": "Menunggu pembayaran GoPay QR",
+        "note": "Menunggu pembayaran QRIS All Payment",
         "created_at": now_iso(),
         "decided_at": None,
         "expires_at": expires.isoformat(),
@@ -156,6 +178,8 @@ async def create_gopay_payment(user, amount, platform_code=None):
             "platform_code": selected_code,
             "image": image,
             "expires_at": expires,
+            "expires_in_minutes": expires_in_minutes,
+            "payment_id": payment_id,
         }
     except Exception:
         await db.gopay_payments.delete_one({"_id": payment_id})
@@ -172,7 +196,7 @@ async def _flag_late_checkout(tx, amount):
     if not paid_at:
         return
     payment = await db.gopay_payments.find_one({
-        "payment_scope": "bot1", "payment_type": "checkout",
+        "payment_scope": {"$in": ["bot1", "store"]}, "payment_type": "checkout",
         "payment_amount": amount, "status": "expired",
     }, sort=[("created_at", -1)])
     if not payment:
@@ -221,7 +245,7 @@ def _transaction_time(value):
 async def poll_gopay_once():
     from direct_checkout import expire_qris_orders, finalize_qris_order
     async for payment in db.gopay_payments.find({
-        "payment_scope": "bot1", "payment_type": "checkout",
+        "payment_scope": {"$in": ["bot1", "store"]}, "payment_type": "checkout",
         "status": "confirmed", "tx_id": {"$ne": None},
     }).sort("confirmed_at", -1).limit(100):
         order = await db.purchases.find_one({"_id": payment.get("order_id")}, {"status": 1})
@@ -236,39 +260,6 @@ async def poll_gopay_once():
         return {"checked": False, "matched": 0}
 
     now = datetime.now(timezone.utc)
-    expired = await db.gopay_payments.find(
-        {
-            "status": "pending",
-            "payment_scope": {"$ne": "bot2"},
-            "payment_type": {"$ne": "checkout"},
-            "expires_at": {"$lte": now.isoformat()},
-            "expiry_notified_at": {"$exists": False},
-        },
-        {"_id": 1, "user_tid": 1, "deposit_id": 1, "payment_amount": 1},
-    ).to_list(500)
-
-    await db.gopay_payments.update_many(
-        {"status": "pending", "payment_scope": {"$ne": "bot2"},
-         "payment_type": {"$ne": "checkout"}, "expires_at": {"$lte": now.isoformat()}},
-        {"$set": {"status": "expired", "expired_at": now_iso(), "expiry_notified_at": now_iso()}, "$unset": {"active_payment_amount": ""}},
-    )
-
-    for payment in expired:
-        try:
-            lang = await user_lang(payment["user_tid"])
-            await __import__("tgapi").send_message(
-                payment["user_tid"],
-                "⚠️ <b>Pembayaran Kedaluwarsa</b>\n\n"
-                "QR GoPay untuk pembayaran ini sudah tidak berlaku.\n"
-                "Silakan buat pembayaran baru jika masih ingin melakukan deposit.",
-            )
-        except Exception:
-            pass
-    await db.deposits.update_many(
-        {"method": "gopay", "bot2": {"$ne": True}, "status": "pending", "expires_at": {"$lte": now.isoformat()}},
-        {"$set": {"status": "expired", "decided_at": now_iso()}},
-    )
-
     try:
         histories = await _history()
     except Exception:
@@ -296,13 +287,10 @@ async def poll_gopay_once():
         if not candidate:
             await _flag_late_checkout(tx, tx_amount)
             continue
-        if candidate.get("payment_type") == "checkout":
-            paid_at = _transaction_time(tx.get("transaction_time"))
-            created_at = _transaction_time(candidate.get("created_at"))
-            expires_at = _transaction_time(candidate.get("expires_at"))
-            if not paid_at or not created_at or not expires_at or not (created_at <= paid_at <= expires_at):
-                continue
-        elif candidate.get("expires_at", "") <= now.isoformat():
+        paid_at = _transaction_time(tx.get("transaction_time"))
+        created_at = _transaction_time(candidate.get("created_at"))
+        expires_at = _transaction_time(candidate.get("expires_at"))
+        if not paid_at or not created_at or not expires_at or not (created_at <= paid_at <= expires_at):
             continue
 
         query = {
@@ -311,8 +299,6 @@ async def poll_gopay_once():
                 "payment_scope": {"$ne": "bot2"},
                 "active_payment_amount": tx_amount,
             }
-        if candidate.get("payment_type") != "checkout":
-            query["expires_at"] = {"$gt": now.isoformat()}
         payment = await db.gopay_payments.find_one_and_update(
             query,
             {
@@ -328,7 +314,7 @@ async def poll_gopay_once():
         if not payment:
             continue
 
-        if payment.get("payment_type") == "checkout" and payment.get("payment_scope") == "bot1":
+        if payment.get("payment_type") == "checkout" and payment.get("payment_scope") in {"bot1", "store"}:
             await finalize_qris_order(payment["order_id"], tx_id)
             matched += 1
             continue
@@ -342,7 +328,46 @@ async def poll_gopay_once():
         await credit_deposit(deposit, note=f"GoPay QR terverifikasi. TX {tx_id}")
         matched += 1
 
+    # Reconcile gateway history before expiring pending records, so payments made
+    # before the deadline still succeed even when a polling cycle runs late.
+    expired = await db.gopay_payments.find(
+        {
+            "status": "pending",
+            "payment_scope": {"$ne": "bot2"},
+            "payment_type": {"$ne": "checkout"},
+            "expires_at": {"$lte": now.isoformat()},
+            "expiry_notified_at": {"$exists": False},
+        },
+        {"_id": 1, "user_tid": 1, "deposit_id": 1, "payment_amount": 1, "qr_message_id": 1},
+    ).to_list(500)
+    await db.gopay_payments.update_many(
+        {"status": "pending", "payment_scope": {"$ne": "bot2"},
+         "payment_type": {"$ne": "checkout"}, "expires_at": {"$lte": now.isoformat()}},
+        {"$set": {"status": "expired", "expired_at": now_iso(), "expiry_notified_at": now_iso()}, "$unset": {"active_payment_amount": ""}},
+    )
+    for payment in expired:
+        try:
+            if not payment.get("user_tid"):
+                continue
+            from tgapi import delete_message, send_message
+            if payment.get("qr_message_id"):
+                try:
+                    await delete_message(payment["user_tid"], payment["qr_message_id"])
+                except Exception:
+                    logger.exception("Could not delete expired deposit QR message")
+            await send_message(
+                payment["user_tid"],
+                "⌛ <b>Pembayaran deposit expired</b>\n\n"
+                "Kode QR sudah tidak berlaku. Silakan request QR baru untuk melanjutkan deposit.",
+            )
+        except Exception:
+            logger.exception("Could not notify expired deposit QR")
+    await db.deposits.update_many(
+        {"method": "gopay", "bot2": {"$ne": True}, "status": "pending", "expires_at": {"$lte": now.isoformat()}},
+        {"$set": {"status": "expired", "decided_at": now_iso()}},
+    )
     await expire_qris_orders()
+
     return {"checked": True, "matched": matched}
 
 

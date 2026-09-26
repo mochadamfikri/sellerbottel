@@ -17,9 +17,28 @@ export default function UsersPage() {
 
   const load = useCallback(async (term = "") => {
     try {
-      const endpoint = term.trim() ? "/admin/users/search" : "/admin/users/all";
-      const { data } = await api.get(endpoint, term.trim() ? { params: { search: term } } : undefined);
-      setUsers(data);
+      const normalized = term.trim();
+      const endpoint = normalized ? "/admin/users/search" : "/admin/users/all";
+      const [telegramResponse, webResponse] = await Promise.all([
+        api.get(endpoint, normalized ? { params: { search: normalized } } : undefined),
+        api.get("/admin/store-customers", normalized ? { params: { search: normalized } } : undefined),
+      ]);
+      const merged = new Map((telegramResponse.data || []).map((u) => [String(u.telegram_id), { ...u }]));
+      const webOnly = [];
+      for (const customer of webResponse.data || []) {
+        const tid = customer.telegram_id == null ? null : String(customer.telegram_id);
+        if (tid && merged.has(tid)) {
+          merged.set(tid, { ...merged.get(tid), ...customer, _id: merged.get(tid)._id,
+            first_name: customer.first_name || merged.get(tid).first_name,
+            username: customer.username || merged.get(tid).username,
+            telegram_linked: true, web_account: true });
+        } else {
+          webOnly.push({ ...customer, first_name: customer.first_name || customer.email,
+            telegram_id: customer.telegram_id || null, username: customer.username || null,
+            telegram_linked: false, web_account: true, purchase_count: customer.purchase_count || 0 });
+        }
+      }
+      setUsers([...merged.values(), ...webOnly]);
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal memuat pengguna.");
     }
@@ -36,7 +55,7 @@ export default function UsersPage() {
       await api.post("/admin/users/" + adjust.telegram_id + "/adjust", { ...adjForm, amount: parseFloat(adjForm.amount) });
       toast.success("Saldo disesuaikan");
       setAdjust(null);
-      await load();
+      await load(search);
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
     } finally {
@@ -51,7 +70,7 @@ export default function UsersPage() {
       toast.success("Pengguna dibekukan");
       setFreeze(null);
       setFreezeReason("");
-      await load();
+      await load(search);
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
     } finally {
@@ -73,7 +92,7 @@ export default function UsersPage() {
     try {
       await api.post("/admin/users/" + u.telegram_id + "/unfreeze");
       toast.success("Blokir dibuka");
-      await load();
+      await load(search);
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
     }
@@ -87,12 +106,12 @@ export default function UsersPage() {
           <Search size={16} className="absolute left-3 top-2.5 text-slate-600" />
           <input
             className={cls + " pl-9"}
-            placeholder="Nama pengguna / username / ID Telegram"
+            placeholder="Email, nama, @username, atau ID Telegram"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <p className="text-xs text-slate-600 mt-2">Saat kosong, seluruh pengguna ditampilkan. Cari berdasarkan nama, @username, atau Telegram ID.</p>
+        <p className="text-xs text-slate-600 mt-2">Cari berdasarkan email, nama, @username, atau Telegram ID.</p>
         <p className="text-xs text-slate-500 mt-1">{users.length} pengguna ditampilkan</p>
       </div>
 
@@ -102,10 +121,13 @@ export default function UsersPage() {
             <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wide">
               <th className="px-4 py-3">Nama</th>
               <th className="px-4 py-3">Username</th>
+              <th className="px-4 py-3">Email</th>
               <th className="px-4 py-3">Telegram ID</th>
               <th className="px-4 py-3">USD</th>
               <th className="px-4 py-3">IDR</th>
               <th className="px-4 py-3">Order</th>
+              <th className="px-4 py-3">Login</th>
+              <th className="px-4 py-3">Telegram</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Bergabung</th>
               <th className="px-4 py-3 text-right">Aksi</th>
@@ -116,10 +138,13 @@ export default function UsersPage() {
               <tr key={u._id} className="border-b border-slate-800/60 hover:bg-slate-800/20">
                 <td className="px-4 py-3 text-slate-200">{u.first_name || "-"}</td>
                 <td className="px-4 py-3 font-mono text-xs text-slate-400">{u.username ? "@" + u.username : "—"}</td>
-                <td className="px-4 py-3 font-mono text-xs text-slate-300">{u.telegram_id}</td>
+                <td className="px-4 py-3 text-xs text-slate-300">{u.email || "—"}</td>
+                <td className="px-4 py-3 font-mono text-xs text-slate-300">{u.telegram_id || "—"}</td>
                 <td className="px-4 py-3 font-mono">{fmtUSD(u.balance_usd)}</td>
                 <td className="px-4 py-3 font-mono">{fmtIDR(u.balance_idr)}</td>
                 <td className="px-4 py-3 font-mono text-slate-400">{u.order_count || u.purchase_count || 0}</td>
+                <td className="px-4 py-3 text-xs text-slate-400">{u.email ? (u.telegram_id ? "Web + Telegram" : "Web") : "Telegram"}</td>
+                <td className="px-4 py-3 text-xs text-slate-400">{u.telegram_id ? (u.username ? `Connected · @${u.username}` : "Connected") : "Not connected"}</td>
                 <td className="px-4 py-3">
                   {u.frozen
                     ? <span className="text-[10px] uppercase px-2 py-0.5 rounded border bg-red-500/15 text-red-400 border-red-500/30">Dibekukan</span>
@@ -127,6 +152,7 @@ export default function UsersPage() {
                 </td>
                 <td className="px-4 py-3 text-xs text-slate-500">{fmtDate(u.created_at)}</td>
                 <td className="px-4 py-3 text-right">
+                  {u.telegram_id ? (
                   <div className="flex justify-end gap-1.5">
                     <button onClick={() => { setAdjust(u); setAdjForm({ currency: u.currency || "USD", amount: "", reason: "" }); }} title="Sesuaikan saldo" className="p-2 rounded-lg text-slate-400 hover:text-cyan-400 hover:bg-slate-800"><Wallet size={15} /></button>
                     {u.telegram_account_connected && (
@@ -136,10 +162,11 @@ export default function UsersPage() {
                       ? <button onClick={() => doUnfreeze(u)} title="Buka blokir" className="p-2 rounded-lg text-emerald-400 hover:bg-emerald-500/10"><Sun size={15} /></button>
                       : <button onClick={() => { setFreeze(u); setFreezeReason(""); }} title="Bekukan" className="p-2 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800"><Snowflake size={15} /></button>}
                   </div>
+                  ) : <span className="text-xs text-slate-600">—</span>}
                 </td>
               </tr>
             ))}
-            {!users.length && <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-500">Tidak ada pengguna yang cocok.</td></tr>}
+            {!users.length && <tr><td colSpan={12} className="px-4 py-10 text-center text-slate-500">Tidak ada pengguna yang cocok.</td></tr>}
           </tbody>
         </table>
       </div>

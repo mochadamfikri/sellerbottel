@@ -14,8 +14,15 @@ const tabs = [
   ["results", "Hasil"],
 ];
 
-const emptyCoupon = { code: "", type: "percent", value: "", currency: "IDR", quota_total: "", per_user_limit: 1, min_purchase: 0 };
+const emptyCoupon = { code: "", type: "percent", value: "", currency: "IDR", quota_total: "", per_user_limit: 1, min_purchase: 0, max_discount: "", product_ids: [], starts_at: "", ends_at: "", active: true };
 const emptyCampaign = { name: "", template: "", source_code: "", bot_link: "", product_id: "", account_ids: [], approval_required: true, daily_limit: 20, min_interval_seconds: 300, send_window_start: "09:00", send_window_end: "21:00" };
+
+function toLocalDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
 
 export default function Promotions() {
   const [tab, setTab] = useState("overview");
@@ -39,6 +46,7 @@ export default function Promotions() {
   const [manual, setManual] = useState({ tg_user_id: "", username: "", name: "", notes: "" });
   const [source, setSource] = useState({ code: "", kind: "campaign", label: "" });
   const [coupon, setCoupon] = useState(emptyCoupon);
+  const [editingCouponId, setEditingCouponId] = useState("");
   const [campaign, setCampaign] = useState(emptyCampaign);
   const [post, setPost] = useState({ account_id: "", group_id: "", message: "" });
   const [userMessage, setUserMessage] = useState({ account_id: "", prospect_id: "", message: "" });
@@ -144,22 +152,48 @@ export default function Promotions() {
     } catch (e) { error(e); }
   };
 
-  const createCoupon = async () => {
+  const saveCoupon = async () => {
     if (!coupon.code.trim() || !Number(coupon.value)) return toast.error("Kode dan nilai kupon wajib diisi.");
+    if (coupon.type === "percent" && Number(coupon.value) > 100) return toast.error("Diskon persen maksimal 100%.");
     try {
-      await api.post("/admin/promo/coupons", {
+      const payload = {
         ...coupon,
         code: coupon.code.trim().toUpperCase(),
         value: Number(coupon.value),
         quota_total: coupon.quota_total ? Number(coupon.quota_total) : null,
         per_user_limit: Number(coupon.per_user_limit || 1),
         min_purchase: Number(coupon.min_purchase || 0),
-        product_ids: [],
-        active: true,
-      });
-      toast.success("Kupon dibuat."); setCoupon(emptyCoupon); await load();
+        max_discount: coupon.max_discount ? Number(coupon.max_discount) : null,
+        product_ids: coupon.product_ids || [],
+        starts_at: coupon.starts_at ? new Date(coupon.starts_at).toISOString() : null,
+        ends_at: coupon.ends_at ? new Date(coupon.ends_at).toISOString() : null,
+      };
+      if (editingCouponId) await api.put("/admin/promo/coupons/" + editingCouponId, payload);
+      else await api.post("/admin/promo/coupons", payload);
+      toast.success(editingCouponId ? "Kupon diperbarui." : "Kupon dibuat.");
+      setCoupon(emptyCoupon); setEditingCouponId(""); await load();
     } catch (e) { error(e); }
   };
+
+  const editCoupon = (item) => {
+    setEditingCouponId(item._id);
+    setCoupon({
+      code: item.code || "", type: item.type || "percent", value: item.value ?? "",
+      currency: item.currency || "IDR", quota_total: item.quota_total ?? "",
+      per_user_limit: item.per_user_limit || 1, min_purchase: item.min_purchase || 0,
+      max_discount: item.max_discount ?? "", product_ids: item.product_ids || [],
+      starts_at: toLocalDateTime(item.starts_at), ends_at: toLocalDateTime(item.ends_at),
+      active: item.active !== false,
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const toggleCoupon = async (id) => {
+    try { await api.patch("/admin/promo/coupons/" + id + "/toggle"); await load(); }
+    catch (e) { error(e); }
+  };
+
+  const cancelCouponEdit = () => { setEditingCouponId(""); setCoupon(emptyCoupon); };
 
   const deleteCoupon = async (id) => {
     if (!window.confirm("Hapus kupon ini?")) return;
@@ -356,7 +390,21 @@ export default function Promotions() {
 
       {tab === "coupons" && (
         <div className="space-y-5">
-          <div className="grid xl:grid-cols-[420px_1fr] gap-5"><div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-3"><h2 className="font-semibold">Buat Kupon</h2><input className={cls} placeholder="Kode" value={coupon.code} onChange={(e) => setCoupon({ ...coupon, code: e.target.value })} /><div className="grid grid-cols-2 gap-2"><select className={cls} value={coupon.type} onChange={(e) => setCoupon({ ...coupon, type: e.target.value })}><option value="percent">Persen</option><option value="fixed">Nominal</option></select><input className={cls} type="number" placeholder="Nilai" value={coupon.value} onChange={(e) => setCoupon({ ...coupon, value: e.target.value })} /></div><div className="grid grid-cols-2 gap-2"><select className={cls} value={coupon.currency} onChange={(e) => setCoupon({ ...coupon, currency: e.target.value })}><option>IDR</option><option>USD</option></select><input className={cls} type="number" min="1" placeholder="Limit/user" value={coupon.per_user_limit} onChange={(e) => setCoupon({ ...coupon, per_user_limit: e.target.value })} /></div><input className={cls} type="number" min="0" placeholder="Kuota total" value={coupon.quota_total} onChange={(e) => setCoupon({ ...coupon, quota_total: e.target.value })} /><input className={cls} type="number" min="0" placeholder="Minimum belanja" value={coupon.min_purchase} onChange={(e) => setCoupon({ ...coupon, min_purchase: e.target.value })} /><button onClick={createCoupon} className="w-full bg-cyan-600 rounded-lg py-2">Buat Kupon</button></div><div className="bg-slate-900/80 border border-slate-800 rounded-xl overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-slate-800"><th className="p-3 text-left">Kode</th><th>Pemakaian</th><th>Status</th><th /></tr></thead><tbody>{coupons.map((c) => <tr key={c._id} className="border-b border-slate-800/70"><td className="p-3 font-mono">{c.code}</td><td>{c.used_count || 0}{c.quota_total == null ? "" : " / " + c.quota_total}</td><td>{c.active ? "Aktif" : "Nonaktif"}</td><td><button onClick={() => deleteCoupon(c._id)} className="text-rose-400"><Trash2 size={15} /></button></td></tr>)}</tbody></table>{!coupons.length && <p className="p-5 text-sm text-slate-500">Belum ada kupon.</p>}</div></div>
+          <div className="grid xl:grid-cols-[420px_1fr] gap-5">
+            <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-3">
+              <div className="flex items-center justify-between gap-2"><h2 className="font-semibold">{editingCouponId ? "Edit Kupon" : "Buat Kupon"}</h2>{editingCouponId && <button onClick={cancelCouponEdit} className="text-xs text-slate-400 hover:text-white">Batal</button>}</div>
+              <input className={cls} placeholder="Kode kupon" value={coupon.code} onChange={(e) => setCoupon({ ...coupon, code: e.target.value })} />
+              <div className="grid grid-cols-2 gap-2"><select className={cls} value={coupon.type} onChange={(e) => setCoupon({ ...coupon, type: e.target.value })}><option value="percent">Persentase</option><option value="fixed">Nominal</option></select><input className={cls} type="number" min="0.01" max={coupon.type === "percent" ? 100 : undefined} step="any" placeholder={coupon.type === "percent" ? "Diskon %" : "Nilai diskon"} value={coupon.value} onChange={(e) => setCoupon({ ...coupon, value: e.target.value })} /></div>
+              <div className="grid grid-cols-2 gap-2"><select className={cls} value={coupon.currency} onChange={(e) => setCoupon({ ...coupon, currency: e.target.value })}><option>IDR</option><option>USD</option></select><input className={cls} type="number" min="1" placeholder="Batas penggunaan/user" value={coupon.per_user_limit} onChange={(e) => setCoupon({ ...coupon, per_user_limit: e.target.value })} /></div>
+              <div className="grid grid-cols-2 gap-2"><input className={cls} type="number" min="1" placeholder="Kuota total (kosong = tanpa batas)" value={coupon.quota_total} onChange={(e) => setCoupon({ ...coupon, quota_total: e.target.value })} /><input className={cls} type="number" min="0" step="any" placeholder="Minimum belanja" value={coupon.min_purchase} onChange={(e) => setCoupon({ ...coupon, min_purchase: e.target.value })} /></div>
+              {coupon.type === "percent" && <input className={cls} type="number" min="0.01" step="any" placeholder="Maksimum potongan (opsional)" value={coupon.max_discount} onChange={(e) => setCoupon({ ...coupon, max_discount: e.target.value })} />}
+              <div><label className="mb-1 block text-xs font-medium text-slate-300">Cakupan produk</label><select multiple className={`${cls} h-32`} value={coupon.product_ids} onChange={(e) => setCoupon({ ...coupon, product_ids: Array.from(e.target.selectedOptions, (option) => option.value) })}>{products.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}</select><p className="mt-1 text-xs text-slate-500">Tidak memilih produk berarti kupon berlaku universal. Pilih satu atau beberapa produk untuk membatasi kupon.</p></div>
+              <div className="grid grid-cols-2 gap-2"><label className="text-xs text-slate-400">Mulai berlaku<input className={`${cls} mt-1`} type="datetime-local" value={coupon.starts_at} onChange={(e) => setCoupon({ ...coupon, starts_at: e.target.value })} /></label><label className="text-xs text-slate-400">Berakhir<input className={`${cls} mt-1`} type="datetime-local" value={coupon.ends_at} onChange={(e) => setCoupon({ ...coupon, ends_at: e.target.value })} /></label></div>
+              <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={coupon.active} onChange={(e) => setCoupon({ ...coupon, active: e.target.checked })} /> Kupon aktif</label>
+              <button onClick={saveCoupon} className="w-full bg-cyan-600 hover:bg-cyan-700 rounded-lg py-2">{editingCouponId ? "Simpan Perubahan" : "Buat Kupon"}</button>
+            </div>
+            <div className="bg-slate-900/80 border border-slate-800 rounded-xl overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-slate-800 text-xs text-slate-400"><th className="p-3 text-left">Kupon</th><th>Cakupan</th><th>Pemakaian</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{coupons.map((c) => <tr key={c._id} className="border-b border-slate-800/70"><td className="p-3"><div className="font-mono font-semibold">{c.code}</div><div className="text-xs text-slate-500">{c.type === "percent" ? `${c.value}%` : `${c.currency} ${c.value}`}{c.max_discount ? ` · maks. ${c.currency} ${c.max_discount}` : ""}</div></td><td className="max-w-48 p-3 text-xs">{c.product_ids?.length ? c.product_ids.map((id) => products.find((p) => p._id === id)?.name || "Produk tidak aktif").join(", ") : "Universal"}</td><td className="p-3 text-center">{c.used_count || 0}{c.quota_total == null ? "" : " / " + c.quota_total}<div className="text-xs text-slate-500">min. {c.currency} {c.min_purchase || 0}</div></td><td className="p-3">{c.active ? "Aktif" : "Nonaktif"}</td><td className="p-3"><div className="flex items-center justify-center gap-2"><button title="Edit kupon" onClick={() => editCoupon(c)} className="text-cyan-400">Edit</button><button title={c.active ? "Nonaktifkan" : "Aktifkan"} onClick={() => toggleCoupon(c._id)} className={c.active ? "text-amber-400" : "text-emerald-400"}>{c.active ? <Ban size={15} /> : <Check size={15} />}</button><button title={c.used_count ? "Kupon yang pernah digunakan hanya bisa dinonaktifkan" : "Hapus kupon"} disabled={Number(c.used_count || 0) > 0} onClick={() => deleteCoupon(c._id)} className="text-rose-400 disabled:opacity-30"><Trash2 size={15} /></button></div></td></tr>)}</tbody></table>{!coupons.length && <p className="p-5 text-sm text-slate-500">Belum ada kupon.</p>}</div>
+          </div>
           <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-3"><h2 className="font-semibold">Traffic Source</h2><div className="grid md:grid-cols-4 gap-2"><input className={cls} placeholder="code" value={source.code} onChange={(e) => setSource({ ...source, code: e.target.value })} /><input className={cls} placeholder="jenis" value={source.kind} onChange={(e) => setSource({ ...source, kind: e.target.value })} /><input className={cls} placeholder="label" value={source.label} onChange={(e) => setSource({ ...source, label: e.target.value })} /><button onClick={createSource} className="bg-cyan-600 rounded-lg">Tambah Source</button></div><div className="text-xs text-slate-500">{sources.length} source terdaftar.</div></div>
         </div>
       )}

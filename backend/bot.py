@@ -829,6 +829,12 @@ async def _run_service_wait(order_id: str, user_tid: int, chat_id: int, product:
             )
             latest = await db.purchases.find_one({"_id": order_id})
             if latest and latest.get("status") == "delivered":
+                if latest.get("customer_email") or latest.get("customer_id"):
+                    try:
+                        from storefront_routes import send_order_completion_email
+                        await send_order_completion_email(order_id)
+                    except Exception:
+                        logger.exception("Order completion email failed for %s", order_id)
                 u = await db.bot_users.find_one({"telegram_id": user_tid})
                 if u:
                     await send_message(
@@ -923,12 +929,24 @@ async def resume_service_waiters():
             )
 
 
-async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
+async def _do_checkout(chat_id, user, cart_items, preserve_cart=False, order_metadata=None):
+    if user.get("telegram_id") and not user.get("customer_id"):
+        linked_customer = await db.store_customers.find_one(
+            {"telegram_id": user["telegram_id"]}, {"_id": 1, "email": 1}
+        )
+        if linked_customer:
+            user = {**user, "customer_id": linked_customer["_id"], "email": linked_customer.get("email")}
     lang = user.get("lang", "id")
 
     coupon_code = str(user.get("pending_coupon") or "").strip() or None
-    result = await execute_checkout(user, cart_items, preserve_cart=preserve_cart, coupon_code=coupon_code)
+    result = await execute_checkout(user, cart_items, preserve_cart=preserve_cart, coupon_code=coupon_code,
+                                   order_metadata=order_metadata)
     if not result["ok"]:
+        if result["error"] == "minimum_qty":
+            p = result["product"]
+            message = f"Minimum pembelian {result['minimum_qty']} pcs untuk {escape(p['name'])}."
+            await send_message(chat_id, message, kb=back_kb(lang))
+            return result
         if result["error"] == "stock":
             p = result["product"]
             await send_message(
@@ -941,11 +959,11 @@ async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
                 ),
                 kb=back_kb(lang),
             )
-            return
+            return result
 
         if result["error"] == "empty":
             await send_message(chat_id, t(lang, "no_valid_products"), kb=back_kb(lang))
-            return
+            return result
 
         if result["error"] == "checkout" and "Saldo" in result.get("message", ""):
             ptotal = 0.0
@@ -972,10 +990,10 @@ async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
                     ]
                 },
             )
-            return
+            return result
 
         await send_message(chat_id, t(lang, "checkout_failed"), kb=back_kb(lang))
-        return
+        return result
 
     order = result["order"]
     if coupon_code:
@@ -1034,7 +1052,7 @@ async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
                 await notify(*args)
             except Exception:
                 logger.exception("Central service sale notification failed")
-        return
+        return {**result, "ok": all_delivered, "status": "service_waiting" if all_delivered else "delivery_failed"}
 
     final_status = "delivered" if all_delivered else "delivery_failed"
     await db.purchases.update_one(
@@ -1049,6 +1067,12 @@ async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
     )
 
     if all_delivered:
+        if order.get("customer_email") or order.get("customer_id"):
+            try:
+                from storefront_routes import send_order_completion_email
+                await send_order_completion_email(order["_id"])
+            except Exception:
+                logger.exception("Order completion email failed for %s", order["_id"])
         await send_message(
             chat_id,
             t(
@@ -1072,16 +1096,18 @@ async def _do_checkout(chat_id, user, cart_items, preserve_cart=False):
             await notify(*args)
         except Exception:
             logger.exception("Central sale notification failed")
+    return {**result, "ok": all_delivered, "status": final_status}
 
 
-async def do_checkout(chat_id, user, cart_items, preserve_cart=False):
+async def do_checkout(chat_id, user, cart_items, preserve_cart=False, order_metadata=None):
     lock = _checkout_lock(user["telegram_id"])
     if lock.locked():
         await send_message(chat_id, t(user.get("lang", "id"), "checkout_in_progress"), kb=back_kb(user.get("lang", "id")))
-        return
+        return {"ok": False, "error": "busy", "message": "Checkout sedang diproses."}
 
     async with lock:
-        return await _do_checkout(chat_id, user, cart_items, preserve_cart=preserve_cart)
+        return await _do_checkout(chat_id, user, cart_items, preserve_cart=preserve_cart,
+                                  order_metadata=order_metadata)
 
 
 async def show_payment_methods(chat_id, user, cart_items, preserve_cart=False):
@@ -1175,21 +1201,28 @@ async def handle_payment_method(chat_id, user, method):
             order, payment = result["order"], result["payment"]
             expiry_wib = datetime.fromisoformat(order["expires_at"]).astimezone(
                 ZoneInfo("Asia/Jakarta")).strftime("%d %b %Y %H:%M WIB")
-            caption = ("🧾 <b>Bayar Produk via QRIS</b>\n\n"
+            expires_in_minutes = int(order.get("expires_in_minutes") or 5)
+            caption = ("🧾 <b>QRIS All Payment</b>\n\n"
                 f"Invoice: <code>{escape(order['invoice_id'])}</code>\n"
                 f"Total produk: <b>{fmt_amount(order['total'], 'IDR')}</b>\n"
                 f"Biaya admin: {fmt_amount(payment['admin_fee'], 'IDR')}\n"
                 f"Kode unik: {fmt_amount(payment['platform_code'], 'IDR')}\n"
                 f"<b>Bayar tepat {fmt_amount(payment['payment_amount'], 'IDR')}</b>\n"
-                f"Berlaku sampai: {expiry_wib}\n\n"
-                "Bayar sebelum waktu di atas. Setelah pembayaran terverifikasi, produk dikirim otomatis. "
+                f"Berlaku sampai: {expiry_wib}\n"
+                f"⏳ QR hanya berlaku {expires_in_minutes} menit.\n\n"
+                "Cara bayar: pindai QR ini melalui aplikasi e-wallet atau mobile banking yang mendukung QRIS.\n"
+                "Setelah pembayaran terverifikasi, produk dikirim otomatis. "
                 "Ini pembayaran invoice, bukan deposit.")
-            sent_qr = await send_photo_bytes(chat_id, result["image"], "checkout-qris.jpg",
+            sent_qr = await send_photo_bytes(chat_id, result["image"], "qris-all-payment.jpg",
                 caption=caption, kb={"inline_keyboard": [
                     [{"text": "🧾 Riwayat", "callback_data": "menu:history"}],
                 ]})
             if not sent_qr.get("ok"):
                 raise RuntimeError(f"Telegram menolak foto QRIS: {sent_qr.get('description', 'unknown')}")
+            qr_message_id = (sent_qr.get("result") or {}).get("message_id")
+            if qr_message_id:
+                await db.purchases.update_one({"_id": order["_id"]}, {"$set": {"qr_message_id": qr_message_id}})
+                await db.gopay_payments.update_one({"_id": payment["_id"]}, {"$set": {"qr_message_id": qr_message_id}})
             await set_state(user["telegram_id"], None)
         except ValueError as exc:
             await set_state(user["telegram_id"], "checkout_method", data)
@@ -1490,14 +1523,20 @@ async def confirm_gopay_deposit(chat_id, user):
             fee=fmt_amount(payment["admin_fee"], "IDR"),
             platform_code=payment["platform_code"],
             payment_amount=fmt_amount(payment["payment_amount"], "IDR"),
+            expires=payment.get("expires_in_minutes", 5),
         )
-        await send_photo_bytes(
+        sent_qr = await send_photo_bytes(
             chat_id,
             payment["image"],
-            "gopay-qris.jpg",
+            "qris-all-payment.jpg",
             caption=caption,
             kb=back_kb(lang),
         )
+        if sent_qr.get("ok"):
+            qr_message_id = (sent_qr.get("result") or {}).get("message_id")
+            if qr_message_id:
+                await db.gopay_payments.update_one({"_id": payment["payment_id"]}, {"$set": {"qr_message_id": qr_message_id}})
+                await db.deposits.update_one({"_id": payment["deposit"]["_id"]}, {"$set": {"qr_message_id": qr_message_id}})
     except Exception:
         logger.exception("GoPay QR creation failed")
         await set_state(user["telegram_id"], None)
@@ -1686,7 +1725,7 @@ async def show_history(chat_id, user):
         else:
             dep_id = item.get("_id", "")
             amount = item.get("payment_amount") or item.get("amount") or 0
-            method = "GoPay QR" if item.get("method") == "gopay" else (item.get("method") or "Deposit")
+            method = "QRIS All Payment" if item.get("method") == "gopay" else (item.get("method") or "Deposit")
             lines.append(f"💰 {method} — {fmt_amount(amount, item.get('currency','IDR'))}\n   {status_labels.get(item.get('status'), item.get('status','-'))}")
             rows.append([{"text": f"💰 Deposit — Detail", "callback_data": f"hist:dep:{dep_id}"}])
 
@@ -2155,6 +2194,19 @@ async def handle_message(message):
             await send_message(chat_id, frozen_text(user))
         else:
             await show_main_menu(chat_id, user)
+        return
+
+    if text.lower().startswith("/link"):
+        parts = text.split(maxsplit=1)
+        if len(parts) != 2:
+            await send_message(chat_id, "Untuk menghubungkan akun toko, kirim <code>/link KODE</code> dari halaman Profil toko.")
+            return
+        from storefront_routes import complete_telegram_link
+        linked = await complete_telegram_link(int(user["telegram_id"]), parts[1])
+        if not linked:
+            await send_message(chat_id, "Kode penghubung tidak valid/kedaluwarsa atau akun Telegram sudah terhubung ke akun toko lain. Buat kode baru dari Profil toko.")
+            return
+        await send_message(chat_id, f"Akun Telegram berhasil dihubungkan ke <b>{escape(linked['email'])}</b>. Saldo bot sekarang tersinkron dengan akun toko.")
         return
 
     if text == "/id":

@@ -18,7 +18,7 @@ export default function Login() {
     setError("");
     try {
       await login(email, password);
-      navigate("/");
+      navigate("/admin");
     } catch (err) {
       setError(formatApiErrorDetail(err.response?.data?.detail) || err.message);
     }

@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 from auth import get_current_admin
 from db import db
-from promo_service import create_coupon, now_iso
+from promo_service import create_coupon, update_coupon, now_iso
 
 
 router = APIRouter(prefix="/api/admin/promo", dependencies=[Depends(get_current_admin)])
@@ -15,10 +15,11 @@ class CouponBody(BaseModel):
     type: str = "percent"
     value: float
     currency: str = "IDR"
-    quota_total: int | None = None
+    quota_total: int | None = Field(default=None, ge=1)
     per_user_limit: int = Field(default=1, ge=1)
     min_purchase: float = Field(default=0, ge=0)
-    product_ids: list[str] = []
+    max_discount: float | None = Field(default=None, gt=0)
+    product_ids: list[str] = Field(default_factory=list)
     starts_at: str | None = None
     ends_at: str | None = None
     active: bool = True
@@ -58,7 +59,12 @@ async def coupons():
 @router.post("/coupons")
 async def coupon_create(body: CouponBody):
     try:
+        selected_ids = list(dict.fromkeys(body.product_ids))
+        if selected_ids and await db.products.count_documents({"_id": {"$in": selected_ids}}) != len(selected_ids):
+            raise HTTPException(400, "Salah satu produk cakupan kupon tidak ditemukan.")
         return await create_coupon(body.model_dump())
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -68,17 +74,28 @@ async def coupon_update(coupon_id: str, body: CouponBody):
     existing = await db.promo_coupons.find_one({"_id": coupon_id})
     if not existing:
         raise HTTPException(404, "Kupon tidak ditemukan.")
-    data = body.model_dump()
-    data["code"] = str(data["code"] or "").strip().upper()
-    if not data["code"]:
-        raise HTTPException(400, "Kode kupon wajib diisi.")
-    data.pop("used_count", None)
-    data.pop("_id", None)
     try:
-        await db.promo_coupons.update_one({"_id": coupon_id}, {"$set": data})
-    except Exception as exc:
-        raise HTTPException(400, f"Gagal memperbarui kupon: {exc}")
-    return await db.promo_coupons.find_one({"_id": coupon_id})
+        selected_ids = list(dict.fromkeys(body.product_ids))
+        if selected_ids and await db.products.count_documents({"_id": {"$in": selected_ids}}) != len(selected_ids):
+            raise HTTPException(400, "Salah satu produk cakupan kupon tidak ditemukan.")
+        updated = await update_coupon(coupon_id, body.model_dump())
+        if not updated:
+            raise HTTPException(404, "Kupon tidak ditemukan.")
+        return updated
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.patch("/coupons/{coupon_id}/toggle")
+async def coupon_toggle(coupon_id: str):
+    existing = await db.promo_coupons.find_one({"_id": coupon_id})
+    if not existing:
+        raise HTTPException(404, "Kupon tidak ditemukan.")
+    active = not existing.get("active", True)
+    await db.promo_coupons.update_one({"_id": coupon_id}, {"$set": {"active": active, "updated_at": now_iso()}})
+    return {"active": active}
 
 
 @router.delete("/coupons/{coupon_id}")
@@ -86,6 +103,8 @@ async def coupon_delete(coupon_id: str):
     existing = await db.promo_coupons.find_one({"_id": coupon_id})
     if not existing:
         raise HTTPException(404, "Kupon tidak ditemukan.")
+    if int(existing.get("used_count") or 0) > 0:
+        raise HTTPException(409, "Kupon ini sudah pernah digunakan. Nonaktifkan kupon agar riwayat transaksi tetap utuh.")
     await db.promo_coupons.delete_one({"_id": coupon_id})
     return {"ok": True}
 

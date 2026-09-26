@@ -1,4 +1,4 @@
-# SellerBottel
+# IDSE Digital Product
 
 Telegram digital-product marketplace with an admin dashboard, per-product inventory, encrypted inventory records, deposits, discounts, and Telegram delivery.
 
@@ -454,8 +454,8 @@ Minimum required configuration:
 TELEGRAM_TOKEN=
 TELEGRAM_WEBHOOK_SECRET=
 WEBHOOK_SECRET=
-PUBLIC_BASE_URL=https://your-domain.example
-CORS_ORIGINS=https://your-domain.example
+PUBLIC_BASE_URL=https://idseshop.my.id
+CORS_ORIGINS=https://idseshop.my.id
 COOKIE_SAMESITE=lax
 TRUST_PROXY=true
 
@@ -507,6 +507,30 @@ https://your-domain.example/api
 ```
 
 After changing frontend environment variables, rebuild the frontend.
+
+## Customer Storefront
+
+The customer storefront is served at `/` (also `/store`); the admin overview is at `/admin`, and the rest of the existing admin routes remain unchanged. The storefront reads active products, customer balances, orders, and discounts from the existing MongoDB collections and checkout service. Customers can register and sign in with verified email; linking Telegram is optional. Product stock and bot operations continue using the existing database and Telegram integrations.
+
+Set `TELEGRAM_BOT_USERNAME` in `backend/.env` to the connected bot's username without `@`. The existing `TELEGRAM_TOKEN` and `JWT_SECRET` are used to verify Telegram login and sign the HTTP-only customer session cookie. No customer database or parallel order store is created.
+
+The storefront uses `https://idseshop.my.id` as its public origin. Since DNS is not configured yet, apply the following when ready:
+
+1. In the domain registrar's DNS page, add an `A` record with host `@` and value equal to the VPS public IPv4 address. If IPv6 is configured on the VPS, add its matching `AAAA` record too. Optionally add `CNAME` host `www` pointing to `idseshop.my.id`.
+2. Allow inbound TCP ports 80 and 443 in the VPS firewall. Wait until `dig +short idseshop.my.id` returns the VPS address.
+3. Update the existing Nginx HTTPS virtual host's `server_name` to include `idseshop.my.id`, set `root /opt/sellerbottel/frontend/build`, and serve SPA paths with `try_files $uri /index.html;`. Keep the existing `/api/` reverse proxy to `http://127.0.0.1:8000`.
+4. Issue an HTTPS certificate for `idseshop.my.id` using the VPS's existing certificate workflow (for example, Certbot with the Nginx plugin), then verify `https://idseshop.my.id` loads the storefront and `/api/store/products` returns JSON.
+5. In Telegram, send `/setdomain` to `@BotFather`, choose the bot used by `TELEGRAM_TOKEN`, and link `idseshop.my.id` for the login widget. Telegram requires the website domain to be linked before the widget can authorize sign-ins. [Telegram Login Widget setup](https://core.telegram.org/widgets/login/)
+6. Set `PUBLIC_BASE_URL=https://idseshop.my.id`, add `https://idseshop.my.id` to the comma-separated `CORS_ORIGINS` list (preserving any other active admin origins), and set `TELEGRAM_BOT_USERNAME` (the bot username without `@`) in `backend/.env`. Keep cookies secure over HTTPS. Build the frontend and restart the backend only after DNS, Nginx, and HTTPS are ready.
+
+`PUBLIC_BASE_URL` also controls the Telegram webhook URL. Restarting the backend after setting it will register the existing bot webhook on the custom domain.
+
+Build the combined admin and customer frontend with:
+
+```bash
+cd /opt/sellerbottel/frontend
+npm run build
+```
 
 ---
 
@@ -856,16 +880,11 @@ The image is generated locally with Pillow; no external image-generation API is 
 
 The global **Auto Generate Picture** setting must be enabled before automatic images can be generated.
 
-### GoPay QR expiry
+### QRIS expiry
 
-Expired GoPay QR payments are now:
+The storefront and Telegram payment flows label the code **QRIS All Payment**. QR validity comes from `GOPAY_QR_TIMEOUT_MINUTES` (default 5 minutes), with the admin setting `gopay_qr_timeout_minutes` taking precedence. Expired web QR images are hidden and the page offers a new checkout/deposit; Telegram removes the QR message and tells the customer to request a new code. Payment history is checked before expiry is finalized, so a verified payment made within the validity window is not lost just because polling happens later.
 
-1. marked expired,
-2. released from the active payment amount index,
-3. reported to the user by Telegram,
-4. protected from repeated expiry notifications.
-
-The GoPay active payment index now uses a numeric partial filter so documents with an absent/null `active_payment_amount` cannot collide with another active payment.
+The GoPay active-payment index uses a numeric partial filter so documents with an absent/null `active_payment_amount` cannot collide with another active payment.
 
 ### Connected Telegram account → Join Group
 
@@ -922,3 +941,56 @@ After deployment, open **Admin → Pengaturan** and configure:
 5. Target Join Group.
 
 Do not enable the transaction channel notice until the channel ID has been tested and the bot has permission to post there.
+
+## Audit, Redesign, and Deployment Report — 2026-09-26
+
+### Existing architecture
+
+- Backend: Python FastAPI, asynchronous Motor client, MongoDB.
+- Frontend: React with CRACO and Tailwind CSS. Nginx serves `frontend/build` for `idseshop.my.id` and `idsedm.duckdns.org`; `/api/` proxies to the existing `sellerbottel` systemd service on port 8000.
+- Existing MongoDB collections are reused, including `products`, `inventory_items`, `bot_users`, `store_customers`, `purchases`, `deposits`, `gopay_payments`, `settings`, and promotion/coupon collections.
+- Telegram bots and their payment/inventory paths remain in the existing backend. No parallel database, user model, payment gateway, or bot was created.
+
+### Implemented changes
+
+- Reworked the customer storefront into a responsive light marketplace layout, branded as **IDSE Digital Product**. Replaced Emergent branding and its overlay dependencies. The product catalog sorts available stock first and offers Terlaris, Ready Stock, Out of Stock, and Jasa Payment filters.
+- Added product-specific artwork fallback, product labels, a square product image display, and mutually exclusive auth navigation: signed-in users see Keluar; signed-out visitors see Masuk and Daftar. The same rule applies to desktop and mobile menus.
+- Added email registration/login, OTP verification, password reset, customer profile/history, optional Telegram linking, and a one-time web-wallet-to-Telegram-wallet transfer. Unlinked accounts keep and spend their web balance; linked accounts spend the Telegram balance after the merge.
+- Store checkout supports QRIS and saldo. QRIS checkout is a direct verified payment; saldo checkout calls the existing wallet checkout implementation. The web QRIS setting is separate from the Telegram bot switch.
+- Deposit and checkout QR images are labelled QRIS All Payment, show supported QRIS-capable e-wallet/mobile-banking instructions, and expire after 5 minutes by default. Admin can change the QR lifetime and toggle storefront QRIS in **Admin → Pengaturan → Gateway Pembayaran → QRIS Front Store**. Telegram removes expired QR messages and sends a replacement-request message.
+- Admin product editing supports image upload, preview, replacement, removal, and per-product minimum purchase. Uploads accept JPG/PNG/WEBP up to 5 MB; the backend validates MIME/content/dimensions, normalizes images to a 1200 × 1200 WebP canvas without cropping, and stores them through the existing storage adapter. No database migration was needed.
+- Coupon create/edit now uses shared validation and supports one selected product or all products. The admin customer search includes email-only web accounts as well as linked Telegram users.
+- Completed web orders send an email once, after completion. Session files are bundled as ZIP and account inventory as TXT. SMTP settings are read from the existing environment variables; no credentials are stored in source.
+- Added configurable WhatsApp/Telegram contact bubbles, with a two-minute lifetime and a prefilled product inquiry.
+
+### Bug causes and fixes
+
+- **QRIS deposit/checkout unavailable:** the active database had the Telegram `qris_enabled` setting OFF while bank transfer was ON. Web routes previously checked this same bot switch, so web QRIS was rejected even though the GoBiz QRIS configuration was present. Web now has an independent `store_qris_enabled` setting, defaulted from `GOPAY_ENABLED`; this leaves bot payment settings unchanged. Control it in the Admin settings page noted above.
+- **Customer search “not found”:** the original admin search only queried `bot_users`; email-only records in `store_customers` were not considered. The new endpoint searches web email and joins Telegram username/name/ID when linked, with escaped search text and a bounded result set.
+- **Coupon edits and discount consistency:** the old coupon update endpoint wrote request fields directly, while create used validated normalization. Edit could therefore leave data that differed from checkout rules. Create/edit now share validation; checkout applies the same product-scoped eligibility, minimum, limit, timezone, and capped-discount rules as the admin data.
+
+### Database, settings, and recovery
+
+- No database reset, collection drop, truncate, destructive seed, or full snapshot restore was performed for this deployment. No new collection is required; settings use existing `settings` and are merged with defaults for older records. Startup retains safe, idempotent indexes.
+- A protected pre-deployment database dump was created outside the repository. No database reset, collection drop, truncate, destructive seed, or full snapshot restore was performed. An older snapshot was not restored because the active database contained newer activity.
+- Existing production secrets remain in the server-side `.env`; no secret values or backup files are included in this repository. The malformed `GOPAY_POLL_INTERVAL` line ending was corrected. `GOPAY_QR_TIMEOUT_MINUTES` is the fallback variable (default 5); the admin setting takes precedence.
+
+### Verification and remaining checks
+
+- Frontend production build: passed.
+- Backend syntax compilation: passed.
+- Targeted tests: 14 passed across checkout/expiry, discount validation, and storefront authentication; only dependency deprecation warnings were reported.
+- The broad legacy backend suite was not rerun because it previously wrote to the active database. Do not use it against production without an isolated test database.
+- QRIS and SMTP configuration entries are present, but no live payment or external email delivery was performed. Verify a low-value QRIS payment and OTP/order emails after deployment. Never mark a payment paid manually based only on the customer pressing a button.
+- The supplied Google Drive reference was not readable from this environment, and no marked-up screenshots were present in the repository; the redesign follows the written brief.
+- Files changed are grouped in the backend API/payment/auth/admin modules (`admin_routes.py`, `admin_user_routes.py`, `bot.py`, `bot2.py`, `checkout.py`, `db.py`, `direct_checkout.py`, `gopay_provider.py`, `promo_*`, `services.py`, `storage.py`, `storefront_routes.py`, and related modules/tests) and frontend routing, admin pages, product/settings pages, and the new `Storefront.jsx`.
+- No new backend runtime dependency was added. Emergent overlay packages were removed; npm lock files were generated for reproducible installation.
+
+### Deploy and manual setup
+
+- Nginx serves the generated frontend directly from `frontend/build`; there is no separate frontend systemd service on this VPS. The backend service is `sellerbottel`.
+- Storefront QRIS now defaults ON only when `GOPAY_ENABLED=true` and can be independently switched in Admin settings. Telegram bot QRIS remains controlled by its existing `qris_enabled` setting.
+- Optional `STORE_QRIS_ENABLED` overrides the initial storefront QRIS default; if absent, it follows `GOPAY_ENABLED`. The Admin toggle remains the day-to-day control. Existing `GOPAY_QRIS_STRING`, credentials, and poll interval are shared with the bot.
+- The web checkout payment selector offers QRIS and Saldo IDR. Accounts without Telegram use their web balance; linked accounts use the Telegram balance after the one-time merge. Deposits still use QRIS and credit whichever wallet is canonical for that account.
+- Deployment status: **deployed**. `sellerbottel` restarted successfully; Nginx serves the new frontend build for both domains. Smoke checks returned 200 for `/api/store/config`, both public domains, and the new JavaScript bundle; protected deposits correctly returned 401 without a session, and quote returned validation response 422 rather than the old 404. The initial config smoke check found a missing `get_settings` import; it was fixed, the backend restarted again, and the endpoint then returned 200.
+- No authenticated real-money charge was created for testing. The live QR and SMTP delivery still need a low-value/manual acceptance check.

@@ -60,7 +60,8 @@ async def stock_for(product):
 
 
 
-async def _fail_checkout(order_id, allocations, reservation_id, error, message, user=None, field=None, total=0.0):
+async def _fail_checkout(order_id, allocations, reservation_id, error, message, user=None, field=None, total=0.0,
+                        wallet_collection=None, wallet_query=None):
     for allocation in allocations:
         if allocation["kind"] == "stock":
             await db.products.update_one(
@@ -71,11 +72,10 @@ async def _fail_checkout(order_id, allocations, reservation_id, error, message, 
     await release_coupon(order_id)
 
     if user is not None and field and total > 0:
-        await db.bot_users.update_one(
-            {
-                "telegram_id": user["telegram_id"],
-                "checkout_refund_ids": {"$ne": order_id},
-            },
+        wallet_collection = wallet_collection or db.bot_users
+        wallet_query = wallet_query or {"telegram_id": user["telegram_id"]}
+        await wallet_collection.update_one(
+            {**wallet_query, "checkout_refund_ids": {"$ne": order_id}},
             {
                 "$inc": {field: total},
                 "$addToSet": {"checkout_refund_ids": order_id},
@@ -121,6 +121,12 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
                            unit_price_overrides=None, order_metadata=None):
     currency = user["currency"]
     field = CUR_FIELD[currency]
+    telegram_id = user.get("telegram_id")
+    customer_id = user.get("customer_id")
+    wallet_collection = db.store_customers if customer_id and not telegram_id else db.bot_users
+    wallet_is_bot = wallet_collection.name == "bot_users"
+    wallet_query = {"telegram_id": telegram_id} if wallet_is_bot else {"_id": customer_id}
+    coupon_buyer = {"customer_id": customer_id} if customer_id else {"user_tid": telegram_id}
     order_id = str(uuid.uuid4())
     reservation_id = f"order:{order_id}"
 
@@ -136,6 +142,14 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
             continue
 
         qty = max(1, int(raw.get("qty", 1)))
+        minimum_qty = max(1, int(product.get("minimum_purchase_qty") or 1))
+        if qty < minimum_qty:
+            return {
+                "ok": False,
+                "error": "minimum_qty",
+                "product": product,
+                "minimum_qty": minimum_qty,
+            }
         stock = await stock_for(product)
         if stock is not None and stock < qty:
             return {
@@ -178,7 +192,7 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
         current_subtotal = sum(float(item["subtotal"]) for item in items)
         product_ids = [item["product"]["_id"] for item in items]
         coupon, coupon_error = await validate_coupon(
-            coupon_code, user["telegram_id"], currency, base_subtotal, product_ids
+            coupon_code, coupon_buyer, currency, base_subtotal, product_ids
         )
         if coupon_error:
             return {"ok": False, "error": "coupon", "message": coupon_error}
@@ -189,6 +203,8 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
             if not eligible_ids or item["product"]["_id"] in eligible_ids
         ]
         eligible_base = sum(float(item["base_unit_price"]) * item["qty"] for item in eligible)
+        if eligible_base < float(coupon.get("min_purchase") or 0):
+            return {"ok": False, "error": "coupon", "message": "Total produk yang memenuhi syarat belum mencapai minimum kupon."}
         eligible_product_discount = sum(float(item["discount_total"]) for item in eligible)
         candidate_coupon_discount = min(coupon_discount(coupon, eligible_base), eligible_base)
 
@@ -202,7 +218,9 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
     order = {
         "_id": order_id,
         "invoice_id": invoice_id,
-        "user_tid": user["telegram_id"],
+        "user_tid": telegram_id,
+        "customer_id": customer_id,
+        "customer_email": user.get("email"),
         "username": user.get("username", ""),
         "items": [
             {
@@ -236,13 +254,14 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
     }
     if order_metadata:
         order.update({key: order_metadata[key] for key in (
-            "reseller_bot_id", "reseller_admin_tid", "reseller_wholesale", "reseller_margin"
+            "reseller_bot_id", "reseller_admin_tid", "reseller_wholesale", "reseller_margin",
+            "idempotency_key", "customer_id", "customer_email"
         ) if key in order_metadata})
     await db.purchases.insert_one(order)
 
     if coupon:
         reserved_coupon = await reserve_coupon(
-            coupon, user["telegram_id"], order_id, coupon_discount_amount
+            coupon, coupon_buyer, order_id, coupon_discount_amount
         )
         if not reserved_coupon:
             return await _fail_checkout(
@@ -287,10 +306,7 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
             "$inc": {field: -total},
         }
         if preserve_cart:
-            fresh_cart_user = await db.bot_users.find_one(
-                {"telegram_id": user["telegram_id"]},
-                {"cart": 1},
-            )
+            fresh_cart_user = await wallet_collection.find_one(wallet_query, {"cart": 1})
             update["$set"] = {
                 "cart": _cart_after_purchase(
                     (fresh_cart_user or {}).get("cart", []),
@@ -300,12 +316,13 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
         else:
             update["$set"] = {"cart": []}
 
-        balance_result = await db.bot_users.update_one(
-            {
-                "telegram_id": user["telegram_id"],
-                field: {"$gte": total},
-                "frozen": {"$ne": True},
-            },
+        balance_filter = {**wallet_query, field: {"$gte": total}}
+        if wallet_is_bot:
+            balance_filter["frozen"] = {"$ne": True}
+        else:
+            balance_filter["account_disabled"] = {"$ne": True}
+        balance_result = await wallet_collection.update_one(
+            balance_filter,
             update,
         )
         if balance_result.modified_count != 1:
@@ -318,6 +335,8 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
                 user=user,
                 field=field,
                 total=0.0,
+                wallet_collection=wallet_collection,
+                wallet_query=wallet_query,
             )
 
         balance_debited = True
@@ -327,20 +346,17 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
             {"$set": {"status": "paid", "paid_at": now_iso()}},
         )
 
-        if user.get("traffic_source_code"):
+        if user.get("traffic_source_code") and telegram_id:
             await db.prospects.update_many(
-                {"tg_user_id": user["telegram_id"]},
+                {"tg_user_id": telegram_id},
                 {"$set": {"status": "customer", "customer_order_id": order_id, "converted_at": now_iso()}},
             )
 
         for allocation in allocations:
             if allocation["kind"] == "inventory":
-                await commit_items(reservation_id, order_id, user["telegram_id"])
+                await commit_items(reservation_id, order_id, telegram_id, customer_id=customer_id)
 
-        fresh_user = await db.bot_users.find_one(
-            {"telegram_id": user["telegram_id"]},
-            {field: 1},
-        )
+        fresh_user = await wallet_collection.find_one(wallet_query, {field: 1})
         remaining_balance = float((fresh_user or {}).get(field, 0))
 
         return {
@@ -363,11 +379,8 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
         await release_coupon(order_id)
 
         if balance_debited:
-            await db.bot_users.update_one(
-                {
-                    "telegram_id": user["telegram_id"],
-                    "checkout_refund_ids": {"$ne": order_id},
-                },
+            await wallet_collection.update_one(
+                {**wallet_query, "checkout_refund_ids": {"$ne": order_id}},
                 {
                     "$inc": {field: total},
                     "$addToSet": {"checkout_refund_ids": order_id},

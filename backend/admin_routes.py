@@ -8,7 +8,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from i18n import t, message_catalog, set_override, reset_override, STRINGS
 from db import db, get_settings
 from auth import get_current_admin, verify_password
@@ -25,6 +25,7 @@ from inventory import (
     encryption_status,
     InventoryError,
 )
+from storage import put_object, delete_object
 from reporting import router as reports_router
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,8 @@ async def list_products():
             product["inventory_stock"] = 0
             product["stock"] = None
             product["inventory_enabled"] = False
+        product["image_url"] = (f"/api/store/products/{product['_id']}/image?v="
+                                f"{product.get('updated_at') or product.get('created_at') or ''}") if product.get("image_path") else None
     return products
 
 
@@ -149,6 +152,48 @@ def _validate_product_kind(value: str) -> str:
     if value not in {"digital", "service"}:
         raise HTTPException(400, "Jenis product tidak valid.")
     return value
+
+
+async def _store_product_image(product_id: str, image: Optional[UploadFile]):
+    if not image or not image.filename:
+        return None
+    allowed = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP"}
+    content_type = (image.content_type or "").lower()
+    if content_type not in allowed:
+        raise HTTPException(400, "Foto produk harus JPG, PNG, atau WEBP.")
+    data = await image.read(5 * 1024 * 1024 + 1)
+    if not data or len(data) > 5 * 1024 * 1024:
+        raise HTTPException(400, "Ukuran foto maksimal 5 MB.")
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(data)) as decoded:
+            expected_format = allowed[content_type]
+            if decoded.format != expected_format:
+                raise HTTPException(400, "Tipe foto tidak sesuai dengan isi file.")
+            width, height = decoded.size
+            if width < 32 or height < 32 or width > 6000 or height > 6000 or width * height > 25_000_000:
+                raise HTTPException(400, "Dimensi foto harus antara 32 dan 6000 px, maksimal 25 megapiksel.")
+            decoded.verify()
+        with Image.open(io.BytesIO(data)) as source:
+            source = ImageOps.exif_transpose(source)
+            has_alpha = source.mode in {"RGBA", "LA"} or "transparency" in source.info
+            source = source.convert("RGBA" if has_alpha else "RGB")
+            resampling = getattr(Image, "Resampling", Image).LANCZOS
+            fitted = ImageOps.contain(source, (1200, 1200), method=resampling)
+            canvas = Image.new("RGBA", (1200, 1200), (255, 255, 255, 0))
+            left = (1200 - fitted.width) // 2
+            top = (1200 - fitted.height) // 2
+            canvas.alpha_composite(fitted.convert("RGBA"), (left, top))
+            output = io.BytesIO()
+            canvas.save(output, format="WEBP", quality=90, method=6)
+            data = output.getvalue()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, "File foto tidak valid atau rusak.") from exc
+    path = f"product_images/{product_id}/{uuid.uuid4().hex}.webp"
+    stored = await put_object(path, data, "image/webp")
+    return {"path": stored["path"], "content_type": "image/webp"}
 
 
 @router.post("/products")
@@ -160,21 +205,28 @@ async def create_product(
     delivery_type: str = Form("link"),
     content: str = Form(""),
     active: bool = Form(True),
+    minimum_purchase_qty: int = Form(1),
     stock: Optional[int] = Form(None),
     product_kind: str = Form("digital"),
     stock_mode: str = Form("auto"),
     inventory_mode: str = Form("table"),
     service_wait_minutes: Optional[int] = Form(None),
     service_message_template: str = Form(""),
+    image: Optional[UploadFile] = File(None),
+    remove_image: bool = Form(False),
     file: Optional[UploadFile] = File(None),
 ):
     product_kind = _validate_product_kind(product_kind)
+    if minimum_purchase_qty < 1 or minimum_purchase_qty > 1000:
+        raise HTTPException(400, "Minimum pembelian harus antara 1 dan 1000 pcs.")
     if stock_mode not in {"auto", "manual"}:
         raise HTTPException(400, "Mode stok tidak valid.")
     if inventory_mode not in {"table", "telegram_session"}:
         raise HTTPException(400, "Mode inventory tidak valid.")
 
     storage_path, original_filename = None, None
+    product_id = str(uuid.uuid4())
+    product_image = await _store_product_image(product_id, image)
     if product_kind == "service":
         wait_minutes = int(service_wait_minutes or 5)
         if wait_minutes not in {1, 5, 10, 25, 60}:
@@ -197,7 +249,7 @@ async def create_product(
         message_template = ""
 
     prod = {
-        "_id": str(uuid.uuid4()),
+        "_id": product_id,
         "name": name.strip(),
         "description": description,
         "price_usd": price_usd,
@@ -210,6 +262,9 @@ async def create_product(
         "service_wait_minutes": wait_minutes,
         "service_message_template": message_template,
         "active": active,
+        "image_path": product_image["path"] if product_image else None,
+        "image_content_type": product_image["content_type"] if product_image else None,
+        "minimum_purchase_qty": minimum_purchase_qty,
         "stock": stored_stock,
         "stock_mode": stock_mode if product_kind == "digital" else "unlimited",
         "manual_stock": manual_stock,
@@ -238,12 +293,15 @@ async def update_product(
     delivery_type: str = Form("link"),
     content: str = Form(""),
     active: bool = Form(True),
+    minimum_purchase_qty: int = Form(1),
     stock: Optional[int] = Form(None),
     product_kind: str = Form("digital"),
     stock_mode: str = Form("auto"),
     inventory_mode: str = Form("table"),
     service_wait_minutes: Optional[int] = Form(None),
     service_message_template: str = Form(""),
+    image: Optional[UploadFile] = File(None),
+    remove_image: bool = Form(False),
     file: Optional[UploadFile] = File(None),
     files: Optional[list[UploadFile]] = File(None),
 ):
@@ -252,6 +310,8 @@ async def update_product(
         raise HTTPException(404, "Produk tidak ditemukan")
 
     product_kind = _validate_product_kind(product_kind)
+    if minimum_purchase_qty < 1 or minimum_purchase_qty > 1000:
+        raise HTTPException(400, "Minimum pembelian harus antara 1 dan 1000 pcs.")
     if stock_mode not in {"auto", "manual"}:
         raise HTTPException(400, "Mode stok tidak valid.")
     if inventory_mode not in {"table", "telegram_session"}:
@@ -264,8 +324,18 @@ async def update_product(
         "price_idr": price_idr,
         "product_kind": product_kind,
         "active": active,
+        "minimum_purchase_qty": minimum_purchase_qty,
         "updated_at": now_iso(),
     }
+    if image and remove_image:
+        raise HTTPException(400, "Unggah foto baru atau hapus foto yang ada, bukan keduanya.")
+    product_image = await _store_product_image(pid, image)
+    if product_image:
+        updates["image_path"] = product_image["path"]
+        updates["image_content_type"] = product_image["content_type"]
+    elif remove_image:
+        updates["image_path"] = None
+        updates["image_content_type"] = None
 
     if product_kind == "service":
         wait_minutes = int(service_wait_minutes or 5)
@@ -303,7 +373,17 @@ async def update_product(
             "inventory_mode": inventory_mode,
         })
 
-    await db.products.update_one({"_id": pid}, {"$set": updates})
+    changed = await db.products.update_one({"_id": pid}, {"$set": updates})
+    if changed.matched_count != 1:
+        if product_image:
+            await delete_object(product_image["path"])
+        raise HTTPException(409, "Produk berubah saat disimpan. Muat ulang lalu coba lagi.")
+    old_image_path = product.get("image_path")
+    if old_image_path and (product_image or remove_image):
+        try:
+            await delete_object(old_image_path)
+        except Exception:
+            logger.exception("Gagal menghapus file foto produk lama: %s", pid)
     if active and product_kind == "digital":
         from stock_monitor import schedule_stock_scan
         schedule_stock_scan(pid)
@@ -882,7 +962,15 @@ async def toggle_product(pid: str):
 
 @router.delete("/products/{pid}")
 async def delete_product(pid: str):
+    product = await db.products.find_one({"_id": pid}, {"image_path": 1})
+    if not product:
+        raise HTTPException(404, "Produk tidak ditemukan")
     await db.products.delete_one({"_id": pid})
+    if product.get("image_path"):
+        try:
+            await delete_object(product["image_path"])
+        except Exception:
+            logger.exception("Gagal menghapus file foto produk: %s", pid)
     return {"ok": True}
 
 
@@ -981,15 +1069,31 @@ async def search_users(
         if registered_from: user_q["created_at"]["$gte"] = registered_from
         if registered_to: user_q["created_at"]["$lt"] = registered_to
     if search.strip():
-        s = re.escape(search.strip())
-        clauses = [{"username": {"$regex": s, "$options": "i"}}, {"first_name": {"$regex": s, "$options": "i"}}]
-        if search.strip().isdigit(): clauses.append({"telegram_id": int(search.strip())})
+        raw = search.strip()
+        username_term = raw[1:] if raw.startswith("@") else raw
+        s = re.escape(username_term)
+        clauses = [
+            {"username": {"$regex": s, "$options": "i"}},
+            {"first_name": {"$regex": re.escape(raw), "$options": "i"}},
+            {"last_name": {"$regex": re.escape(raw), "$options": "i"}},
+        ]
+        if raw.isdigit():
+            clauses.append({"telegram_id": int(raw)})
         user_q["$or"] = clauses
-    users = await db.bot_users.find(user_q).sort("created_at", -1).limit(2000).to_list(2000)
+    # Bound the candidate set before loading customer activity; the UI searches
+    # interactively and already exposes an empty-query overview separately.
+    users = await db.bot_users.find(user_q).sort("created_at", -1).limit(500).to_list(500)
     tids = [u["telegram_id"] for u in users]
     if not tids: return []
     deposits = await db.deposits.find({"user_tid": {"$in": tids}, "status": "approved"}, {"user_tid": 1, "credited_amount": 1, "amount": 1}).to_list(10000)
     orders = await db.purchases.find({"user_tid": {"$in": tids}}, {"user_tid": 1, "total": 1, "status": 1, "items": 1}).to_list(20000)
+    connected_tids = {
+        account["tg_user_id"]
+        async for account in db.tg_accounts.find(
+            {"tg_user_id": {"$in": tids}, "status": "active", "session_encrypted": {"$type": "string"}},
+            {"tg_user_id": 1},
+        )
+    }
     dep_by_user = {}
     for d in deposits: dep_by_user[d["user_tid"]] = dep_by_user.get(d["user_tid"], 0.0) + float(d.get("credited_amount") or d.get("amount") or 0)
     order_by_user, products_by_user = {}, {}
@@ -1015,11 +1119,7 @@ async def search_users(
         if max_balance is not None and balance > max_balance: continue
         if product_id and product_id not in products_by_user.get(tid, set()): continue
         u["total_deposit"] = dep_total; u["order_count"] = stats["count"]; u["total_spending"] = stats["spending"]
-        u["telegram_account_connected"] = bool(await db.tg_accounts.find_one({
-            "tg_user_id": tid,
-            "status": "active",
-            "session_encrypted": {"$type": "string"},
-        }))
+        u["telegram_account_connected"] = tid in connected_tids
         u["purchased_product_ids"] = list(products_by_user.get(tid, set()))
         u.pop("state", None); u.pop("state_data", None)
         u.pop("deposit_credit_ids", None); u.pop("checkout_refund_ids", None); u.pop("deposit_debit_ids", None)
@@ -1114,6 +1214,10 @@ class SettingsBody(BaseModel):
     bank_account_number: str = ""
     bank_account_holder: str = ""
     qris_enabled: bool = False
+    store_qris_enabled: bool = False
+    gopay_qr_timeout_minutes: int = Field(default=5, ge=1, le=60)
+    whatsapp_contact_number: str = Field(default="+628123456789", max_length=30)
+    telegram_contact_target: str = Field(default="", max_length=255)
     bank_enabled: bool = True
     min_deposit_usd: float = 15.0
     min_deposit_idr: float = 50000.0
@@ -1152,6 +1256,24 @@ def _normalize_required_channel(channel: dict) -> dict:
 @router.put("/settings")
 async def update_settings(body: SettingsBody):
     data = body.model_dump()
+    import re
+    whatsapp_digits = re.sub(r"\D", "", str(data.get("whatsapp_contact_number") or ""))
+    if whatsapp_digits and not 8 <= len(whatsapp_digits) <= 15:
+        raise HTTPException(400, "Nomor WhatsApp harus berisi 8–15 digit.")
+    if whatsapp_digits.startswith("0"):
+        whatsapp_digits = "62" + whatsapp_digits[1:]
+    data["whatsapp_contact_number"] = whatsapp_digits
+    telegram_target = str(data.get("telegram_contact_target") or "").strip()
+    if telegram_target:
+        if telegram_target.startswith("@"): telegram_target = telegram_target[1:]
+        if telegram_target.startswith(("https://t.me/", "http://t.me/", "https://telegram.me/", "http://telegram.me/")):
+            data["telegram_contact_target"] = telegram_target
+        elif re.fullmatch(r"[A-Za-z0-9_]{5,32}", telegram_target):
+            data["telegram_contact_target"] = f"https://t.me/{telegram_target}"
+        else:
+            raise HTTPException(400, "Tujuan Telegram harus berupa username atau tautan t.me yang valid.")
+    else:
+        data["telegram_contact_target"] = ""
     channels = [_normalize_required_channel(ch) for ch in data.get("required_channels", [])]
     channels = [ch for ch in channels if ch["channel_id"]]
     if len(channels) > 3:
@@ -1209,10 +1331,49 @@ async def list_orders(status: str = "all", search: str = "", limit: int = 200):
         q["$or"] = [
             {"invoice_id": {"$regex": pattern, "$options": "i"}},
             {"username": {"$regex": pattern, "$options": "i"}},
+            {"customer_email": {"$regex": pattern, "$options": "i"}},
         ]
         if search.strip().isdigit():
             q["$or"].append({"user_tid": int(search.strip())})
     return await db.purchases.find(q).sort("created_at", -1).limit(max(1, min(limit, 500))).to_list(max(1, min(limit, 500)))
+
+
+@router.post("/orders/{oid}/complete")
+async def complete_service_order(oid: str):
+    order = await db.purchases.find_one({"_id": oid})
+    if not order:
+        raise HTTPException(404, "Order tidak ditemukan")
+    if order.get("status") != "service_waiting":
+        raise HTTPException(400, "Hanya pesanan jasa yang sedang menunggu yang bisa diselesaikan.")
+    changed = await db.purchases.update_one(
+        {"_id": oid, "status": "service_waiting"},
+        {"$set": {"status": "delivered", "delivered_at": now_iso(), "delivery_error": None,
+                  "service_completed_by_admin_at": now_iso()}},
+    )
+    if changed.modified_count != 1:
+        raise HTTPException(409, "Status pesanan berubah. Muat ulang daftar pesanan.")
+    email_sent = False
+    if order.get("customer_email") or order.get("customer_id"):
+        from storefront_routes import send_order_completion_email
+        email_sent = await send_order_completion_email(oid)
+    return {"ok": True, "email_sent": email_sent}
+
+
+@router.post("/orders/{oid}/email/retry")
+async def retry_order_email(oid: str):
+    order = await db.purchases.find_one({"_id": oid, "status": "delivered"})
+    if not order:
+        raise HTTPException(404, "Pesanan selesai tidak ditemukan.")
+    if order.get("delivery_email_status") != "failed":
+        raise HTTPException(409, "Email tidak berstatus gagal atau sedang diproses.")
+    await db.purchases.update_one({"_id": oid, "delivery_email_status": "failed"}, {"$unset": {
+        "delivery_email_status": "", "delivery_email_error": "", "delivery_email_started_at": "",
+    }})
+    from storefront_routes import send_order_completion_email
+    sent = await send_order_completion_email(oid)
+    if not sent:
+        raise HTTPException(502, "Email belum berhasil dikirim. Periksa konfigurasi SMTP dan log backend.")
+    return {"ok": True, "email_sent": True}
 
 
 @router.get("/orders/{oid}")
@@ -1233,8 +1394,23 @@ async def refund_order(oid: str):
 
     field = "balance_usd" if order["currency"] == "USD" else "balance_idr"
     refund_key = f"refund:{oid}"
-    result = await db.bot_users.update_one(
-        {"telegram_id": order["user_tid"], "refund_ids": {"$ne": refund_key}},
+    if order.get("user_tid"):
+        wallet = db.bot_users
+        wallet_query = {"telegram_id": order["user_tid"]}
+    elif order.get("customer_id"):
+        customer = await db.store_customers.find_one({"_id": order["customer_id"]})
+        if not customer:
+            raise HTTPException(404, "Akun pelanggan tidak ditemukan.")
+        if customer.get("telegram_id"):
+            wallet = db.bot_users
+            wallet_query = {"telegram_id": customer["telegram_id"]}
+        else:
+            wallet = db.store_customers
+            wallet_query = {"_id": order["customer_id"]}
+    else:
+        raise HTTPException(400, "Akun tujuan refund tidak ditemukan.")
+    result = await wallet.update_one(
+        {**wallet_query, "refund_ids": {"$ne": refund_key}},
         {"$inc": {field: float(order["total"])}, "$addToSet": {"refund_ids": refund_key}},
     )
     if result.modified_count != 1:
@@ -1244,8 +1420,8 @@ async def refund_order(oid: str):
         {"_id": oid},
         {"$set": {"status": "refunded", "refunded_at": now_iso(), "refund_reason": "Admin refund"}},
     )
-    user = await db.bot_users.find_one({"telegram_id": order["user_tid"]}, {"lang": 1})
-    if user:
+    user = await db.bot_users.find_one({"telegram_id": order["user_tid"]}, {"lang": 1}) if order.get("user_tid") else None
+    if order.get("user_tid") and user:
         await send_message(
             order["user_tid"],
             t(user.get("lang") or "id", "order_refunded", amount=fmt_amount(order["total"], order["currency"]), invoice=order["invoice_id"]),
@@ -1461,8 +1637,8 @@ async def reset_message(lang: str, key: str):
 
 # ============ USERS / SEARCH ============
 
-@router.get("/users/search")
-async def search_users(
+@router.get("/users/search-legacy")
+async def search_users_legacy(
     search: str = "",
     status: str = "all",
     lang: str = "all",
@@ -1488,20 +1664,29 @@ async def search_users(
     if lang in ("id", "en"):
         query["lang"] = lang
 
-    users = await db.bot_users.find(query).sort("created_at", -1).limit(max(1, min(limit, 500))).to_list(max(1, min(limit, 500)))
+    if status not in {"all", "active", "frozen"} or lang not in {"all", "id", "en"}:
+        raise HTTPException(400, "Filter pengguna tidak valid.")
+    if has_deposit not in {"all", "yes", "no"} or has_order not in {"all", "yes", "no"}:
+        raise HTTPException(400, "Filter aktivitas tidak valid.")
+    bounded_limit = max(1, min(limit, 500))
+    users = await db.bot_users.find(query).sort("created_at", -1).limit(bounded_limit).to_list(bounded_limit)
+    if not users:
+        return []
+    tids = [user["telegram_id"] for user in users]
 
     deposit_map = {}
-    dep_cur = db.deposits.find({"status": "approved"}, {"user_tid": 1, "amount": 1, "credited_amount": 1})
+    dep_cur = db.deposits.find({"status": "approved", "user_tid": {"$in": tids}}, {"user_tid": 1, "amount": 1, "credited_amount": 1})
     async for dep in dep_cur:
         deposit_map.setdefault(dep["user_tid"], 0.0)
         deposit_map[dep["user_tid"]] += float(dep.get("credited_amount") or dep.get("amount") or 0)
 
     order_map = {}
-    order_cur = db.purchases.find({}, {"user_tid": 1, "total": 1})
+    order_cur = db.purchases.find({"user_tid": {"$in": tids}}, {"user_tid": 1, "total": 1, "status": 1})
     async for order in order_cur:
         row = order_map.setdefault(order["user_tid"], {"count": 0, "spending": 0.0})
-        row["count"] += 1
-        row["spending"] += float(order.get("total") or 0)
+        if order.get("status") not in {"pending", "failed", "delivery_failed"}:
+            row["count"] += 1
+            row["spending"] += float(order.get("total") or 0)
 
     result = []
     for user in users:
@@ -1530,7 +1715,7 @@ async def search_users(
 
 class DiscountBody(BaseModel):
     name: str
-    product_ids: list[str] = []
+    product_ids: list[str] = Field(default_factory=list)
     mode: str = "percent"
     value: float = 0.0
     min_qty: int = 1
@@ -1548,6 +1733,13 @@ async def list_discounts():
 
 
 def _validate_discount(body: DiscountBody):
+    from datetime import datetime
+    import math
+
+    if not body.name.strip():
+        raise HTTPException(400, "Nama discount wajib diisi.")
+    if not math.isfinite(body.value):
+        raise HTTPException(400, "Nilai discount harus berupa angka yang valid.")
     if body.mode not in {"percent", "fixed"}:
         raise HTTPException(400, "Mode discount harus percent atau fixed")
     if body.value <= 0:
@@ -1556,10 +1748,28 @@ def _validate_discount(body: DiscountBody):
         raise HTTPException(400, "Persentase discount maksimal 100%")
     if body.min_qty < 1:
         raise HTTPException(400, "Quantity minimal 1")
+    if body.priority < -1000 or body.priority > 1000:
+        raise HTTPException(400, "Prioritas harus antara -1000 dan 1000.")
     if body.max_qty is not None and body.max_qty < body.min_qty:
         raise HTTPException(400, "Max quantity tidak boleh lebih kecil dari min quantity")
     if body.mode == "fixed" and body.fixed_currency not in {"IDR", "USD"}:
         raise HTTPException(400, "Nominal/unit harus memilih mata uang IDR atau USD")
+    for field in ("starts_at", "ends_at"):
+        value = getattr(body, field)
+        if value:
+            try:
+                datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                raise HTTPException(400, f"Tanggal {field} tidak valid.")
+    if body.starts_at and body.ends_at:
+        start = datetime.fromisoformat(body.starts_at.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(body.ends_at.replace("Z", "+00:00"))
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=__import__("datetime").timezone.utc)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=__import__("datetime").timezone.utc)
+        if end <= start:
+            raise HTTPException(400, "Tanggal berakhir harus setelah tanggal mulai.")
     if body.mode == "percent":
         body.fixed_currency = None
 
@@ -1601,7 +1811,9 @@ async def toggle_discount(did: str):
 
 @router.delete("/discounts/{did}")
 async def delete_discount(did: str):
-    await db.discounts.delete_one({"_id": did})
+    result = await db.discounts.delete_one({"_id": did})
+    if result.deleted_count != 1:
+        raise HTTPException(404, "Discount tidak ditemukan")
     return {"ok": True}
 
 

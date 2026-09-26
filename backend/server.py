@@ -27,6 +27,7 @@ from reseller_signup import run_subscription_monitor
 from inventory_transform import router as inventory_transform_router
 from stock_monitor import run_stock_monitor, router as stock_events_router
 from bot_moderation_routes import router as bot_moderation_router
+from storefront_routes import router as storefront_router
 from error_handlers import register_error_handlers
 from inventory import encryption_status
 from bot import process_update, resume_service_waiters
@@ -101,6 +102,7 @@ app.include_router(reseller_webhook_router)
 app.include_router(inventory_transform_router)
 app.include_router(stock_events_router)
 app.include_router(bot_moderation_router)
+app.include_router(storefront_router)
 
 if os.environ.get("PROMOTION_ENABLED", "").lower() in {"1", "true", "yes"}:
     app.include_router(promo_router)

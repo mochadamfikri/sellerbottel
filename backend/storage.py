@@ -67,3 +67,11 @@ async def get_object(path: str):
     data = await asyncio.to_thread(target.read_bytes)
     content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
     return data, content_type
+
+
+async def delete_object(path: str) -> bool:
+    target = _resolve_path(path)
+    if not target.is_file():
+        return False
+    await asyncio.to_thread(target.unlink)
+    return True
