@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Send, RefreshCw, Image as ImageIcon } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "../lib/api";
+import BroadcastOptions from "../components/BroadcastOptions";
+import MarketingCampaigns from "../components/MarketingCampaigns";
 
 const cls = "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
 const initial = { kind: "message", period: "30d", message: "", product_ids: [], summaries: {}, target: "chats" };
@@ -12,13 +14,14 @@ const broadcastTypes = [
 ];
 
 export default function Broadcasts() {
-  const [form, setForm] = useState(initial);
+  const [form, setForm] = useState(() => { try { return { ...initial, ...JSON.parse(localStorage.getItem("broadcast_draft") || "{}") }; } catch (_) { return initial; } });
   const [products, setProducts] = useState([]);
   const [history, setHistory] = useState([]);
   const [stockEvents, setStockEvents] = useState([]);
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
+  const [catalogFilter, setCatalogFilter] = useState("");
   const [recapConfig, setRecapConfig] = useState({ enabled: false, time: "00:05", target: "chats" });
   const [savingConfig, setSavingConfig] = useState(false);
 
@@ -29,6 +32,7 @@ export default function Broadcasts() {
     api.get("/admin/broadcasts/daily-recap/config").then(({ data }) => setRecapConfig(data)).catch(() => {});
   };
   useEffect(() => { load(); }, []);
+  useEffect(() => { localStorage.setItem("broadcast_draft", JSON.stringify(form)); }, [form]);
 
   const change = (value) => { setForm(value); setPreview(null); };
   const toggleProduct = (product) => {
@@ -70,7 +74,7 @@ export default function Broadcasts() {
 
   const available = products.filter((product) => product.active !== false &&
     (product.product_kind === "service" || product.stock == null || product.stock > 0));
-  const filtered = available.filter((product) => product.name?.toLowerCase().includes(search.toLowerCase()));
+  const filtered = available.filter((product) => (!catalogFilter || product.catalog_name === catalogFilter) && product.name?.toLowerCase().includes(search.toLowerCase()));
   const plainPreview = (preview?.text || "").replace(/<[^>]*>/g, "");
   const saveConfig = async () => {
     setSavingConfig(true);
@@ -85,6 +89,7 @@ export default function Broadcasts() {
 
   return (
     <div className="space-y-5">
+      <MarketingCampaigns products={products}/>
       <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-5 space-y-5">
         <div>
           <h2 className="font-heading text-lg font-semibold flex items-center gap-2"><Send size={19} className="text-cyan-400" /> Broadcast</h2>
@@ -100,7 +105,7 @@ export default function Broadcasts() {
               <span className="block mt-1 text-xs text-slate-400">{type.detail}</span>
             </button>)}
           </div>
-          <p className="text-xs text-slate-500 mt-2">Setiap jenis broadcast membuat satu gambar otomatis. Pesan memakai emoji dan kutipan Telegram.</p>
+          <p className="text-xs text-slate-500 mt-2">Draft tersimpan di browser ini. Pilih teks saja atau gambar otomatis, lalu periksa tujuan sebelum mengirim.</p>
         </div>
         {form.kind === "best_sellers" && <div>
           <label className="text-sm text-slate-300">Periode penjualan</label>
@@ -120,6 +125,7 @@ export default function Broadcasts() {
             <label className="text-sm text-slate-300">Pilih produk ({form.product_ids.length}/10)</label>
             <input className={`${cls} max-w-xs`} placeholder="Cari produk..." value={search} onChange={(event) => setSearch(event.target.value)} />
           </div>
+          <select aria-label="Filter katalog broadcast" className={`${cls} mb-2`} value={catalogFilter} onChange={(e) => setCatalogFilter(e.target.value)}><option value="">Semua katalog</option>{[...new Set(products.map((p) => p.catalog_name).filter(Boolean))].sort().map((name) => <option key={name}>{name}</option>)}</select>
           <div className="max-h-64 overflow-auto rounded-lg border border-slate-800 divide-y divide-slate-800">
             {filtered.map((product) => (
               <label key={product._id} className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-slate-800/50">
@@ -152,6 +158,7 @@ export default function Broadcasts() {
             <option value="both">Channel, grup, dan semua pengguna</option>
           </select>
         </div>
+        <BroadcastOptions form={form} change={change}/>
         <button type="button" disabled={busy} onClick={() => run("preview")} className="w-full rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 py-3 font-semibold">{busy ? "Memproses..." : "Lihat Pratinjau"}</button>
       </div>
 
@@ -176,7 +183,8 @@ export default function Broadcasts() {
         <h3 className="font-semibold flex items-center gap-2"><ImageIcon size={18} className="text-cyan-400" /> Pratinjau sebelum kirim</h3>
         {preview.image_data_url && <img src={preview.image_data_url} alt="Pratinjau gabungan produk" className="w-full max-w-lg rounded-lg border border-slate-700" />}
         <pre className="whitespace-pre-wrap rounded-lg bg-slate-950 border border-slate-800 p-3 text-sm text-slate-200 max-h-72 overflow-auto">{plainPreview}</pre>
-        <p className="text-sm text-slate-400">Tujuan: {preview.chats?.length || 0} channel/grup dan {preview.user_count || 0} pengguna.</p>
+        <p className="text-sm text-slate-400">Tujuan: {preview.chats?.length || 0} channel/grup dan {preview.user_count || 0} pengguna. {preview.chats?.join(", ")}</p>
+        {preview.image_data_url && <a href={preview.image_data_url} download="IDSE-broadcast.jpg" className="inline-block text-sm font-semibold text-cyan-400">Unduh gambar broadcast</a>}
         <div className="flex flex-wrap gap-2">
           <button type="button" disabled={busy} onClick={() => run("test")} className="rounded-lg bg-slate-700 hover:bg-slate-600 px-4 py-2.5 disabled:opacity-50">Kirim Tes ke Admin</button>
           <button type="button" disabled={busy} onClick={() => {
@@ -191,6 +199,8 @@ export default function Broadcasts() {
           {history.map((item) => <div key={item._id} className="border border-slate-800 rounded-lg p-3">
             <div className="flex justify-between text-xs text-slate-500"><span>{item.status}</span><span>{item.success || 0} berhasil · {item.failed || 0} gagal</span></div>
             <p className="text-sm text-slate-200 mt-1 whitespace-pre-wrap line-clamp-3">{String(item.text || "").replace(/<[^>]*>/g, "")}</p>
+            {(item.chat_results || []).map((row) => <p key={row.chat_id} className={`mt-1 text-xs ${row.ok ? "text-emerald-400" : "text-amber-400"}`}>{row.chat_id}: {row.ok ? "terkirim" : row.error || "gagal"}</p>)}
+            {item.status === "running" && <button className="mt-2 text-xs text-rose-400" onClick={async () => { try { await api.post(`/admin/broadcasts/compose/jobs/${item._id}/cancel`); load(); } catch (_) { toast.error("Antrean sudah selesai atau tidak dapat dibatalkan."); } }}>Hentikan sisa antrean</button>}
           </div>)}
           {!history.length && <p className="text-sm text-slate-500">Belum ada broadcast.</p>}
         </div>

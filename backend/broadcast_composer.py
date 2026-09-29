@@ -17,6 +17,8 @@ from checkout import stock_for
 from db import db, get_settings
 from services import _broadcast_channel_id, base_price, fmt_amount, now_iso
 from tgapi import send_message, send_photo_bytes
+from product_catalog import catalog_name
+from pricing import price_for_product
 
 router = APIRouter(prefix="/api/admin/broadcasts/compose", dependencies=[Depends(get_current_admin)])
 
@@ -40,6 +42,8 @@ class ComposeBody(BaseModel):
     topic: str = ""
     reference_id: str = ""
     title: str = ""
+    image_mode: Literal["generated", "none", "auto"] = "generated"
+    chat_ids: list[str] | None = Field(default=None, max_length=20)
 
 
 def clean_description(value: str, limit: int = 180) -> str:
@@ -51,8 +55,10 @@ def clean_description(value: str, limit: int = 180) -> str:
     return plain[: limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
 
 
-async def configured_chats() -> list[str]:
+async def configured_chats(kind="message") -> list[str]:
     settings = await get_settings()
+    if kind in {"daily_recap", "best_sellers"} and settings.get("recap_channel_ids"):
+        return list(dict.fromkeys(value.strip() for value in re.split(r"[,\n]+", settings["recap_channel_ids"]) if value.strip()))
     channel = await _broadcast_channel_id()
     groups = re.split(r"[,\n]+", str(settings.get("broadcast_group_ids") or ""))
     chats = [channel, *(value.strip() for value in groups)]
@@ -60,6 +66,26 @@ async def configured_chats() -> list[str]:
 
 
 async def build_content(body: ComposeBody):
+    text, image, products = await _build_content(body)
+    if body.image_mode == "none" or (body.image_mode == "auto" and not (await get_settings()).get("broadcast_auto_image_enabled")):
+        image = None
+    if len(text) > 4000:
+        raise HTTPException(400, "Pesan terlalu panjang. Ringkas deskripsi atau kurangi produk hingga di bawah 4000 karakter.")
+    return text, image, products
+
+
+async def selected_chats(body):
+    if body.target not in {"chats", "both"}:
+        return []
+    if body.chat_ids is None:
+        return await configured_chats(body.kind)
+    chats = list(dict.fromkeys(value.strip() for value in body.chat_ids if value.strip()))
+    if any(not re.fullmatch(r"(?:-\d+|@[A-Za-z0-9_]{5,32})", value) for value in chats):
+        raise HTTPException(400, "Tujuan broadcast harus berupa ID -100… atau @username.")
+    return chats
+
+
+async def _build_content(body: ComposeBody):
     if body.kind == "system_update":
         text, image = await build_central_content(body)
         return text, image, []
@@ -84,12 +110,12 @@ async def build_content(body: ComposeBody):
         if not product:
             raise HTTPException(400, "Salah satu produk tidak aktif atau tidak ditemukan.")
         stock = await stock_for(product)
-        if stock is not None and stock <= 0:
+        if stock is not None and stock < max(1, int(product.get("minimum_purchase_qty") or 1)):
             raise HTTPException(400, f"Stok {product.get('name') or 'produk'} habis.")
         summary = clean_description(body.summaries.get(pid) or product.get("description") or "")
-        price = fmt_amount(await base_price(product, "IDR"), "IDR")
+        price = fmt_amount((await price_for_product(product, "IDR", 1))["unit_price"], "IDR")
         products.append({"id": pid, "name": str(product.get("name") or "Produk"),
-                         "summary": summary, "price": price, "stock": stock})
+                         "summary": summary, "price": price, "stock": stock, "catalog": catalog_name(product)})
 
     lines = ["📣 <b>Pengumuman</b>", f"<blockquote>{escape(message)}</blockquote>"] if message else []
     if products:
@@ -106,7 +132,7 @@ async def build_content(body: ComposeBody):
             lines.append("")
         lines.append("🛒 Order: @Idse_MarketBot")
     text = "\n".join(lines).strip()
-    image = render_product_collection(products) if products else render_message_poster(message)
+    image = render_product_collection(products, title=body.title.strip()[:80] or "PILIHAN PRODUK") if products else render_message_poster(message, title=body.title.strip()[:80] or "PENGUMUMAN")
     return text, image, products
 
 
@@ -130,6 +156,12 @@ async def send_composed(chat_id: str | int, text: str, image: bytes | None):
 async def _send_users(broadcast_id: str, text: str, image: bytes | None, chat_success: int, chat_failed: int):
     success, failed, blocked = chat_success, chat_failed, 0
     async for user in db.bot_users.find(_broadcast_user_query(), {"telegram_id": 1}):
+        job = await db.broadcasts.find_one({"_id": broadcast_id}, {"status": 1})
+        if job and job.get("status") == "cancelled":
+            await db.broadcasts.update_one({"_id": broadcast_id}, {"$set": {"success": success, "failed": failed, "finished_at": now_iso()}})
+            return
+        if not await db.bot_users.find_one(_broadcast_user_query({"telegram_id": user["telegram_id"]})):
+            continue
         try:
             result = await send_composed(user["telegram_id"], text, image)
             if result.get("ok"):
@@ -144,7 +176,7 @@ async def _send_users(broadcast_id: str, text: str, image: bytes | None, chat_su
         if (success + failed) % 20 == 0:
             await db.broadcasts.update_one({"_id": broadcast_id}, {"$set": {"success": success, "failed": failed, "blocked": blocked}})
         await asyncio.sleep(0.08)
-    await db.broadcasts.update_one({"_id": broadcast_id}, {"$set": {
+    await db.broadcasts.update_one({"_id": broadcast_id, "status": "running"}, {"$set": {
         "status": "completed", "success": success, "failed": failed,
         "blocked": blocked, "finished_at": now_iso(),
     }})
@@ -153,10 +185,19 @@ async def _send_users(broadcast_id: str, text: str, image: bytes | None, chat_su
 @router.post("/preview")
 async def preview(body: ComposeBody):
     text, image, products = await build_content(body)
-    chats = await configured_chats() if body.target in {"chats", "both"} else []
+    chats = await selected_chats(body)
     user_count = await db.bot_users.count_documents(_broadcast_user_query()) if body.target in {"users", "both"} else 0
     return {"text": text, "products": products, "chats": chats, "user_count": user_count,
             "image_data_url": "data:image/jpeg;base64," + base64.b64encode(image).decode() if image else None}
+
+
+@router.post("/jobs/{broadcast_id}/cancel")
+async def cancel_job(broadcast_id: str):
+    result = await db.broadcasts.update_one({"_id": broadcast_id, "status": "running"},
+        {"$set": {"status": "cancelled", "finished_at": now_iso()}})
+    if not result.matched_count:
+        raise HTTPException(409, "Broadcast sudah selesai atau tidak ditemukan.")
+    return {"ok": True}
 
 
 @router.post("/test")
@@ -174,7 +215,7 @@ async def send_test(body: ComposeBody):
 @router.post("/send")
 async def send(body: ComposeBody):
     text, image, products = await build_content(body)
-    chats = await configured_chats() if body.target in {"chats", "both"} else []
+    chats = await selected_chats(body)
     if body.target in {"chats", "both"} and not chats:
         raise HTTPException(400, "Channel/grup broadcast belum diisi di Pengaturan.")
     user_count = await db.bot_users.count_documents(_broadcast_user_query()) if body.target in {"users", "both"} else 0
@@ -187,6 +228,9 @@ async def send(body: ComposeBody):
     await db.broadcasts.insert_one(doc)
     chat_results = []
     for chat in chats:
+        current = await db.broadcasts.find_one({"_id": doc["_id"]}, {"status": 1})
+        if current and current.get("status") == "cancelled":
+            break
         try:
             result = await send_composed(chat, text, image)
             chat_results.append({"chat_id": chat, "ok": bool(result.get("ok")),
@@ -201,7 +245,7 @@ async def send(body: ComposeBody):
     if body.target in {"users", "both"} and user_count:
         asyncio.create_task(_send_users(doc["_id"], text, image, chat_success, len(chats) - chat_success))
     else:
-        await db.broadcasts.update_one({"_id": doc["_id"]}, {"$set": {
+        await db.broadcasts.update_one({"_id": doc["_id"], "status": "running"}, {"$set": {
             "status": "completed", "success": chat_success, "failed": len(chats) - chat_success,
             "finished_at": now_iso(),
         }})

@@ -93,3 +93,6 @@ credentials.json
 
 backend/gobiz/.gopay_cache.json
 backend/gobiz/.env
+
+# Private production backups (database values and encryption keys)
+/backups/

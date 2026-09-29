@@ -55,6 +55,8 @@ export default function SettingsPage() {
         broadcast_auto_image_enabled: !!s.broadcast_auto_image_enabled,
         broadcast_channel_id: String(s.broadcast_channel_id || ""),
         broadcast_group_ids: String(s.broadcast_group_ids || ""),
+        transaction_channel_ids: String(s.transaction_channel_ids || ""),
+        recap_channel_ids: String(s.recap_channel_ids || ""),
         stock_notifications_enabled: !!s.stock_notifications_enabled,
         join_group_target: String(s.join_group_target || ""),
       });
@@ -216,7 +218,7 @@ export default function SettingsPage() {
             <Switch checked={!!s.transaction_success_channel_enabled} onCheckedChange={(v) => setS({ ...s, transaction_success_channel_enabled: v })} />
           </div>
           <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 flex items-center justify-between gap-4">
-            <div><p className="font-semibold text-slate-200">Auto Generate Picture</p><p className="text-xs text-slate-500 mt-1">Generate visual hitam/ungu untuk broadcast yang mendukung gambar otomatis.</p></div>
+            <div><p className="font-semibold text-slate-200">Auto Generate Picture</p><p className="text-xs text-slate-500 mt-1">Gambar untuk notifikasi produk, transaksi, dan rekap otomatis. Broadcast manual dapat memilih gambar atau teks saja.</p></div>
             <Switch checked={!!s.broadcast_auto_image_enabled} onCheckedChange={(v) => setS({ ...s, broadcast_auto_image_enabled: v })} />
           </div>
           <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 flex items-center justify-between gap-4">
@@ -234,6 +236,9 @@ export default function SettingsPage() {
           <textarea rows={3} className={cls} placeholder="-1001234567890" value={s.broadcast_group_ids || ""} onChange={(e) => setS({ ...s, broadcast_group_ids: e.target.value })} />
           <p className="text-[10px] text-slate-600 mt-1">Bot harus menjadi anggota grup dan diizinkan mengirim pesan. Channel dan grup ini dipakai untuk broadcast serta notifikasi stok.</p>
         </div>
+        <div><label className="text-xs text-slate-400">Channel transaksi berhasil (satu per baris)</label><textarea rows={2} className={cls} value={s.transaction_channel_ids || ""} onChange={(e) => setS({ ...s, transaction_channel_ids: e.target.value })} placeholder="-1001234567890 atau @username"/><p className="mt-1 text-xs text-slate-500">Mengikuti toggle Transaction Success. Kosong: gunakan channel broadcast utama.</p></div>
+        <div><label className="text-xs text-slate-400">Channel rekap & produk terlaris (satu per baris)</label><textarea rows={2} className={cls} value={s.recap_channel_ids || ""} onChange={(e) => setS({ ...s, recap_channel_ids: e.target.value })} placeholder="-1001234567890 atau @username"/><p className="mt-1 text-xs text-slate-500">Dipakai untuk rekap manual dan terjadwal. Kosong: gunakan tujuan broadcast umum. Jadwal di menu Broadcast.</p></div>
+        <a href="/bot-moderation" className="block text-sm text-cyan-400">Atur tindak lanjut setelah pembelian & pengecualian pengguna →</a>
         <div>
           <label className="text-xs text-slate-400">Target Join Group untuk akun Telegram terhubung</label>
           <input className={cls} placeholder="@group atau https://t.me/+invitehash" value={s.join_group_target || ""} onChange={(e) => setS({ ...s, join_group_target: e.target.value })} />

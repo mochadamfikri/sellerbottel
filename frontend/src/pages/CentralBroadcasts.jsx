@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Megaphone, Image as ImageIcon, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "../lib/api";
+import BroadcastOptions from "../components/BroadcastOptions";
 
 const cls = "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
 const initial = { kind: "system_update", topic: "reseller_guide", reference_id: "", title: "", message: "", target: "chats" };
@@ -89,6 +90,7 @@ export default function CentralBroadcasts() {
       <div><label className="text-sm text-slate-300">Kirim ke</label><select className={cls} value={form.target} onChange={(event) => change({ ...form, target: event.target.value })}>
         <option value="chats">Channel dan grup terhubung</option><option value="users">Semua pengguna bot pusat</option><option value="both">Channel, grup, dan semua pengguna</option>
       </select></div>
+      <BroadcastOptions form={form} change={change}/>
       <button disabled={busy} onClick={() => run("preview")} className="w-full rounded-lg bg-slate-700 hover:bg-slate-600 py-3 font-semibold disabled:opacity-50">{busy ? "Memproses..." : "Lihat Pesan dan Gambar"}</button>
     </div>
 
@@ -96,7 +98,8 @@ export default function CentralBroadcasts() {
       <h3 className="font-semibold flex items-center gap-2"><ImageIcon size={18} className="text-cyan-400" /> Pratinjau Broadcast</h3>
       {preview.image_data_url && <img src={preview.image_data_url} alt="Poster broadcast otomatis" className="w-full max-w-lg rounded-lg border border-slate-700" />}
       <pre className="whitespace-pre-wrap rounded-lg bg-slate-950 border border-slate-800 p-3 text-sm text-slate-200 max-h-96 overflow-auto">{plainPreview}</pre>
-      <p className="text-sm text-slate-400">Tujuan: {preview.chats?.length || 0} channel/grup dan {preview.user_count || 0} pengguna.</p>
+      <p className="text-sm text-slate-400">Tujuan: {preview.chats?.length || 0} channel/grup dan {preview.user_count || 0} pengguna. {preview.chats?.join(", ")}</p>
+      {preview.image_data_url && <a href={preview.image_data_url} download="IDSE-broadcast.jpg" className="inline-block text-sm font-semibold text-cyan-400">Unduh gambar broadcast</a>}
       <div className="flex flex-wrap gap-2">
         <button disabled={busy} onClick={() => run("test")} className="rounded-lg bg-slate-700 hover:bg-slate-600 px-4 py-2.5 disabled:opacity-50">Kirim Tes ke Admin</button>
         <button disabled={busy} onClick={() => { if (window.confirm(`Kirim broadcast ke ${preview.chats?.length || 0} channel/grup dan ${preview.user_count || 0} pengguna?`)) run("send"); }} className="rounded-lg bg-cyan-600 hover:bg-cyan-700 px-4 py-2.5 font-semibold disabled:opacity-50">Kirim Broadcast</button>

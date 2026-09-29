@@ -1,5 +1,9 @@
 # IDSE Digital Product
 
+**Agent handover terbaru:** baca [AGENT_HANDOVER.md](AGENT_HANDOVER.md) sebelum
+melanjutkan pekerjaan. Dokumen tersebut merangkum rilis IDSE Marketplace, lokasi
+backup, perlindungan data production, dan pengujian yang aman.
+
 Telegram digital-product marketplace with an admin dashboard, per-product inventory, encrypted inventory records, deposits, discounts, and Telegram delivery.
 
 ## Current Fix: Product + Inventory Upload / Schema

@@ -151,7 +151,7 @@ async def create_qris_order(user, cart_items, coupon_code=None, preserve_cart=Fa
         invoice_id = await next_invoice_id()
         linked_customer = await db.store_customers.find_one({"telegram_id": user["telegram_id"]}, {"_id": 1, "email": 1})
         order.update({
-            "invoice_id": invoice_id, "user_tid": user["telegram_id"],
+            "invoice_id": invoice_id, "user_tid": user["telegram_id"], "purchase_source": "BOT",
             "customer_id": linked_customer.get("_id") if linked_customer else None,
             "customer_email": linked_customer.get("email") if linked_customer else None,
             "username": user.get("username", ""), "total": quote["total"],
@@ -258,7 +258,7 @@ async def create_store_qris_order(customer, cart_items, coupon_code=None, idempo
         invoice_id = await next_invoice_id()
         created_at = now_iso()
         order.update({
-            "invoice_id": invoice_id, "user_tid": customer.get("telegram_id"), "customer_id": customer_id,
+            "invoice_id": invoice_id, "user_tid": customer.get("telegram_id"), "customer_id": customer_id, "purchase_source": "WEB",
             "customer_email": customer.get("email"), "username": customer.get("username", ""),
             "total": total, "currency": "IDR", "payment_method": "qris", "payment_id": payment_id,
             "payment_scope": "store", "status": "pending_payment", "created_at": created_at,
@@ -450,10 +450,14 @@ async def _finalize_store_qris_order(order):
             for _, product in products
         )
         status = "service_waiting" if has_service else "delivered"
-        await db.purchases.update_one({"_id": order_id, "status": "paid"}, {"$set": {
+        changed = await db.purchases.update_one({"_id": order_id, "status": "paid"}, {"$set": {
             "status": status, "delivered_at": None if has_service else now_iso(), "delivery_error": None,
         }})
+        if not changed.modified_count:
+            return True
         order["status"] = status
+        from services import notify_transaction_channel_safely
+        await notify_transaction_channel_safely(order)
         if has_service:
             from services import notify_admin
             names = ", ".join(f"{item.get('name') or 'Produk'} ×{item.get('qty') or 1}"

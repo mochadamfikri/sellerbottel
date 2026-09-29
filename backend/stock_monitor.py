@@ -131,7 +131,7 @@ def schedule_stock_scan(product_id: str):
 
 @router.get("")
 async def list_stock_events():
-    return await db.stock_events.find().sort("created_at", -1).limit(50).to_list(50)
+    return await db.stock_events.find({"event_type": {"$in": ["restocked", "sold_out"]}}).sort("created_at", -1).limit(50).to_list(50)
 
 
 @router.post("/{event_id}/retry")
@@ -139,6 +139,8 @@ async def retry_stock_event(event_id: str):
     event = await db.stock_events.find_one({"_id": event_id})
     if not event:
         raise HTTPException(404, "Notifikasi stok tidak ditemukan.")
+    if event.get("event_type") not in {"restocked", "sold_out"}:
+        raise HTTPException(400, "Ledger marketing bukan notifikasi stok; gunakan menu campaign")
     if event.get("status") == "sent":
         return {"ok": True, "status": "sent"}
     await db.stock_events.update_one({"_id": event_id}, {"$set": {"status": "pending"}})

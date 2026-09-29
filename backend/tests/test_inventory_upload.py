@@ -116,6 +116,7 @@ def clean_state(monkeypatch):
 
     async def reset():
         await db.inventory_items.delete_many({})
+        await db.inventory_items.create_index([("product_id", 1), ("fingerprint", 1)], unique=True)
         await db.products.delete_many({})
         await db.products.insert_one({
             "_id": PID,

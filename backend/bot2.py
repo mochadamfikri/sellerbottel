@@ -12,7 +12,8 @@ import httpx
 from db import db, get_settings
 from inventory import commit_items, decrypt_items, release_items, reserve_items
 from pricing import price_for_product
-from services import fmt_amount
+from product_catalog import catalog_slice, catalog_token
+from services import fmt_amount, notify_transaction_channel_safely
 from checkout import next_invoice_id, stock_for
 from bot import deliver_inventory, deliver_product, build_invoice_text
 from gopay_provider import _run_node, qris_expiry_minutes
@@ -185,7 +186,7 @@ async def send_document2(chat_id, data: bytes, filename, caption=None):
 def menu_keyboard():
     return {
         "keyboard": [
-            [{"text": "📦 STOCK"}, {"text": "💰 DEPOSIT"}],
+            [{"text": "📚 KATALOG"}, {"text": "💰 DEPOSIT"}],
             [{"text": "🛒 PESANAN"}, {"text": "🎟 VOUCHER"}],
             [{"text": "👤 AKUN / INFORMATION"}, {"text": "❓ CARA ORDER"}],
         ],
@@ -266,63 +267,39 @@ async def show_home(chat_id, user, loaded=True):
     )
 
 
-async def show_products(chat_id, page=1, message_id=None):
-    """Shared stock list: only ready products, dynamic promo/voucher data, 2 buttons per row."""
-    products = await db.products.find({"active": True}).sort("created_at", 1).to_list(500)
-    ready = []
-    for product in products:
-        stock = await stock_for(product)
-        if stock is None or stock > 0:
-            ready.append((product, stock))
-
-    lines = ["<b>📦 STOCK PRODUCT</b>", ""]
-    for idx, (product, stock) in enumerate(ready, start=1):
-        pricing = await price_for_product(product, "IDR", 1)
-        stock_text = "∞" if stock is None else str(int(stock))
-        lines.append(
-            f"<b>{idx}.</b> {escape(str(product.get('name') or 'Product'))} "
-            f"— <b>{fmt_amount(pricing['unit_price'], 'IDR')}</b> · Stok: <b>{stock_text}</b>"
-        )
-    if not ready:
-        lines.append("Belum ada produk yang ready.")
-
-    promo_lines = []
-    cursor = db.discounts.find({"active": True}).sort([("priority", -1), ("created_at", -1)]).limit(10)
-    async for discount in cursor:
-        if _active_date_for_bot2(discount):
-            name = escape(str(discount.get("name") or "Promo"))
-            mode = str(discount.get("mode") or "")
-            value = discount.get("value")
-            value_text = f"{value:g}%" if mode == "percent" and isinstance(value, (int, float)) else fmt_amount(value or 0, "IDR")
-            promo_lines.append(f"• <b>{name}</b> — {value_text}")
-
-    coupon_lines = []
-    cursor = db.coupons.find({"active": True}).limit(10)
-    async for coupon in cursor:
-        code = escape(str(coupon.get("code") or "-"))
-        condition = coupon.get("min_purchase") or coupon.get("min_amount") or coupon.get("minimum_purchase")
-        condition_text = f" · Min. {fmt_amount(condition, 'IDR')}" if condition else ""
-        coupon_lines.append(f"• <code>{code}</code>{condition_text}")
-
-    if promo_lines:
-        lines += ["", "<b>🔥 PROMO AKTIF</b>"] + promo_lines
-    if coupon_lines:
-        lines += ["", "<b>🎟 VOUCHER AKTIF</b>"] + coupon_lines
-
-    # Product selector buttons: NUMBERS ONLY. Each number maps to the
-    # corresponding product position in this ready-stock list.
-    buttons = []
-    for idx, (_product, _stock) in enumerate(ready, start=1):
-        buttons.append({
-            "text": str(idx),
-            "callback_data": f"b2:productnum:{idx}",
-        })
-    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    markup = {"inline_keyboard": rows}
-
+async def show_products(chat_id, page=1, message_id=None, catalog=None):
+    products = await db.products.find({"active": True}).to_list(None)
+    group, entries, page, pages = catalog_slice(products, catalog, page)
+    rows = []
+    lines = ["📚 <b>Katalog produk</b>", "Pilih katalog untuk melihat varian, harga, dan stok."]
+    if catalog:
+        lines = ["📦 <b>" + escape(group["name"] if group else "Katalog tidak tersedia") + "</b>", ""]
+        for product in entries:
+            stock = await stock_for(product)
+            pricing = await price_for_product(product, "IDR", 1)
+            stock_text = "∞" if stock is None else str(int(stock))
+            lines.append(f"• {escape(product['name'][:100])} · <b>{fmt_amount(pricing['unit_price'], "IDR")}</b> · Stok {stock_text}")
+            rows.append([{"text": product['name'][:80], "callback_data": f"b2:product:{product['_id']}"}])
+        callback = f"b2:catalog:{catalog}:"
+    else:
+        rows = [[{"text": f"{entry['name'][:80]} · {len(entry['products'])} pilihan", "callback_data": f"b2:catalog:{entry['token']}:1"}] for entry in entries]
+        callback = "b2:products:"
+    if not entries:
+        lines.append("Belum ada produk aktif.")
+    nav = []
+    if page > 1:
+        nav.append({"text": "⬅️ Sebelumnya", "callback_data": f"{callback}{page-1}"})
+    if page < pages:
+        nav.append({"text": "Berikutnya ➡️", "callback_data": f"{callback}{page+1}"})
+    if nav:
+        rows.append(nav)
+    rows.append([{"text": "🔄 Perbarui stok", "callback_data": f"{callback}{page}"}])
+    if catalog:
+        rows.append([{"text": "📚 Semua katalog", "callback_data": "b2:products:1"}])
+    lines.append(f"\nHalaman {page}/{pages}")
     if message_id is not None:
-        return await edit2(chat_id, message_id, "\n".join(lines), kb=markup)
-    return await send2(chat_id, "\n".join(lines), kb=markup)
+        return await edit2(chat_id, message_id, "\n".join(lines), kb={"inline_keyboard": rows})
+    return await send2(chat_id, "\n".join(lines), kb={"inline_keyboard": rows})
 
 
 async def show_product(chat_id, pid=None, message_id=None, product_index=None):
@@ -369,23 +346,14 @@ async def show_product(chat_id, pid=None, message_id=None, product_index=None):
                 {"text": "📝 Buy ( Saldo )", "callback_data": f"b2:buy_balance:{product['_id']}"},
                 {"text": "🔄 Buy ( Now )", "callback_data": f"b2:buy_now:{product['_id']}"},
             ],
-            [{"text": "◀️ Kembali ke Stock", "callback_data": "b2:products:1"}],
+            [{"text": "◀️ Varian katalog", "callback_data": f"b2:catalog:{catalog_token(product)}:1"}],
             [{"text": "🔔 Notif Restok", "callback_data": f"b2:restock:{product['_id']}"}],
         ]}
     return await edit2(chat_id, message_id, text, kb=kb) if message_id else await send2(chat_id, text, kb=kb)
 
 
 async def show_stock(chat_id):
-    products = await db.products.find({"active": True}).to_list(200)
-    lines = ["──── 「 LAPORAN STOK 」 ────"]
-    for product in products:
-        stock = await stock_for(product)
-        stock_text = "∞" if stock is None else f"{int(stock)}x"
-        lines.append(f"• {escape(product['name'])}: {stock_text}")
-    if len(lines) == 1:
-        lines.append("Belum ada data stok.")
-    lines.append("────")
-    await send2(chat_id, "\n".join(lines), kb=menu_keyboard())
+    await show_products(chat_id)
 
 
 async def show_voucher(chat_id):
@@ -565,8 +533,12 @@ async def process_confirmed_bot2_order(chat_id, user, pid, qty, mode, note):
         await send2(chat_id, build_invoice_text(order))
         allocation_map = {x["product_id"]: x for x in result.get("allocations", [])}
         all_ok = True
+        has_service = False
         for item in result["items"]:
             product = item["product"]
+            if product.get("product_kind") == "service" or product.get("delivery_type") == "service":
+                has_service = True
+                continue
             if product.get("product_kind") == "digital" or product.get("delivery_type") == "inventory" or product.get("inventory_enabled"):
                 allocation = allocation_map.get(product["_id"], {})
                 ok = await deliver_inventory(
@@ -581,12 +553,16 @@ async def process_confirmed_bot2_order(chat_id, user, pid, qty, mode, note):
                         send_message_fn=send2, send_document_fn=send_document2
                     )) and ok
             all_ok = all_ok and ok
+        final_status = "delivery_failed" if not all_ok else ("service_waiting" if has_service else "delivered")
         await db.purchases.update_one({"_id": order["_id"]}, {"$set": {
             "note": note,
-            "status": "delivered" if all_ok else "delivery_failed",
-            "delivered_at": datetime.now(timezone.utc).isoformat() if all_ok else None,
+            "status": final_status,
+            "delivered_at": datetime.now(timezone.utc).isoformat() if final_status == "delivered" else None,
         }})
-        await send2(chat_id, "✅ <b>Pesanan berhasil diproses.</b>" if all_ok else "⚠️ Pembayaran berhasil, tetapi pengiriman membutuhkan perhatian admin.", kb=menu_keyboard())
+        await notify_transaction_channel_safely({**order, "status": final_status})
+        if has_service and all_ok:
+            await notify_service_waiting(order)
+        await send2(chat_id, "⏳ Pembayaran berhasil. Pesanan jasa menunggu penyelesaian admin." if final_status == "service_waiting" else "✅ <b>Pesanan berhasil diproses.</b>" if all_ok else "⚠️ Pembayaran berhasil, tetapi pengiriman membutuhkan perhatian admin.", kb=menu_keyboard())
         return
     await create_bot2_checkout(chat_id, user, pid, qty, note=note)
 
@@ -669,6 +645,7 @@ async def create_bot2_checkout(chat_id, user, pid, qty, note=''):
         "note": note,
         "bot2": True,
         "payment_scope": PAYMENT_SCOPE,
+        "purchase_source": "BOT",
     }
 
     await db.purchases.insert_one(order)
@@ -771,6 +748,16 @@ async def show_checkout_qr(chat_id, user, order_id):
             await db.gopay_payments.update_one({"_id": payment["_id"]}, {"$set": {"qr_message_id": qr_message_id}})
 
 
+async def notify_service_waiting(order):
+    try:
+        from services import notify_admin
+        await notify_admin("🛎️ <b>Pesanan jasa bot menunggu penyelesaian</b>\n"
+                           f"Invoice: <code>{escape(str(order.get('invoice_id') or order['_id']))}</code>\n"
+                           "Selesaikan melalui menu Orders setelah jasa selesai dikerjakan.")
+    except Exception:
+        logger.exception("Could not notify service order %s", order.get("_id"))
+
+
 async def deliver_order(chat_id, order):
     all_ok = True
     for item in order.get("items", []):
@@ -780,6 +767,10 @@ async def deliver_order(chat_id, order):
             continue
         qty = int(item.get("qty") or 1)
 
+        if product.get("product_kind") == "service" or product.get("delivery_type") == "service":
+            order["has_service"] = True
+            continue
+
         if (
             product.get("product_kind") == "digital"
             or product.get("delivery_type") == "inventory"
@@ -787,7 +778,7 @@ async def deliver_order(chat_id, order):
         ):
             reservation_id = f"bot2:{order['_id']}"
             inventory = await db.inventory_items.find(
-                {"reservation_id": reservation_id, "status": "reserved"}
+                {"reservation_id": reservation_id, "product_id": product["_id"], "status": "reserved"}
             ).to_list(qty)
             if len(inventory) != qty:
                 all_ok = False
@@ -831,21 +822,27 @@ async def finalize_bot2_checkout(order_id, tx_id=None):
     if not order or order.get("status") != "pending_payment":
         return False
     user_tid = order["user_tid"]
-    await db.purchases.update_one(
+    claimed = await db.purchases.update_one(
         {"_id": order_id, "status": "pending_payment"},
         {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc).isoformat(), "payment_tx_id": tx_id}},
     )
+    if not claimed.modified_count:
+        return False
     order["status"] = "paid"
     ok = await deliver_order(user_tid, order)
-    final_status = "delivered" if ok else "delivery_failed"
+    final_status = ("service_waiting" if order.get("has_service") else "delivered") if ok else "delivery_failed"
     await db.purchases.update_one(
         {"_id": order_id},
         {"$set": {
-            "status": final_status,            "delivered_at": datetime.now(timezone.utc).isoformat() if ok else None,
+            "status": final_status, "delivered_at": datetime.now(timezone.utc).isoformat() if final_status == "delivered" else None,
             "delivery_error": None if ok else "Satu atau lebih produk gagal dikirim.",
         }},
     )
-    if ok:
+    await notify_transaction_channel_safely({**order, "status": final_status})
+    if final_status == "service_waiting":
+        await notify_service_waiting(order)
+        await send2(user_tid, "⏳ Pembayaran berhasil. Pesanan jasa menunggu penyelesaian admin.", kb=menu_keyboard())
+    elif ok:
         user = await db.bot_users.find_one({"telegram_id": user_tid})
         await send2(
             user_tid,
@@ -1043,6 +1040,10 @@ async def handle_callback2(cb):
             state_data.get("mode", "now"), state_data.get("note", "")
         )
         return
+    if data.startswith("b2:catalog:"):
+        _, _, token, page = data.split(":", 3)
+        await show_products(chat_id, int(page), message_id=cb["message"]["message_id"], catalog=token)
+        return
     if data.startswith("b2:products:"):
         await show_products(chat_id, int(data.split(":")[-1]), message_id=cb["message"]["message_id"])
         return
@@ -1141,7 +1142,7 @@ async def handle_message2(message):
         await show_how_to_order(chat_id)
         return
 
-    if text in ("📦 STOCK", "🏷️ List Produk", "🛒 List Produk", "/products"):
+    if text in ("📚 KATALOG", "📦 STOCK", "🏷️ List Produk", "🛒 List Produk", "/products", "/catalog"):
         await set_b2_state(user["telegram_id"])
         await show_products(chat_id, 1)
         return
@@ -1251,6 +1252,11 @@ def _bot2_chat_lock(chat_id):
 
 
 async def process_update2(update):
+    sender = (update.get("callback_query") or update.get("message") or {}).get("from", {})
+    if sender.get("id") and await db.bot_users.find_one({"telegram_id": sender["id"], "silent_blocked": True}, {"_id": 1}):
+        if update.get("callback_query"):
+            await answer2(update["callback_query"]["id"])
+        return
     # Bot2 updates for the same user must be serialized. Without this, two
     # fast /start messages (or /start + menu tap) race over the same message
     # id and leave the user stuck at 0% or create duplicate replies.

@@ -207,11 +207,8 @@ async def notify_admin(text: str, kb=None, photo_file_id=None):
 
 async def _broadcast_channel_id():
     import os
-    configured = str(os.environ.get("BROADCAST_CHANNEL_ID", "")).strip()
-    if configured:
-        return configured
     settings = await get_settings()
-    configured = str(settings.get("broadcast_channel_id") or "").strip()
+    configured = str(settings.get("broadcast_channel_id") or os.environ.get("BROADCAST_CHANNEL_ID", "")).strip()
     if configured:
         return configured
     for channel in settings.get("required_channels") or []:
@@ -221,8 +218,12 @@ async def _broadcast_channel_id():
 
 
 async def notify_transaction_channel(order: dict):
-    channel_id = await _broadcast_channel_id()
-    if not channel_id:
+    import re
+    settings = await get_settings()
+    if not settings.get("transaction_success_channel_enabled", False):
+        return {"ok": True, "skipped": "disabled"}
+    channels = list(dict.fromkeys(value.strip() for value in re.split(r"[,\n]+", settings.get("transaction_channel_ids") or await _broadcast_channel_id()) if value.strip()))
+    if not channels:
         return {"ok": False, "error": "channel_not_configured"}
 
     names = []
@@ -232,19 +233,43 @@ async def notify_transaction_channel(order: dict):
         total_qty += qty
         names.append(f"{item.get('name') or 'Product'} ×{qty}")
 
-    body = ("🛒 <b>Penjualan Bot Pusat</b>\n\n"
+    from telegram_identity import purchase_identity, purchase_source, purchase_heading
+    source = purchase_source(order)
+    masked_id, masked_username = await purchase_identity(order)
+    identity_lines = ""
+    if source != "WEB" or masked_id != "-" or masked_username != "-":
+        if masked_id != "-":
+            identity_lines += f"Telegram ID: {masked_id}\n"
+        if masked_username != "-":
+            identity_lines += f"Username: {masked_username}\n"
+    body = (f"{purchase_heading(source)}\n\n"
             f"Invoice: <code>{escape(str(order.get('invoice_id') or ''))}</code>\n"
+            f"Sumber: {source}\n"
+            f"{identity_lines}"
             f"Produk: {escape(', '.join(names))}\n"
             f"Total: <b>{escape(fmt_amount(order.get('total') or 0, order.get('currency') or 'IDR'))}</b>\n"
             f"Status: <b>{escape(order.get('status') or 'paid')}</b>")
 
-    image = _transaction_image(order, total_qty)
+    image = _transaction_image(order, total_qty) if settings.get("broadcast_auto_image_enabled") else None
+    results = []
+    for channel_id in channels:
+        try:
+            from broadcast_composer import send_composed
+            result = await send_composed(channel_id, body, image)
+            results.append({"chat_id": channel_id, "ok": bool(result.get("ok"))})
+        except Exception:
+            results.append({"chat_id": channel_id, "ok": False})
+    return {"ok": all(row["ok"] for row in results), "results": results}
 
-    if image:
-        result = await send_photo_bytes(channel_id, image, "transaction-success.jpg", caption=body)
-    else:
-        result = await send_message(channel_id, body)
-    return result
+
+async def notify_transaction_channel_safely(order: dict):
+    """A notification failure must never undo successful order fulfillment."""
+    try:
+        return await notify_transaction_channel(order)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Transaction notification failed for %s", order.get("_id"))
+        return {"ok": False}
 
 
 def _transaction_image(order: dict, total_qty: int):
@@ -259,14 +284,17 @@ def _transaction_image(order: dict, total_qty: int):
 
 
 async def notify_transaction_admin(order: dict, buyer: str):
+    from telegram_identity import purchase_source, purchase_heading
+    source = purchase_source(order)
     settings = await get_settings()
     admin_id = settings.get("admin_telegram_id")
     if not admin_id:
         return {"ok": False, "error": "admin_not_configured"}
     items = order.get("items") or []
     names = ", ".join(f"{item.get('name') or 'Produk'} ×{item.get('qty') or 1}" for item in items)
-    caption = ("🛒 <b>Penjualan Bot Pusat</b>\n\n"
+    caption = (f"{purchase_heading(source)}\n\n"
                f"Invoice: <code>{escape(str(order.get('invoice_id') or ''))}</code>\n"
+               f"Sumber: {source}\n"
                f"Pembeli: {escape(buyer)}\n"
                f"Produk: {escape(names)}\n"
                f"Total: <b>{fmt_amount(order.get('total') or 0, order.get('currency') or 'IDR')}</b>\n"

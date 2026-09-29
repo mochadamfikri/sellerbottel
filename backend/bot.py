@@ -28,6 +28,7 @@ from join_gate import check_user_membership, build_gate_keyboard, clear_cache_fo
 from gopay_provider import create_gopay_payment
 from direct_checkout import create_qris_order, qris_ready, quote_items
 from pricing import price_for_product
+from product_catalog import catalog_slice, catalog_token
 
 logger = logging.getLogger("bot")
 
@@ -184,60 +185,41 @@ async def show_currency_selection(chat_id, lang="id"):
 
 # ============ PRODUCTS & STOCK ============
 
-async def show_products(chat_id, user, page=1):
-    lang = user.get("lang", "id")
-    page = max(1, int(page))
-    page_size = 8
-    query = {"active": True}
-    all_products = await db.products.find(query).sort("created_at", -1).to_list(500)
-    ready = [product for product in all_products if await has_stock(product)]
-    total_count = len(ready)
-    products = ready[(page - 1) * page_size:page * page_size]
-
-    if not products:
-        await send_message(chat_id, t(lang, "no_products"), kb=back_kb(lang))
-        return
-
+async def show_products(chat_id, user, page=1, catalog=None):
+    products = await db.products.find({"active": True}).to_list(None)
+    group, entries, page, pages = catalog_slice(products, catalog, page)
     rows = []
-    for p in products:
-        price = await product_price(p, user["currency"])
-        sl = await stock_label(p, lang)
-        rows.append([
-            {
-                "text": f"{p['name']} — {fmt_amount(price, user['currency'])} ({t(lang,'stock_word')} {sl})",
-                "callback_data": f"prod:{p['_id']}",
-            }
-        ])
-
+    lines = ["📚 <b>Katalog produk</b>", "Pilih katalog untuk melihat varian, harga, dan stok."]
+    if catalog:
+        lines = ["📦 <b>" + escape(group["name"] if group else "Katalog tidak tersedia") + "</b>", ""]
+        for product in entries:
+            stock = await stock_for(product)
+            pricing = await price_for_product(product, user["currency"], 1)
+            stock_text = "∞" if stock is None else str(int(stock))
+            lines.append(f"• {escape(product['name'][:100])} · <b>{fmt_amount(pricing['unit_price'], user["currency"])}</b> · Stok {stock_text}")
+            rows.append([{"text": product['name'][:80], "callback_data": f"prod:{product['_id']}"}])
+        callback = f"catalog:{catalog}:"
+    else:
+        rows = [[{"text": f"{entry['name'][:80]} · {len(entry['products'])} pilihan", "callback_data": f"catalog:{entry['token']}:1"}] for entry in entries]
+        callback = "products:"
+    if not entries:
+        lines.append("Belum ada produk aktif.")
     nav = []
     if page > 1:
-        nav.append({"text": "⬅️ Sebelumnya", "callback_data": f"products:{page - 1}"})
-    if page * page_size < total_count:
-        nav.append({"text": "➡️ Berikutnya", "callback_data": f"products:{page + 1}"})
+        nav.append({"text": "⬅️ Sebelumnya", "callback_data": f"{callback}{page-1}"})
+    if page < pages:
+        nav.append({"text": "Berikutnya ➡️", "callback_data": f"{callback}{page+1}"})
     if nav:
         rows.append(nav)
-    rows.append([{"text": "🔄 Perbarui stok", "callback_data": f"products:{page}"}])
-    rows.append([{"text": t(lang, "btn_main"), "callback_data": "menu:main"}])
-
-    await send_message(
-        chat_id,
-        t(lang, "products_title") + f"\n\nHalaman {page}/{max(1, (total_count + page_size - 1) // page_size)}",
-        kb={"inline_keyboard": rows},
-    )
+    rows.append([{"text": "🔄 Perbarui stok", "callback_data": f"{callback}{page}"}])
+    if catalog:
+        rows.append([{"text": "📚 Semua katalog", "callback_data": "products:1"}])
+    lines.append(f"\nHalaman {page}/{pages}")
+    rows.append([{"text": t(user.get("lang", "id"), "btn_main"), "callback_data": "menu:main"}])
+    await send_message(chat_id, "\n".join(lines), kb={"inline_keyboard": rows})
 
 async def show_stock(chat_id, user):
-    lang = user.get("lang", "id")
-    products = await db.products.find({"active": True}).to_list(200)
-    if not products:
-        await send_message(chat_id, t(lang, "stock_title") + "\n" + t(lang, "stock_empty"), kb=back_kb(lang))
-        return
-    lines = [t(lang, "stock_title")]
-    for p in products:
-        price = await product_price(p, user["currency"])
-        sl = await stock_label(p, lang)
-        mark = "❌" if not await has_stock(p) else "✅"
-        lines.append(f"{mark} {p['name']} — {fmt_amount(price, user['currency'])} → {t(lang,'stock_word')} <b>{sl}</b>")
-    await send_message(chat_id, "\n".join(lines), kb=back_kb(lang))
+    await show_products(chat_id, user)
 
 
 async def show_product_detail(chat_id, user, pid):
@@ -261,7 +243,7 @@ async def show_product_detail(chat_id, user, pid):
         rows.append([{"text": t(lang, "btn_add_cart"), "callback_data": f"cartadd:{pid}"}])
     else:
         text += "\n\n" + t(lang, "out_of_stock")
-    rows.append([{"text": t(lang, "btn_back"), "callback_data": "menu:products"}, {"text": t(lang, "btn_menu_short"), "callback_data": "menu:main"}])
+    rows.append([{"text": "← Varian katalog", "callback_data": f"catalog:{catalog_token(p)}:1"}, {"text": t(lang, "btn_menu_short"), "callback_data": "menu:main"}])
     await send_message(chat_id, text, kb={"inline_keyboard": rows})
 
 
@@ -2017,6 +1999,9 @@ async def handle_callback(cb):
         await show_main_menu(chat_id, user)
     elif data == "menu:products":
         await show_products(chat_id, user, 1)
+    elif data.startswith("catalog:"):
+        _, token, page = data.split(":", 2)
+        await show_products(chat_id, user, int(page), catalog=token)
     elif data.startswith("products:"):
         await show_products(chat_id, user, int(data.split(":", 1)[1]))
     elif data == "menu:stock":

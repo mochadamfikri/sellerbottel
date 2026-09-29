@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import os
+import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Iterable
@@ -199,7 +200,7 @@ async def add_records(product_id: str, records: list[dict], schema: list[str]):
     for record, fingerprint in valid:
         canonical = _canonical(record)
         docs.append({
-            "_id": hashlib.sha256(f"{product_id}:{fingerprint}".encode("utf-8")).hexdigest(),
+            "_id": str(uuid.uuid4()),
             "product_id": product_id,
             "fingerprint": fingerprint,
             "secret": cipher.encrypt(canonical.encode("utf-8")).decode("utf-8"),

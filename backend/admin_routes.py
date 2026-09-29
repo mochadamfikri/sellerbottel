@@ -6,8 +6,8 @@ import asyncio
 import re
 import zipfile
 import xml.etree.ElementTree as ET
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response
+from typing import Optional, Literal
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response, Query
 from pydantic import BaseModel, Field
 from i18n import t, message_catalog, set_override, reset_override, STRINGS
 from db import db, get_settings
@@ -27,10 +27,16 @@ from inventory import (
 )
 from storage import put_object, delete_object
 from reporting import router as reports_router
+from product_catalog import catalog_name as resolve_catalog_name
+from catalog_routes import router as catalog_router
+from inventory_admin import router as inventory_admin_router, align_records, parse_text_records, validate_schema
+from product_artwork import artwork_urls, image_response, render_product_artwork
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(get_current_admin)])
+router.include_router(catalog_router)
+router.include_router(inventory_admin_router)
 
 
 # ============ STATS ============
@@ -117,34 +123,48 @@ def _is_inventory_product(product: dict) -> bool:
     return _normalized_product_kind(product) == "digital"
 
 
-def _effective_admin_stock(product: dict, inventory_stock: int) -> int | None:
+def _effective_admin_stock(product: dict, inventory_stock: int, marketing: int = 0) -> int | None:
     if not _is_inventory_product(product):
         return None
     mode = product.get("stock_mode", "auto")
     if mode == "manual" and product.get("manual_stock") is not None:
-        return min(inventory_stock, max(0, int(product.get("manual_stock") or 0)))
+        return min(inventory_stock, max(0, int(product.get("manual_stock") or 0) - marketing))
     return inventory_stock
 
 
 @router.get("/products")
 async def list_products():
-    products = await db.products.find().sort("created_at", -1).to_list(500)
+    products = await db.products.find().sort("created_at", -1).to_list(length=None)
     for product in products:
+        product["catalog_name"] = resolve_catalog_name(product)
         kind = _normalized_product_kind(product)
         product["product_kind"] = kind
         if kind == "digital":
             actual = await available_count(product["_id"])
             product["inventory_stock"] = actual
             product["stock_mode"] = product.get("stock_mode", "auto")
-            product["stock"] = _effective_admin_stock(product, actual)
+            product["marketing_allocated"] = await db.inventory_items.count_documents({"product_id": product["_id"], "status": "marketing_allocated"})
+            product["stock"] = _effective_admin_stock(product, actual, product["marketing_allocated"])
             product["inventory_enabled"] = True
         else:
             product["inventory_stock"] = 0
             product["stock"] = None
             product["inventory_enabled"] = False
-        product["image_url"] = (f"/api/store/products/{product['_id']}/image?v="
-                                f"{product.get('updated_at') or product.get('created_at') or ''}") if product.get("image_path") else None
+        product.update(artwork_urls(product, admin=True))
     return products
+
+
+@router.get("/products/artwork-preview")
+async def product_artwork_preview(name: str = Query("Produk", max_length=300), catalog_name: str = Query("", max_length=80)):
+    return Response(render_product_artwork(name, catalog_name), media_type="image/webp", headers={"Cache-Control": "private, max-age=60"})
+
+
+@router.get("/products/{pid}/image")
+async def admin_product_image(pid: str, catalog: bool = False):
+    product = await db.products.find_one({"_id": pid})
+    if not product:
+        raise HTTPException(404, "Produk tidak ditemukan.")
+    return await image_response(product, catalog)
 
 
 def _validate_product_kind(value: str) -> str:
@@ -199,6 +219,8 @@ async def _store_product_image(product_id: str, image: Optional[UploadFile]):
 @router.post("/products")
 async def create_product(
     name: str = Form(...),
+    catalog_name: str = Form("", max_length=80),
+    inventory_fields: str = Form("", max_length=4000),
     description: str = Form(""),
     price_usd: float = Form(...),
     price_idr: Optional[float] = Form(None),
@@ -251,6 +273,7 @@ async def create_product(
     prod = {
         "_id": product_id,
         "name": name.strip(),
+        "catalog_name": " ".join(catalog_name.split()),
         "description": description,
         "price_usd": price_usd,
         "price_idr": price_idr,
@@ -269,7 +292,7 @@ async def create_product(
         "stock_mode": stock_mode if product_kind == "digital" else "unlimited",
         "manual_stock": manual_stock,
         "inventory_enabled": inventory_enabled,
-        "inventory_schema": [],
+        "inventory_schema": (["Session File"] if inventory_mode == "telegram_session" else validate_schema(inventory_fields.split(",")) if inventory_fields.strip() else []) if product_kind == "digital" else [],
         "inventory_mode": inventory_mode if product_kind == "digital" else "table",
         "stock_notice_available": False if product_kind == "digital" else None,
         "stock_notice_count": 0,
@@ -287,6 +310,8 @@ async def create_product(
 async def update_product(
     pid: str,
     name: str = Form(...),
+    catalog_name: Optional[str] = Form(None, max_length=80),
+    inventory_fields: Optional[str] = Form(None, max_length=4000),
     description: str = Form(""),
     price_usd: float = Form(...),
     price_idr: Optional[float] = Form(None),
@@ -327,6 +352,18 @@ async def update_product(
         "minimum_purchase_qty": minimum_purchase_qty,
         "updated_at": now_iso(),
     }
+    if (product_kind != _normalized_product_kind(product) or inventory_mode != product.get("inventory_mode", "table")) and await db.inventory_items.count_documents({"product_id": pid}):
+        raise HTTPException(409, "Jenis/mode produk tidak dapat diganti saat masih memiliki inventory. Buat varian baru agar data pesanan tetap utuh.")
+    if catalog_name is not None:
+        updates["catalog_name"] = " ".join(catalog_name.split())
+    if inventory_fields and product_kind == "digital":
+        schema = validate_schema(inventory_fields.split(","))
+        if product.get("inventory_schema"):
+            align_records(schema, [], product["inventory_schema"])
+        elif await db.inventory_items.count_documents({"product_id": pid}):
+            raise HTTPException(409, "Produk sudah memiliki inventory. Schema tidak dapat diganti.")
+        else:
+            updates["inventory_schema"] = schema
     if image and remove_image:
         raise HTTPException(400, "Unggah foto baru atau hapus foto yang ada, bukan keduanya.")
     product_image = await _store_product_image(pid, image)
@@ -390,7 +427,8 @@ async def update_product(
     result = await db.products.find_one({"_id": pid})
     if result and _is_inventory_product(result):
         result["inventory_stock"] = await available_count(pid)
-        result["stock"] = _effective_admin_stock(result, result["inventory_stock"])
+        result["marketing_allocated"] = await db.inventory_items.count_documents({"product_id": pid, "status": "marketing_allocated"})
+        result["stock"] = _effective_admin_stock(result, result["inventory_stock"], result["marketing_allocated"])
     return result
 
 
@@ -406,7 +444,7 @@ def _parse_num(v, idr: bool):
 
 
 @router.get("/products/import-template")
-async def product_import_template():
+async def product_import_template(format: str = "xlsx"):
     """Generate the multi-sheet product + inventory workbook."""
     try:
         from openpyxl import Workbook
@@ -415,22 +453,21 @@ async def product_import_template():
         wb = Workbook()
         ws = wb.active
         ws.title = "product"
-        headers = [
-            "Nama Product",
-            "Deskripsi Singkat / Poin",
-            "Harga USD",
-            "Harga IDR",
-            "Jenis Product",
-            "Waktu Tunggu (menit)",
-            "Pesan Jasa",
-        ]
+        headers = ["katalog", "product", "jenis (inventory/jasa)", "Harga"]
         ws.append(headers)
+        if format in {"csv", "txt"}:
+            out = io.StringIO()
+            csv.writer(out, delimiter="|" if format == "txt" else ",").writerow(headers)
+            return Response(out.getvalue().encode("utf-8-sig"), media_type="text/plain" if format == "txt" else "text/csv",
+                headers={"Content-Disposition": f'attachment; filename="template-product.{format}"'})
+        if format != "xlsx":
+            raise HTTPException(400, "Pilih format xlsx, csv, atau txt.")
         for cell in ws[1]:
             cell.font = cell.font.copy(bold=True)
 
         type_validation = DataValidation(
             type="list",
-            formula1='"A. Produk Digital / sudah ada datanya,B. Produk Jasa"',
+            formula1='"inventory,jasa"',
             allow_blank=False,
         )
         wait_validation = DataValidation(
@@ -439,28 +476,26 @@ async def product_import_template():
             allow_blank=True,
         )
         ws.add_data_validation(type_validation)
-        ws.add_data_validation(wait_validation)
-        type_validation.add("E2:E1000")
-        wait_validation.add("F2:F1000")
+        type_validation.add("C2:C1000")
         ws.freeze_panes = "A2"
-        ws.auto_filter.ref = "A1:G1000"
+        ws.auto_filter.ref = "A1:D1000"
 
-        widths = [30, 55, 16, 18, 34, 24, 65]
+        widths = [30, 45, 28, 22]
         for i, width in enumerate(widths, 1):
             ws.column_dimensions[chr(64 + i)].width = width
 
         info = wb.create_sheet("Petunjuk")
         info_rows = [
             ["Bagian", "Aturan"],
-            ["Sheet product", "Wajib. Berisi daftar product."],
-            ["Nama Product", "Wajib. Untuk product digital, nama ini juga menjadi nama sheet inventory."],
-            ["Deskripsi Singkat / Poin", "Opsional. Sistem otomatis menyusun deskripsi lengkap berdasarkan nama + poin ini."],
-            ["Harga USD / Harga IDR", "Minimal salah satu wajib diisi."],
-            ["Jenis Product", "A = digital/inventory, B = jasa tanpa inventory."],
-            ["Sheet inventory", "Untuk product A, buat sheet dengan nama PERSIS sama seperti Nama Product."],
-            ["Header inventory", "Baris pertama sheet inventory menjadi schema product tersebut. Tidak ada schema global."],
-            ["Isi inventory", "Mulai baris kedua. Setiap baris adalah satu item inventory."],
-            ["Contoh", "product: Gmail Aged -> sheet: Gmail Aged -> header: email | password | recovery"],
+            ["Header", "katalog | product | jenis (inventory/jasa) | Harga"],
+            ["katalog", "Nama kelompok, contoh Claude Pro. Semua varian memakai katalog yang sama."],
+            ["product", "Nama varian, contoh Claude Pro 1 Bulan. Nama yang sama memperbarui produk yang sudah ada."],
+            ["jenis (inventory/jasa)", "Isi inventory untuk produk dengan data stok, atau jasa untuk layanan."],
+            ["Harga", "Harga dalam Rupiah, contoh 100000. Isi angka tanpa Rp."],
+            ["Inventory XLSX", "Opsional: sheet dengan nama sama persis seperti product. Header mengikuti data, contoh email,password."],
+            ["Inventory CSV/TXT", "Upload terpisah lewat Kelola Inventory setelah memilih produk."],
+            ["Kolom tambahan opsional", "Deskripsi, Minimum Pembelian, Kolom Inventory (nama field dipisahkan koma), Waktu Tunggu (menit), Pesan Jasa."],
+            ["Template lama", "Header Nama Product, Jenis Product, Harga IDR/Harga USD tetap didukung."],
         ]
         for row in info_rows:
             info.append(row)
@@ -482,13 +517,15 @@ async def product_import_template():
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": 'attachment; filename="template-bulk-product.xlsx"'},
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Gagal membuat template bulk product")
         raise HTTPException(500, f"Gagal membuat template Excel: {type(exc).__name__}")
 
 
 @router.post("/products/import")
-async def import_products(file: UploadFile = File(...)):
+async def import_products(file: Optional[UploadFile] = File(None), content: str = Form("")):
     """Import products from the new multi-sheet workbook.
 
     Sheet product contains product metadata. Each digital product gets its
@@ -497,13 +534,24 @@ async def import_products(file: UploadFile = File(...)):
     """
     from bulk_product_import import import_workbook
 
-    data = await file.read()
-    filename = (file.filename or "").lower()
-    if not filename.endswith(".xlsx"):
-        raise HTTPException(400, "Gunakan file .xlsx dengan format multi-sheet product.")
+    data = await file.read() if file else content.encode("utf-8")
+    filename = (file.filename or "").lower() if file else "manual.txt"
+    flat = not filename.endswith(".xlsx")
+    if flat:
+        if not filename.endswith((".csv", ".txt")):
+            raise HTTPException(400, "Gunakan XLSX, CSV, TXT, atau tempel data sesuai template.")
+        from openpyxl import Workbook
+        try:
+            text_data = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise HTTPException(400, "File teks harus memakai encoding UTF-8.")
+        wb = Workbook(); ws = wb.active; ws.title = "product"
+        for row in csv.reader(io.StringIO(text_data), delimiter="|" if filename.endswith(".txt") else _detect_delimiter(text_data.splitlines()[0] if text_data.splitlines() else "")):
+            ws.append(row)
+        out = io.BytesIO(); wb.save(out); data = out.getvalue()
 
     try:
-        return await import_workbook(data)
+        return await import_workbook(data, metadata_only=flat)
     except HTTPException:
         raise
     except InventoryError:
@@ -728,17 +776,8 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
                 if any(record.values()):
                     records.append(record)
         elif source_name.endswith(".txt"):
-            text_data = data.decode("utf-8-sig", errors="ignore")
-            lines = [line.strip() for line in text_data.splitlines() if line.strip()]
-            schema_from_file = schema or ["value"]
-            for line in lines:
-                parts = [part.strip() for part in line.split("|")]
-                if len(schema_from_file) == 1:
-                    records.append({schema_from_file[0]: line})
-                elif len(parts) == len(schema_from_file):
-                    records.append({schema_from_file[i]: parts[i] for i in range(len(schema_from_file))})
-                else:
-                    raise HTTPException(400, f"Format TXT tidak cocok dengan schema inventory ({len(schema_from_file)} kolom).")
+            schema_from_file, records = parse_text_records(data.decode("utf-8-sig"), schema)
+
         else:
             if product.get("inventory_mode") != "telegram_session" and product.get("inventory_schema") != ["Session File"]:
                 raise HTTPException(
@@ -759,22 +798,9 @@ async def _parse_inventory_input(file: Optional[UploadFile], content: str, produ
                 "__file_data_b64": base64.b64encode(data).decode("ascii"),
             })
     else:
-        lines = [line.strip() for line in (content or "").splitlines() if line.strip()]
-        schema_from_file = schema or ["value"]
-        for line in lines:
-            parts = [part.strip() for part in line.split("|")]
-            if len(schema_from_file) == 1:
-                records.append({schema_from_file[0]: line})
-            elif len(parts) == len(schema_from_file):
-                records.append({schema_from_file[i]: parts[i] for i in range(len(schema_from_file))})
-            else:
-                raise HTTPException(400, f"Input manual tidak cocok dengan schema inventory ({len(schema_from_file)} kolom).")
+        schema_from_file, records = parse_text_records(content or "", schema)
 
-    # Product-specific schema: the uploaded file/header is authoritative.
-    # We intentionally do NOT compare against an older schema here. This lets
-    # every product use its own fields and lets an updated XLSX header redefine
-    # that product's schema.
-    return schema_from_file, records
+    return align_records(schema_from_file, records, schema)
 
 
 @router.post("/products/{pid}/inventory/validate")
@@ -859,11 +885,14 @@ async def add_inventory_manual(pid: str, body: InventoryManualBody):
         raise HTTPException(404, "Produk tidak ditemukan")
     if not _is_inventory_product(product):
         raise HTTPException(400, "Produk jasa tidak memiliki inventory.")
+    if product.get("inventory_mode") == "telegram_session" or product.get("inventory_schema") == ["Session File"]:
+        raise HTTPException(400, "Inventory session harus diunggah sebagai file .session asli.")
     schema = [str(x).strip() for x in (product.get("inventory_schema") or []) if str(x).strip()]
     if not schema:
-        raise HTTPException(400, "Schema inventory belum tersedia. Upload file XLSX/CSV pertama kali untuk menentukan header.")
+        raise HTTPException(400, "Tetapkan kolom inventory atau unggah template XLSX/CSV/TXT terlebih dahulu.")
+    _, records = align_records(list(body.data), [body.data], schema)
     try:
-        result = await add_records(pid, [body.data], schema)
+        result = await add_records(pid, records, schema)
     except InventoryError:
         raise
     except Exception as exc:
@@ -880,7 +909,7 @@ async def add_inventory_manual(pid: str, body: InventoryManualBody):
 
 
 @router.get("/products/{pid}/inventory")
-async def inventory_list(pid: str, status: str = "available"):
+async def inventory_list(pid: str, status: str = "available", offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500)):
     product = await db.products.find_one({"_id": pid})
     if not product:
         raise HTTPException(404, "Produk tidak ditemukan")
@@ -888,11 +917,13 @@ async def inventory_list(pid: str, status: str = "available"):
         raise HTTPException(400, "Produk jasa tidak memiliki inventory.")
 
     q = {"product_id": pid}
+    if status not in {"all", "available", "reserved", "sold", "marketing_allocated"}:
+        raise HTTPException(400, "Status inventory tidak valid.")
     if status != "all":
         q["status"] = status
-    cursor = db.inventory_items.find(q).sort("created_at", -1).limit(1000)
+    cursor = db.inventory_items.find(q).sort([("created_at", -1), ("_id", 1)]).skip(offset).limit(limit)
     rows = []
-    for item in await cursor.to_list(1000):
+    for item in await cursor.to_list(limit):
         row = {
             "_id": item["_id"],
             "status": item["status"],
@@ -901,9 +932,9 @@ async def inventory_list(pid: str, status: str = "available"):
             "created_at": item.get("created_at"),
             "sold_at": item.get("sold_at"),
         }
-        if status != "sold" and item.get("secret"):
+        if item.get("status") != "sold" and item.get("secret"):
             decrypted = decrypt_items([item])[0]
-            if decrypted.get("__file_data_b64"):
+            if "__file_name" in decrypted or "__file_data_b64" in decrypted:
                 row["item"] = {
                     "file": decrypted.get("__file_name") or decrypted.get("file") or "inventory.bin",
                     "is_file": True,
@@ -912,11 +943,15 @@ async def inventory_list(pid: str, status: str = "available"):
                 row["item"] = decrypted
         rows.append(row)
     return {
-        "schema": product.get("inventory_schema") or ["value"],
+        "schema": product.get("inventory_schema") or [],
         "items": rows,
+        "total": await db.inventory_items.count_documents(q),
+        "offset": offset,
+        "limit": limit,
         "available": await db.inventory_items.count_documents({"product_id": pid, "status": "available"}),
         "reserved": await db.inventory_items.count_documents({"product_id": pid, "status": "reserved"}),
         "sold": await db.inventory_items.count_documents({"product_id": pid, "status": "sold"}),
+        "marketing_allocated": await db.inventory_items.count_documents({"product_id": pid, "status": "marketing_allocated"}),
     }
 
 
@@ -931,6 +966,7 @@ async def inventory_summary(pid: str):
         "available": await db.inventory_items.count_documents({"product_id": pid, "status": "available"}),
         "reserved": await db.inventory_items.count_documents({"product_id": pid, "status": "reserved"}),
         "sold": await db.inventory_items.count_documents({"product_id": pid, "status": "sold"}),
+        "marketing_allocated": await db.inventory_items.count_documents({"product_id": pid, "status": "marketing_allocated"}),
     }
 
 
@@ -939,10 +975,15 @@ async def delete_inventory_item(pid: str, item_id: str):
     product = await db.products.find_one({"_id": pid})
     if not product:
         raise HTTPException(404, "Produk tidak ditemukan")
+    existing = await db.inventory_items.find_one({"_id": item_id, "product_id": pid}, {"marketing_audit": 1})
+    if existing and existing.get("marketing_audit"):
+        from marketing_campaigns import stock_audit
+        await stock_audit(existing)
     result = await db.inventory_items.delete_one({
         "_id": item_id,
         "product_id": pid,
         "status": "available",
+        "marketing_audit": (existing or {}).get("marketing_audit"),
     })
     if result.deleted_count != 1:
         raise HTTPException(400, "Item hanya bisa dihapus saat masih tersedia.")
@@ -1127,48 +1168,33 @@ async def search_users(
     return result
 
 class AdjustBody(BaseModel):
-    currency: str
-    amount: float
-    reason: str = ""
+    currency: Literal["USD", "IDR"]
+    amount: float = Field(ge=-1_000_000_000, le=1_000_000_000, allow_inf_nan=False)
+    reason: str = Field(default="", max_length=500)
+    request_id: str | None = Field(default=None, min_length=8, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 @router.post("/users/{tid}/adjust")
-async def adjust_balance(tid: int, body: AdjustBody):
+async def adjust_balance(tid: int, body: AdjustBody, admin: dict = Depends(get_current_admin)):
+    from balance_admin import Adjustment, adjust
     user = await db.bot_users.find_one({"telegram_id": tid})
     if not user:
         raise HTTPException(404, "Pengguna tidak ditemukan")
-    if body.currency not in ("USD", "IDR"):
-        raise HTTPException(400, "Currency harus USD atau IDR")
     if not __import__("math").isfinite(body.amount) or body.amount == 0:
-        raise HTTPException(400, "Jumlah adjustment tidak valid.")
-
-    field = "balance_usd" if body.currency == "USD" else "balance_idr"
-    if body.amount < 0:
-        result = await db.bot_users.update_one(
-            {
-                "telegram_id": tid,
-                field: {"$gte": abs(body.amount)},
-            },
-            {"$inc": {field: body.amount}},
-        )
-        if result.modified_count != 1:
-            raise HTTPException(409, "Saldo pengguna tidak cukup untuk adjustment negatif.")
-    else:
-        await db.bot_users.update_one(
-            {"telegram_id": tid},
-            {"$inc": {field: body.amount}},
-        )
-
-    await db.balance_adjustments.insert_one({
-        "_id": str(uuid.uuid4()), "user_tid": tid, "currency": body.currency,
-        "amount": body.amount, "reason": body.reason, "created_at": now_iso(),
-    })
-    lang = user.get("lang") or "id"
-    sign = "+" if body.amount >= 0 else "-"
-    amt_str = f"{sign}{fmt_amount(abs(body.amount), body.currency)}"
-    reason = t(lang, "reason_label", r=body.reason) if body.reason else ""
-    await send_message(tid, t(lang, "adj_notice", amount=amt_str, reason=reason))
-    return {"ok": True}
+        raise HTTPException(400, "Jumlah adjustment tidak valid")
+    request = Adjustment(currency=body.currency, amount=abs(body.amount),
+        direction="ADD" if body.amount > 0 else "SUBTRACT", reason=body.reason.strip() or "Penyesuaian admin (legacy)",
+        request_id=body.request_id or str(uuid.uuid4()))
+    result = await adjust("bot:" + str(user["_id"]), request, admin)
+    if not result.get("replayed"):
+        try:
+            lang = user.get("lang") or "id"
+            sign = "+" if body.amount > 0 else "-"
+            await send_message(tid, t(lang, "adj_notice", amount=sign + fmt_amount(abs(body.amount), body.currency),
+                reason=t(lang, "reason_label", r=body.reason) if body.reason else ""))
+        except Exception:
+            pass
+    return result
 
 
 class FreezeBody(BaseModel):
@@ -1234,6 +1260,8 @@ class SettingsBody(BaseModel):
     broadcast_auto_image_enabled: bool = False
     broadcast_channel_id: str = ""
     broadcast_group_ids: str = ""
+    transaction_channel_ids: str = Field(default="", max_length=2000)
+    recap_channel_ids: str = Field(default="", max_length=2000)
     stock_notifications_enabled: bool = True
     join_group_target: str = ""
 
@@ -1283,6 +1311,11 @@ async def update_settings(body: SettingsBody):
     data["required_channels"] = channels
     data["broadcast_channel_id"] = str(data.get("broadcast_channel_id") or "").strip()
     data["broadcast_group_ids"] = str(data.get("broadcast_group_ids") or "").strip()
+    for field in ("broadcast_group_ids", "transaction_channel_ids", "recap_channel_ids"):
+        values = list(dict.fromkeys(value.strip() for value in re.split(r"[,\n]+", data.get(field) or "") if value.strip()))
+        if any(not re.fullmatch(r"(?:-\d+|@[A-Za-z0-9_]{5,32})", value) for value in values):
+            raise HTTPException(400, f"{field}: gunakan ID -100… atau @username, satu per baris.")
+        data[field] = "\n".join(values)
     data["join_group_target"] = str(data.get("join_group_target") or "").strip()
     await db.settings.update_one({"_id": "main"}, {"$set": data}, upsert=True)
     s = await get_settings()
@@ -1356,6 +1389,15 @@ async def complete_service_order(oid: str):
     if order.get("customer_email") or order.get("customer_id"):
         from storefront_routes import send_order_completion_email
         email_sent = await send_order_completion_email(oid)
+    if order.get("user_tid") and not order.get("customer_id"):
+        try:
+            if order.get("bot2") or order.get("payment_scope") == "bot2":
+                from bot2 import send2 as send_completed
+            else:
+                from bot import send_message as send_completed
+            await send_completed(order["user_tid"], f"✅ Pesanan jasa <code>{escape(str(order.get('invoice_id') or oid))}</code> telah selesai.")
+        except Exception:
+            logger.exception("Could not send service completion for %s", oid)
     return {"ok": True, "email_sent": email_sent}
 
 
@@ -1981,18 +2023,8 @@ async def create_broadcast(
 
 
 async def _broadcast_channel_id():
-    import os
-    configured = str(os.environ.get("BROADCAST_CHANNEL_ID", "")).strip()
-    if configured:
-        return configured
-    settings = await get_settings()
-    configured = str(settings.get("broadcast_channel_id") or "").strip()
-    if configured:
-        return configured
-    for channel in settings.get("required_channels") or []:
-        if channel.get("enabled", True) and channel.get("channel_id"):
-            return str(channel["channel_id"])
-    return ""
+    from services import _broadcast_channel_id as configured_channel
+    return await configured_channel()
 
 
 async def _broadcast_channel_target():
@@ -2205,7 +2237,7 @@ async def broadcast_channel(
 
 @router.get("/broadcasts")
 async def list_broadcasts():
-    return await db.broadcasts.find().sort("created_at", -1).to_list(100)
+    return await db.broadcasts.find({"kind": {"$ne": "marketing_campaign"}}).sort("created_at", -1).to_list(100)
 
 @router.post("/products/import-test")
 async def import_test():

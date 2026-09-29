@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { Plus, Pencil, Trash2, Upload, Database, Boxes, BriefcaseBusiness } from "lucide-react";
 import api, { fmtUSD, fmtIDR, formatApiErrorDetail } from "../lib/api";
@@ -16,6 +17,9 @@ const empty = {
   stock: "",
   minimum_purchase_qty: 1,
   image_url: "",
+  image_source: "generated",
+  catalog_name: "",
+  inventory_fields: "",
   delivery_type: "link",
   content: "",
   wait_minutes: 5,
@@ -25,6 +29,10 @@ const empty = {
 const cls = "mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
 
 export default function Products() {
+  const [params, setParams] = useSearchParams();
+  const catalogFilter = params.get("catalog") || "";
+  const [search, setSearch] = useState("");
+  const [catalogOptions, setCatalogOptions] = useState([]);
   const [products, setProducts] = useState([]);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(empty);
@@ -36,6 +44,8 @@ export default function Products() {
 
   const [importOpen, setImportOpen] = useState(false);
   const [importFile, setImportFile] = useState(null);
+  const [importText, setImportText] = useState("");
+  const [importResult, setImportResult] = useState(null);
   const [importing, setImporting] = useState(false);
 
   const [inventoryOpen, setInventoryOpen] = useState(false);
@@ -48,6 +58,8 @@ export default function Products() {
     try {
       const { data } = await api.get("/admin/products");
       setProducts(data);
+      const catalogs = await api.get("/admin/catalogs");
+      setCatalogOptions(catalogs.data.map((c) => c.name));
     } catch (err) {
       if (!silent) toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal memuat produk.");
     }
@@ -62,7 +74,7 @@ export default function Products() {
   }, []);
 
   const openCreate = () => {
-    setForm(empty);
+    setForm({ ...empty, catalog_name: catalogFilter });
     setImageFile(null);
     setImagePreview("");
     setRemoveImage(false);
@@ -83,6 +95,9 @@ export default function Products() {
       stock: p.manual_stock ?? p.stock ?? "",
       minimum_purchase_qty: p.minimum_purchase_qty ?? 1,
       image_url: p.image_url || "",
+      image_source: p.image_source || "generated",
+      catalog_name: p.catalog_name || "",
+      inventory_fields: (p.inventory_schema || []).join(","),
       delivery_type: p.delivery_type || "link",
       content: p.service_message_template || p.content || "",
       wait_minutes: p.service_wait_minutes || 5,
@@ -113,6 +128,8 @@ export default function Products() {
       fd.append("service_message_template", form.product_kind === "service" ? form.content : "");
       fd.append("active", form.active);
       fd.append("minimum_purchase_qty", String(form.minimum_purchase_qty || 1));
+      fd.append("catalog_name", form.catalog_name.trim());
+      if (form.product_kind === "digital" && form.inventory_mode !== "telegram_session") fd.append("inventory_fields", form.inventory_fields);
       if (imageFile) fd.append("image", imageFile);
       if (editId) fd.append("remove_image", removeImage ? "true" : "false");
 
@@ -131,13 +148,13 @@ export default function Products() {
     }
   };
 
-  const downloadImportTemplate = async () => {
+  const downloadImportTemplate = async (format = "xlsx") => {
     try {
-      const response = await api.get("/admin/products/import-template", { responseType: "blob" });
+      const response = await api.get("/admin/products/import-template", { responseType: "blob", params: { format } });
       const url = window.URL.createObjectURL(response.data);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "template-bulk-product.xlsx";
+      a.download = `template-product.${format}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -148,17 +165,18 @@ export default function Products() {
   };
 
   const importProducts = async () => {
-    if (!importFile) {
+    if (!importFile && !importText.trim()) {
       toast.error("File Excel/CSV belum dipilih.");
       return;
     }
     setImporting(true);
     try {
       const fd = new FormData();
-      fd.append("file", importFile, importFile.name);
+      if (importFile) fd.append("file", importFile, importFile.name);
+      else fd.append("content", importText);
       const { data } = await api.post("/admin/products/import", fd);
-      toast.success("Import selesai: " + (data.imported ?? 0) + " produk masuk, " + (data.skipped ?? 0) + " dilewati.");
-      setImportOpen(false);
+      setImportResult(data);
+      toast.success(`Import selesai: ${data.imported || 0} baru, ${data.updated || 0} diperbarui, ${data.inventory_created || 0} item inventory.`);
       setImportFile(null);
       await load();
     } catch (err) {
@@ -263,6 +281,9 @@ export default function Products() {
     );
   };
 
+  const visibleProducts = products.filter((p) => (!catalogFilter || p.catalog_name?.toLowerCase() === catalogFilter.toLowerCase()) && `${p.name} ${p.catalog_name || ""}`.toLowerCase().includes(search.toLowerCase()));
+  const displayPreview = imageFile ? imagePreview : form.image_source === "uploaded" && !removeImage ? imagePreview : form.name.trim() ? `/api/admin/products/artwork-preview?name=${encodeURIComponent(form.name)}&catalog_name=${encodeURIComponent(form.catalog_name)}` : "";
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center gap-3 flex-wrap">
@@ -276,7 +297,7 @@ export default function Products() {
             onClick={() => { setImportFile(null); setImportOpen(true); }}
             className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-lg px-4 py-2"
           >
-            <Upload size={16} /> Import Excel
+            <Upload size={16} /> Import Produk
           </button>
           <button
             data-testid="add-product-button"
@@ -288,6 +309,12 @@ export default function Products() {
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-3">
+        <input aria-label="Cari produk" className={`${cls} sm:max-w-xs`} placeholder="Cari produk atau katalog" value={search} onChange={(e) => setSearch(e.target.value)}/>
+        <select aria-label="Filter katalog" className={`${cls} sm:max-w-xs`} value={catalogFilter} onChange={(e) => setParams(e.target.value ? { catalog: e.target.value } : {})}><option value="">Semua katalog</option>{catalogOptions.map((name) => <option key={name} value={name}>{name}</option>)}</select>
+        <Link className="text-sm text-cyan-400" to="/catalogs">Kelola katalog & pindahkan produk →</Link>
+        <span className="text-xs text-slate-500">{visibleProducts.length} produk ditampilkan</span>
+      </div>
       <div className="bg-slate-900/60 border border-slate-800 rounded-xl overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead>
@@ -303,13 +330,14 @@ export default function Products() {
             </tr>
           </thead>
           <tbody>
-            {products.map((p) => (
+            {visibleProducts.map((p) => (
               <tr key={p._id} className="border-b border-slate-800/60 hover:bg-slate-800/30 align-top">
                 <td className="px-4 py-3">
                   <div className="flex items-start gap-3">
                     {p.image_url ? <img src={p.image_url} alt="" className="h-12 w-12 shrink-0 rounded-md object-cover bg-slate-800" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} /> : null}
                     <div>
                       <p className="font-medium text-slate-200">{p.name}</p>
+                      <p className="text-xs text-cyan-400">Katalog: {p.catalog_name || "Otomatis"}</p>
                       <p className="text-xs text-slate-500 line-clamp-2">{p.description}</p>
                     </div>
                   </div>
@@ -358,29 +386,33 @@ export default function Products() {
                 </td>
               </tr>
             ))}
-            {!products.length && <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-500">Belum ada produk.</td></tr>}
+            {!visibleProducts.length && <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-500">Tidak ada produk yang sesuai.</td></tr>}
           </tbody>
         </table>
       </div>
 
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
         <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-lg">
-          <DialogHeader><DialogTitle>Import Produk dari Excel</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Import Produk · XLSX, CSV, TXT atau teks</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div className="flex items-center justify-between gap-3 rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3">
               <div>
                 <p className="text-sm text-slate-200 font-semibold">Template Excel Bulk Product</p>
-                <p className="text-xs text-slate-500 mt-1">Kolom Jenis Product memiliki pilihan A/B dan menentukan proses upload per baris.</p>
+                <p className="text-xs text-slate-500 mt-1">Jenis: inventory atau jasa. Harga menggunakan Rupiah.</p>
               </div>
-              <button type="button" onClick={downloadImportTemplate} className="shrink-0 bg-slate-800 hover:bg-slate-700 rounded-lg px-3 py-2 text-xs font-semibold">Download Template</button>
+              <div className="flex flex-wrap gap-2">{["xlsx", "csv", "txt"].map((format) => <button key={format} type="button" onClick={() => downloadImportTemplate(format)} className="bg-slate-800 rounded-lg px-3 py-2 text-xs">Template {format.toUpperCase()}</button>)}</div>
             </div>
             <div>
               <label className="text-xs text-slate-400">File Product</label>
-              <input type="file" accept=".xlsx,.csv,.txt" className={cls} onChange={(e) => setImportFile(e.target.files?.[0] || null)} />
-              <p className="text-xs text-slate-500 mt-2">Header: Nama Product | Deskripsi | Harga USD | Harga IDR | Jenis Product | Waktu Tunggu (menit) | Pesan Jasa</p>
-              <p className="text-xs text-slate-600 mt-1">Jenis Product wajib diisi per baris. A = inventory/data, B = jasa + Unlimited.</p>
+              <input type="file" accept=".xlsx,.csv,.txt" className={cls} onChange={(e) => { setImportFile(e.target.files?.[0] || null); setImportResult(null); }} />
+              <textarea rows={4} className={cls} disabled={Boolean(importFile)} placeholder="Atau tempel isi template TXT di sini (header wajib, kolom dipisahkan |)." value={importText} onChange={(e) => { setImportText(e.target.value); setImportResult(null); }}/>
+              <p className="text-xs text-slate-500 mt-2">Header: katalog | product | jenis (inventory/jasa) | Harga</p>
+              <p className="text-xs text-slate-500">Kolom tambahan opsional: Kolom Inventory (email,password), Minimum Pembelian, Deskripsi. CSV/TXT mengimpor produk; data inventory diunggah terpisah. XLSX dapat menyertakan sheet inventory per produk.</p>
+              {importResult && <div role="status" className="max-h-40 overflow-auto rounded bg-slate-950 p-3 text-xs"><p>{importResult.imported || 0} produk baru · {importResult.updated || 0} diperbarui · {importResult.inventory_created || 0} item inventory</p>{(importResult.errors || []).map((error, index) => <p key={index} className="mt-1 text-amber-300">{error}</p>)}</div>}
+              <p className="text-xs text-slate-500">Isi Katalog yang sama untuk semua varian. Kolom kosong mempertahankan katalog produk lama.</p>
+              <p className="text-xs text-slate-600 mt-1">Isi jenis inventory untuk stok data, atau jasa untuk layanan tanpa inventory.</p>
             </div>
-            <button onClick={importProducts} disabled={importing || !importFile} className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5">
+            <button onClick={importProducts} disabled={importing || (!importFile && !importText.trim())} className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5">
               {importing ? "Mengimport..." : "Import Produk"}
             </button>
           </div>
@@ -455,11 +487,20 @@ export default function Products() {
             </div>
 
             <div>
+              <label className="text-xs text-slate-400">Katalog</label>
+              <input className={cls} list="product-catalogs" maxLength={80} placeholder="Contoh: Claude Pro" value={form.catalog_name} onChange={(e) => setForm({ ...form, catalog_name: e.target.value })} />
+              <datalist id="product-catalogs">{catalogOptions.map((name) => <option key={name} value={name}/>)}</datalist>
+              <p className="mt-1 text-xs text-slate-500">Gunakan nama katalog yang sama untuk semua varian. Kosongkan untuk pengelompokan otomatis.</p>
+              {form.product_kind === "digital" && form.inventory_mode !== "telegram_session" && <><label className="mt-3 block text-xs text-slate-400">Kolom inventory (pisahkan dengan koma)</label><input className={cls} value={form.inventory_fields} placeholder="email,password,recovery" onChange={(e) => setForm({ ...form, inventory_fields: e.target.value })}/><p className="mt-1 text-xs text-slate-500">Isi untuk langsung input manual. Jika kosong, header file pertama menetapkan kolom. Kolom yang sudah ditetapkan harus tetap sama.</p></>}
+            </div>
+
+            <div>
               <label className="text-xs text-slate-400">Foto Produk (JPG, PNG, WEBP · maks. 5 MB)</label>
               <p className="mt-1 text-xs text-slate-500">Gambar otomatis diseragamkan ke kanvas 1200 × 1200 px tanpa memotong isi.</p>
               <input type="file" accept="image/jpeg,image/png,image/webp" className={cls} onChange={(e) => { const f = e.target.files?.[0] || null; setImageFile(f); setRemoveImage(false); setImagePreview(f ? URL.createObjectURL(f) : form.image_url || ""); }} />
-              {imagePreview && <img src={imagePreview} alt="Pratinjau foto produk" className="mt-3 h-36 w-full rounded-lg border border-slate-700 bg-white object-contain p-2" />}
-              {editId && form.image_url && !imageFile && !removeImage && <button type="button" onClick={() => { setRemoveImage(true); setImagePreview(""); }} className="mt-2 text-xs font-medium text-rose-600 hover:text-rose-700">Hapus foto produk</button>}
+              <p className="mt-2 text-xs text-cyan-400">Tanpa upload, foto otomatis menampilkan logo layanan, paket (Pro/Trial/Plus), dan durasi dari nama produk. Upload foto untuk menggantinya.</p>
+              {displayPreview && <img src={displayPreview} alt="Pratinjau foto produk" className="mt-3 h-48 w-full rounded-lg border border-slate-700 bg-white object-contain p-2" />}
+              {editId && form.image_source === "uploaded" && !imageFile && !removeImage && <button type="button" onClick={() => { setRemoveImage(true); setImagePreview(""); }} className="mt-2 text-xs font-medium text-rose-600 hover:text-rose-700">Hapus foto custom · gunakan gambar otomatis</button>}
               {removeImage && <div className="mt-2 flex items-center justify-between rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700"><span>Foto akan dihapus saat perubahan disimpan.</span><button type="button" onClick={() => { setRemoveImage(false); setImagePreview(form.image_url); }} className="font-semibold underline">Batalkan</button></div>}
             </div>
 

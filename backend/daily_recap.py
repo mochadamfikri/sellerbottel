@@ -54,7 +54,7 @@ async def send_due_recap(now=None):
     if not schedule_at <= now < schedule_at + timedelta(hours=1):
         return False
     target = settings.get("daily_recap_target") or "chats"
-    if target in {"chats", "both"} and not await configured_chats():
+    if target in {"chats", "both"} and not await configured_chats("daily_recap"):
         return False
     day = (now.date() - timedelta(days=1)).isoformat()
     marker = {"_id": day, "status": "sending", "created_at": now_iso(), "target": target}
@@ -63,7 +63,7 @@ async def send_due_recap(now=None):
     except DuplicateKeyError:
         return False
     try:
-        result = await send(ComposeBody(kind="daily_recap", day=day, target=target))
+        result = await send(ComposeBody(kind="daily_recap", day=day, target=target, image_mode="auto"))
         chat_failed = any(not row.get("ok") for row in result.get("chat_results", []))
         await db.daily_recaps.update_one({"_id": day}, {"$set": {
             "status": "partial" if chat_failed else "queued" if result.get("queued_users") else "sent",

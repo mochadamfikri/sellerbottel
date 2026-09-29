@@ -19,10 +19,12 @@ from pymongo import ReturnDocument
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 from auth import JWT_ALGORITHM, get_jwt_secret
 from db import db, get_settings
+from product_catalog import catalog_name
+from product_artwork import artwork_urls, image_response
 from pricing import price_for_product
 from checkout import stock_for
 from storage import get_object
@@ -414,9 +416,9 @@ def _public_product(product):
     item = {key: product.get(key) for key in (
         "_id", "name", "description", "price_usd", "price_idr", "product_kind", "delivery_type", "minimum_purchase_qty"
     )}
+    item["catalog_name"] = catalog_name(product)
     item["minimum_purchase_qty"] = max(1, int(item.get("minimum_purchase_qty") or 1))
-    item["image_url"] = (f"/api/store/products/{product['_id']}/image?v="
-                         f"{product.get('updated_at') or product.get('created_at') or ''}") if product.get("image_path") else None
+    item.update(artwork_urls(product))
     return item
 
 
@@ -428,7 +430,7 @@ async def store_products(search: str = ""):
         import re
         escaped = re.escape(term)
         query["$or"] = [{"name": {"$regex": escaped, "$options": "i"}}, {"description": {"$regex": escaped, "$options": "i"}}]
-    products = await db.products.find(query, {"content": 0, "inventory_schema": 0}).sort("created_at", -1).limit(200).to_list(200)
+    products = await db.products.find(query, {"content": 0, "inventory_schema": 0}).sort("created_at", -1).to_list(length=None)
     sales_rows = await db.purchases.aggregate([
         {"$match": {"status": {"$in": ["paid", "delivered", "completed", "service_waiting", "delivery_failed"]}}},
         {"$unwind": "$items"},
@@ -464,16 +466,11 @@ async def store_product(product_id: str):
 
 
 @router.get("/products/{product_id}/image")
-async def store_product_image(product_id: str):
-    product = await db.products.find_one({"_id": product_id, "active": True}, {"image_path": 1, "image_content_type": 1})
-    if not product or not product.get("image_path"):
+async def store_product_image(product_id: str, catalog: bool = False):
+    product = await db.products.find_one({"_id": product_id, "active": True})
+    if not product:
         raise HTTPException(404, "Foto produk tidak ditemukan.")
-    try:
-        data, detected_type = await get_object(product["image_path"])
-    except FileNotFoundError:
-        raise HTTPException(404, "Foto produk tidak ditemukan.")
-    return Response(content=data, media_type=product.get("image_content_type") or detected_type,
-                    headers={"Cache-Control": "public, max-age=86400"})
+    return await image_response(product, catalog)
 
 
 @router.get("/me")
@@ -484,13 +481,56 @@ async def customer_profile(user: dict = Depends(current_customer)):
         await apply_pending_wallet_merge(user["_id"])
         user = await db.store_customers.find_one({"_id": user["_id"]}) or user
         bot_user = await db.bot_users.find_one({"telegram_id": user["telegram_id"]})
+    return profile_payload(user, bot_user)
+
+
+def profile_payload(user, bot_user=None):
     return {"email": user.get("email"), "telegram_id": user.get("telegram_id"),
+            "display_name": user.get("display_name") or (bot_user or {}).get("first_name") or "",
+            "phone": user.get("phone") or "", "email_verified": bool(user.get("verified_at")),
+            "created_at": user.get("created_at"),
             "username": (bot_user or {}).get("username"), "first_name": (bot_user or {}).get("first_name"),
             "balance_idr": (bot_user or {}).get("balance_idr", 0) if user.get("telegram_id") else user.get("balance_idr", 0),
             "balance_usd": (bot_user or {}).get("balance_usd", 0) if user.get("telegram_id") else user.get("balance_usd", 0),
             "web_balance_idr": user.get("balance_idr", 0), "web_balance_usd": user.get("balance_usd", 0),
             "telegram_linked": bool(user.get("telegram_id")), "currency": (bot_user or {}).get("currency", "IDR"),
             "frozen": (bot_user or {}).get("frozen", False)}
+
+
+class ProfileUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    display_name: str = Field(min_length=1, max_length=80)
+    phone: str = Field(default="", max_length=30)
+
+    @field_validator("display_name")
+    @classmethod
+    def clean_display_name(cls, value):
+        value = " ".join(value.split())
+        if not value or any(ord(char) < 32 for char in value):
+            raise ValueError("Nama tampilan wajib diisi.")
+        return value
+
+    @field_validator("phone")
+    @classmethod
+    def clean_phone(cls, value):
+        value = value.strip()
+        if value and (not re.fullmatch(r"\+?[0-9 ()-]+", value) or not 7 <= len(re.sub(r"\D", "", value)) <= 20):
+            raise ValueError("Nomor kontak tidak valid. Gunakan 7–20 digit, boleh diawali +.")
+        return value
+
+
+@router.patch("/me")
+async def update_customer_profile(body: ProfileUpdate, response: Response, user: dict = Depends(current_customer)):
+    # Restrict the write to optional profile fields; financial/auth fields stay intact.
+    changed = await db.store_customers.update_one({"_id": user["_id"]}, {"$set": {
+        **body.model_dump(), "profile_updated_at": datetime.now(timezone.utc),
+    }})
+    if not changed.matched_count:
+        raise HTTPException(404, "Akun tidak ditemukan.")
+    updated = await db.store_customers.find_one({"_id": user["_id"]})
+    bot_user = await db.bot_users.find_one({"telegram_id": updated["telegram_id"]}) if updated.get("telegram_id") else None
+    response.headers["Cache-Control"] = "no-store, private"
+    return profile_payload(updated, bot_user)
 
 
 class CheckoutBody(BaseModel):
@@ -630,7 +670,7 @@ async def store_checkout(body: CheckoutBody, user: dict = Depends(current_custom
         try:
             from checkout import execute_checkout
             result = await execute_checkout(
-                checkout_user, cart, coupon_code=body.coupon_code,
+                checkout_user, cart, coupon_code=body.coupon_code, purchase_source="WEB",
                 order_metadata={"idempotency_key": body.idempotency_key,
                                 "customer_id": user["_id"], "customer_email": user.get("email")},
             )
@@ -717,6 +757,33 @@ async def customer_order_qris(order_id: str, user: dict = Depends(current_custom
     }
 
 
+@router.get("/orders/{order_id}/delivery")
+async def customer_order_delivery(order_id: str, response: Response, user: dict = Depends(current_customer)):
+    from order_fulfillment import owned_order, fulfillment, PRIVATE_HEADERS
+    response.headers.update(PRIVATE_HEADERS)
+    return await fulfillment(await owned_order(order_id, user))
+
+
+@router.get("/orders/{order_id}/download")
+async def download_order_text(order_id: str, user: dict = Depends(current_customer)):
+    from order_fulfillment import owned_order, fulfillment, fulfillment_text, PRIVATE_HEADERS
+    order = await owned_order(order_id, user)
+    if order.get("status") not in {"delivered", "completed"}:
+        raise HTTPException(409, "Data akun belum tersedia.", headers=PRIVATE_HEADERS)
+    data = await fulfillment(order)
+    name = _safe_attachment_name(str(order.get("invoice_id") or order_id), "order")
+    return Response(fulfillment_text(data).encode("utf-8-sig"), media_type="text/plain; charset=utf-8",
+                    headers={**PRIVATE_HEADERS, "Content-Disposition": f'attachment; filename="{name}.txt"'})
+
+
+@router.get("/orders/{order_id}/files/{item_id}")
+async def download_order_file(order_id: str, item_id: str, user: dict = Depends(current_customer)):
+    from order_fulfillment import owned_order, delivered_file, PRIVATE_HEADERS
+    data, filename = await delivered_file(await owned_order(order_id, user), item_id)
+    name = _safe_attachment_name(filename, "inventory.session")
+    return Response(data, media_type="application/octet-stream", headers={**PRIVATE_HEADERS, "Content-Disposition": f'attachment; filename="{name}"'})
+
+
 async def _finalize_store_balance_order(order_id: str) -> bool:
     order = await db.purchases.find_one({"_id": order_id, "status": "paid"})
     if not order:
@@ -727,7 +794,10 @@ async def _finalize_store_balance_order(order_id: str) -> bool:
         if product and (product.get("product_kind") == "service" or product.get("delivery_type") == "service"):
             service_names.append(f"{item.get('name') or product.get('name') or 'Jasa'} ×{item.get('qty') or 1}")
     if service_names:
-        await db.purchases.update_one({"_id": order_id, "status": "paid"}, {"$set": {"status": "service_waiting"}})
+        changed = await db.purchases.update_one({"_id": order_id, "status": "paid"}, {"$set": {"status": "service_waiting"}})
+        if changed.modified_count:
+            from services import notify_transaction_channel_safely
+            await notify_transaction_channel_safely({**order, "status": "service_waiting"})
         try:
             from services import notify_admin
             await notify_admin(
@@ -744,6 +814,8 @@ async def _finalize_store_balance_order(order_id: str) -> bool:
         "status": "delivered", "delivered_at": datetime.now(timezone.utc).isoformat(), "delivery_error": None,
     }})
     if changed.modified_count:
+        from services import notify_transaction_channel_safely
+        await notify_transaction_channel_safely({**order, "status": "delivered"})
         await send_order_completion_email(order_id)
     return True
 

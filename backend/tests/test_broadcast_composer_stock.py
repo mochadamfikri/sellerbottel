@@ -75,7 +75,7 @@ def test_stock_monitor_announces_only_zero_crossings(monkeypatch):
     run(check())
 
 
-def test_bot_category_hides_sold_out_products(monkeypatch):
+def test_bot_catalogs_group_products_and_show_variant_stock(monkeypatch):
     sent = []
 
     async def fake_send(chat_id, text, kb=None):
@@ -94,7 +94,12 @@ def test_bot_category_hides_sold_out_products(monkeypatch):
         await bot.show_products(1, {"lang": "id", "currency": "IDR"})
         labels = str(sent[-1]["kb"])
         assert "Produk Habis" not in labels
-        assert "Jasa Tersedia" in labels
+        assert "Jasa Payment" in labels
+        assert "Produk Lainnya" in labels
+        from product_catalog import catalog_token
+        await bot.show_products(1, {"lang": "id", "currency": "IDR"}, catalog=catalog_token({"name": "Produk Habis"}))
+        assert "Produk Habis" in sent[-1]["text"]
+        assert "Stok 0" in sent[-1]["text"]
 
     run(check())
 

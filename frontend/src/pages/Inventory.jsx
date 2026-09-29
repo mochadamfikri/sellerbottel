@@ -1,15 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { groupCatalogs } from "../lib/catalog";
 import { toast } from "sonner";
 import { Upload, Plus, Trash2, RefreshCw, Database, PackageCheck } from "lucide-react";
 import api, { formatApiErrorDetail } from "../lib/api";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 
 const cls = "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
 
 export default function Inventory() {
   const [products, setProducts] = useState([]);
+  const [bulkText, setBulkText] = useState("");
+  const [schemaText, setSchemaText] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [editData, setEditData] = useState({});
+  const [replacementFile, setReplacementFile] = useState(null);
   const [pid, setPid] = useState("");
   const [meta, setMeta] = useState({ schema: [], items: [], available: 0, reserved: 0, sold: 0 });
   const [status, setStatus] = useState("available");
+  const [inventoryPage, setInventoryPage] = useState(0);
   const [file, setFile] = useState(null);
   const [files, setFiles] = useState([]);
   const [preview, setPreview] = useState(null);
@@ -48,7 +56,7 @@ export default function Inventory() {
       return;
     }
     try {
-      const { data } = await api.get("/admin/products/" + pid + "/inventory", { params: { status } });
+      const { data } = await api.get("/admin/products/" + pid + "/inventory", { params: { status, offset: inventoryPage * 100, limit: 100 } });
       setMeta(data);
       const next = {};
       (data.schema || []).forEach((field) => { next[field] = ""; });
@@ -56,7 +64,7 @@ export default function Inventory() {
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal memuat inventory.");
     }
-  }, [pid, status]);
+  }, [pid, status, inventoryPage]);
 
   useEffect(() => { loadProducts(); }, [loadProducts]);
   useEffect(() => { loadInventory(); }, [loadInventory]);
@@ -72,7 +80,9 @@ export default function Inventory() {
   }, [busy, pid, loadProducts]);
 
   const selectProduct = (value) => {
+    setEditing(null); setBulkText(""); setSchemaText("");
     setPid(value);
+    setInventoryPage(0);
     setFile(null);
     setFiles([]);
     setFileName("");
@@ -90,18 +100,18 @@ export default function Inventory() {
 
   const validateFile = async (selectedFile = file, selectedPid = pid) => {
     if (!selectedFile && fileInputRef.current?.files?.[0]) selectedFile = fileInputRef.current.files[0];
-    if (!selectedPid || !selectedFile) {
+    if (!selectedPid || (!selectedFile && !bulkText.trim())) {
       toast.error("Pilih product dan file inventory terlebih dahulu.");
       return;
     }
     setBusy(true);
     try {
       const fd = new FormData();
-      fd.append("content", "");
+      fd.append("content", bulkText);
       if ((selectedProduct?.inventory_mode === "telegram_session" || (selectedProduct?.inventory_schema?.length === 1 && selectedProduct.inventory_schema[0] === "Session File"))) {
         (files.length ? files : (selectedFile ? [selectedFile] : [])).forEach((f) => fd.append("files", f, f.name));
       } else {
-        fd.append("file", selectedFile, selectedFile.name);
+        if (selectedFile) fd.append("file", selectedFile, selectedFile.name);
       }
       const { data } = await api.post("/admin/products/" + selectedPid + "/inventory/validate", fd);
       setPreview(data);
@@ -118,24 +128,25 @@ export default function Inventory() {
 
   const importFile = async (selectedFile = file, selectedPid = pid) => {
     if (!selectedFile && fileInputRef.current?.files?.[0]) selectedFile = fileInputRef.current.files[0];
-    if (!selectedPid || !selectedFile) {
+    if (!selectedPid || (!selectedFile && !bulkText.trim())) {
       toast.error("Pilih product dan file inventory terlebih dahulu.");
       return;
     }
     setBusy(true);
     try {
       const fd = new FormData();
-      fd.append("content", "");
+      fd.append("content", bulkText);
       if (selectedProduct?.inventory_mode === "telegram_session" || selectedProduct?.inventory_schema?.length === 1 && selectedProduct.inventory_schema[0] === "Session File") {
         (files.length ? files : (selectedFile ? [selectedFile] : [])).forEach((f) => fd.append("files", f, f.name));
       } else {
-        fd.append("file", selectedFile, selectedFile.name);
+        if (selectedFile) fd.append("file", selectedFile, selectedFile.name);
       }
       const { data } = await api.post("/admin/products/" + selectedPid + "/inventory/import", fd);
       toast.success("Inventory masuk: " + data.created + " item · dilewati: " + data.skipped);
       setFile(null);
       setFileName("");
       setPreview(null);
+      setBulkText("");
       await loadProducts();
       await loadInventory();
     } catch (err) {
@@ -226,8 +237,34 @@ export default function Inventory() {
     } finally { setBusy(false); }
   };
 
+  const saveEdit = async () => {
+    setBusy(true);
+    try {
+      const path = `/admin/products/${pid}/inventory/${editing._id}`;
+      if (editing.item?.is_file) {
+        if (!replacementFile) { toast.error("Pilih file .session pengganti."); return; }
+        const data = new FormData(); data.append("file", replacementFile);
+        await api.post(`${path}/file`, data);
+      } else await api.put(path, { data: editData });
+      toast.success("Item inventory diperbarui."); setEditing(null); await loadInventory();
+    } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Item gagal diperbarui."); }
+    finally { setBusy(false); }
+  };
+  const downloadTemplate = async (format) => {
+    try {
+      const { data } = await api.get(`/admin/products/${pid}/inventory/template`, { params: { format }, responseType: "blob" });
+      const url = URL.createObjectURL(data); const a = document.createElement("a"); a.href = url; a.download = `inventory-template.${format}`; a.click(); URL.revokeObjectURL(url);
+    } catch (_) { toast.error("Template tidak tersedia. Pilih produk inventory tabel."); }
+  };
+  const saveSchema = async () => {
+    setBusy(true);
+    try { await api.put(`/admin/products/${pid}/inventory/schema`, { fields: schemaText.split(",") }); await loadProducts(); await loadInventory(); toast.success("Kolom inventory disimpan."); }
+    catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Kolom gagal disimpan."); }
+    finally { setBusy(false); }
+  };
+
   const selectedStock = selectedProduct?.stock_mode === "manual"
-    ? Math.min(Number(selectedProduct?.manual_stock ?? selectedProduct?.stock ?? 0), Number(meta.available ?? 0))
+    ? Math.min(Math.max(0, Number(selectedProduct?.manual_stock ?? selectedProduct?.stock ?? 0) - Number(meta.marketing_allocated || 0)), Number(meta.available ?? 0))
     : Number(meta.available ?? 0);
 
   return (
@@ -238,7 +275,7 @@ export default function Inventory() {
           <label className="text-xs text-slate-400">Pilih product inventory</label>
           <select className={cls} value={pid} onChange={(e) => selectProduct(e.target.value)}>
             <option value="">Pilih product</option>
-            {products.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+            {groupCatalogs(products).map((catalog) => <optgroup key={catalog.key} label={catalog.name}>{catalog.products.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}</optgroup>)}
           </select>
         </div>
         <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-2.5">
@@ -251,7 +288,7 @@ export default function Inventory() {
         </div>
         <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-2.5">
           <div className="text-[10px] uppercase tracking-widest text-slate-500">Sold</div>
-          <div className="font-mono font-bold text-slate-300">{meta.sold}</div>
+          <div className="font-mono font-bold text-slate-300">{meta.sold}</div><p className="mt-1 text-xs text-cyan-300">Marketing / By Me: {meta.marketing_allocated || 0}</p>
         </div>
       </div>
 
@@ -259,6 +296,7 @@ export default function Inventory() {
         <div className="bg-slate-900/70 border border-slate-800 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-2 text-slate-200 font-semibold"><Database size={16} className="text-cyan-400" /> {selectedProduct.name}</div>
+            <p className="mt-1 text-xs text-cyan-400">Katalog: {selectedProduct.catalog_name || "Produk Lainnya"}</p>
             <p className="text-xs text-slate-500 mt-1">Semua upload dan input manual di halaman ini hanya masuk ke product yang sedang dipilih.</p>
           </div>
           <div className="text-xs text-slate-500">Schema file wajib: <span className="text-cyan-300 font-mono">{(meta.schema || []).join(" · ") || "Belum ditentukan — header file valid pertama akan menjadi schema product"}</span></div>
@@ -286,6 +324,7 @@ export default function Inventory() {
               setPreview(null);
             }}
           />
+          {selectedProduct && selectedProduct.inventory_mode !== "telegram_session" && <><div className="flex flex-wrap gap-2">{["xlsx", "csv", "txt"].map((format) => <button key={format} type="button" className="rounded bg-slate-800 px-3 py-2 text-xs" onClick={() => downloadTemplate(format)}>Template {format.toUpperCase()}</button>)}</div><textarea rows={4} className={cls} disabled={Boolean(file)} placeholder="Atau tempel data TXT. Header kolom pada baris pertama, satu item per baris, dipisahkan |." value={bulkText} onChange={(e) => { setBulkText(e.target.value); setPreview(null); }}/><p className="text-xs text-slate-500">Gunakan kolom sesuai template. Katalog melekat pada produk, bukan pada baris inventory.</p></>}
           {fileName && <p className="text-xs text-cyan-400 mt-2 break-all">File dipilih: {fileName}</p>}
           <div className="flex gap-2">
             <button
@@ -327,8 +366,8 @@ export default function Inventory() {
             <h2 className="font-heading font-semibold flex items-center gap-2"><Plus size={17} className="text-cyan-400" /> Input Data Manual</h2>
             <p className="text-xs text-slate-500 mt-1">Form ini memakai field inventory milik product yang sedang dipilih.</p>
           </div>
-          {!meta.schema?.length ? (
-            <div className="rounded-lg border border-dashed border-slate-800 p-4 text-sm text-slate-500">Schema belum tersedia. Upload satu file XLSX/CSV dulu untuk menentukan field product ini.</div>
+          {selectedProduct?.inventory_mode === "telegram_session" || meta.schema?.[0] === "Session File" ? <p className="text-sm text-slate-400">Unggah file .session asli melalui Upload Bulk Inventory. Setiap file menjadi satu item; gunakan Ganti file untuk memperbarui item.</p> : !meta.schema?.length ? (
+            <div className="space-y-3"><p className="text-sm text-slate-500">Tetapkan kolom untuk input manual, atau unggah file dengan header.</p><input className={cls} placeholder="email,password,recovery" value={schemaText} onChange={(e) => setSchemaText(e.target.value)}/><button className="rounded bg-cyan-700 px-3 py-2 text-sm disabled:opacity-40" disabled={busy || !pid || !schemaText.trim()} onClick={saveSchema}>Simpan kolom inventory</button></div>
           ) : (
             <>
               <div className="space-y-3">
@@ -385,13 +424,14 @@ export default function Inventory() {
         <div className="px-5 py-4 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="font-heading font-semibold flex items-center gap-2"><PackageCheck size={17} className="text-cyan-400" /> Data Inventory</h2>
-            <p className="text-xs text-slate-500 mt-1">Item tersedia dapat dihapus. Data item yang sudah terjual tidak ditampilkan kembali di panel untuk mencegah kebocoran kredensial.</p>
+            <p className="text-xs text-slate-500 mt-1">Item tersedia dapat diedit atau dihapus satu per satu. Item reserved/terjual/marketing dikunci. Restore marketing melalui Broadcast → Campaign.</p>
           </div>
           <div className="flex gap-2">
-            <select className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" value={status} onChange={(e) => setStatus(e.target.value)}>
+            <select className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm" value={status} onChange={(e) => { setStatus(e.target.value); setInventoryPage(0); }}>
               <option value="available">Available</option>
               <option value="reserved">Reserved</option>
               <option value="sold">Sold</option>
+              <option value="marketing_allocated">Marketing / By Me</option>
               <option value="all">Semua</option>
             </select>
             <button type="button" onClick={loadInventory} className="p-2 rounded-lg border border-slate-800 text-slate-400 hover:text-cyan-400" title="Refresh"><RefreshCw size={16} /></button>
@@ -416,7 +456,7 @@ export default function Inventory() {
                   <td className="px-5 py-3">
                     {item.item ? (
                       <div className="space-y-1 text-xs font-mono">
-                        {(meta.schema || Object.keys(item.item)).map((field) => (
+                        {item.item.is_file ? <span>{item.item.file}</span> : (meta.schema || Object.keys(item.item)).map((field) => (
                           <div key={field}><span className="text-slate-500">{field}:</span> <span className="text-slate-200 break-all">{item.item?.[field] ?? ""}</span></div>
                         ))}
                       </div>
@@ -435,7 +475,7 @@ export default function Inventory() {
                   <td className="px-5 py-3 text-xs text-slate-500">{item.sold_at || item.created_at}</td>
                   <td className="px-5 py-3 text-right">
                     {item.status === "available" && (
-                      <button type="button" onClick={() => removeItem(item._id)} className="p-2 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10" title="Hapus item"><Trash2 size={15} /></button>
+                      <div className="flex justify-end gap-2"><button type="button" disabled={busy} onClick={() => { setEditing(item); setEditData({ ...item.item }); setReplacementFile(null); }} className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-cyan-400">{item.item?.is_file ? "Ganti file" : "Edit"}</button><button type="button" disabled={busy} onClick={() => removeItem(item._id)} className="flex items-center gap-1 rounded-lg border border-slate-700 px-3 py-2 text-xs text-rose-400" title="Hapus item"><Trash2 size={15}/> Hapus</button></div>
                     )}
                   </td>
                 </tr>
@@ -444,7 +484,9 @@ export default function Inventory() {
             </tbody>
           </table>
         </div>
+        <div className="flex items-center justify-between gap-3 border-t border-slate-800 p-4 text-xs"><span>{meta.total || 0} item · halaman {inventoryPage + 1}</span><div className="flex gap-3"><button disabled={!inventoryPage || busy} className="text-cyan-400 disabled:opacity-40" onClick={() => setInventoryPage(inventoryPage - 1)}>Sebelumnya</button><button disabled={(inventoryPage + 1) * 100 >= (meta.total || 0) || busy} className="text-cyan-400 disabled:opacity-40" onClick={() => setInventoryPage(inventoryPage + 1)}>Berikutnya</button></div></div>
       </div>
+      <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open && !busy) setEditing(null); }}><DialogContent className="max-h-[85vh] overflow-y-auto border-slate-800 bg-slate-900 text-slate-100"><DialogHeader><DialogTitle>Edit item inventory</DialogTitle></DialogHeader><p className="text-xs text-slate-400">{selectedProduct?.catalog_name} → {selectedProduct?.name}</p>{editing?.item?.is_file ? <input type="file" accept=".session" onChange={(e) => setReplacementFile(e.target.files?.[0] || null)}/> : (meta.schema || []).map((field) => <label key={field} className="text-sm">{field}<input className={cls} value={editData[field] || ""} onChange={(e) => setEditData({ ...editData, [field]: e.target.value })}/></label>)}<button disabled={busy} onClick={saveEdit} className="rounded-lg bg-cyan-700 px-4 py-2 disabled:opacity-40">{busy ? "Menyimpan…" : "Simpan perubahan"}</button></DialogContent></Dialog>
     </div>
   );
 }

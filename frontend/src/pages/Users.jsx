@@ -1,67 +1,44 @@
-import { useCallback, useEffect, useState } from "react";
-import { Wallet, Snowflake, Sun, Search, UserRoundCheck } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Wallet, Snowflake, Sun, Search, UserRoundCheck, Globe, Send, Link2, Users, LoaderCircle } from "lucide-react";
 import { toast } from "sonner";
 import api, { fmtUSD, fmtIDR, fmtDate, formatApiErrorDetail } from "../lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
+
+import BalanceAdjustment from "../components/BalanceAdjustment";
 
 const cls = "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
 
 export default function UsersPage() {
   const [users, setUsers] = useState([]);
   const [search, setSearch] = useState("");
+  const [source, setSource] = useState("all");
+  const [page, setPage] = useState(1);
+  const [directory, setDirectory] = useState({ total: 0, pages: 1, source_counts: {} });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const latestRequest = useRef(0);
+  const sourceLabels = { telegram: "Telegram", web: "Website", linked: "Web + Telegram" };
   const [adjust, setAdjust] = useState(null);
-  const [adjForm, setAdjForm] = useState({ currency: "USD", amount: "", reason: "" });
   const [freeze, setFreeze] = useState(null);
   const [freezeReason, setFreezeReason] = useState("");
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async (term = "") => {
+    const request = ++latestRequest.current;
+    setLoading(true); setLoadError("");
     try {
-      const normalized = term.trim();
-      const endpoint = normalized ? "/admin/users/search" : "/admin/users/all";
-      const [telegramResponse, webResponse] = await Promise.all([
-        api.get(endpoint, normalized ? { params: { search: normalized } } : undefined),
-        api.get("/admin/store-customers", normalized ? { params: { search: normalized } } : undefined),
-      ]);
-      const merged = new Map((telegramResponse.data || []).map((u) => [String(u.telegram_id), { ...u }]));
-      const webOnly = [];
-      for (const customer of webResponse.data || []) {
-        const tid = customer.telegram_id == null ? null : String(customer.telegram_id);
-        if (tid && merged.has(tid)) {
-          merged.set(tid, { ...merged.get(tid), ...customer, _id: merged.get(tid)._id,
-            first_name: customer.first_name || merged.get(tid).first_name,
-            username: customer.username || merged.get(tid).username,
-            telegram_linked: true, web_account: true });
-        } else {
-          webOnly.push({ ...customer, first_name: customer.first_name || customer.email,
-            telegram_id: customer.telegram_id || null, username: customer.username || null,
-            telegram_linked: false, web_account: true, purchase_count: customer.purchase_count || 0 });
-        }
-      }
-      setUsers([...merged.values(), ...webOnly]);
+      const { data } = await api.get("/admin/user-directory", { params: { search: term.trim(), source, page, page_size: 25 } });
+      if (request !== latestRequest.current) return;
+      setUsers(data.items); setDirectory(data);
     } catch (err) {
-      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Gagal memuat pengguna.");
-    }
-  }, []);
+      if (request === latestRequest.current) setLoadError(formatApiErrorDetail(err.response?.data?.detail) || "Gagal memuat pengguna.");
+    } finally { if (request === latestRequest.current) setLoading(false); }
+  }, [source, page]);
 
   useEffect(() => {
     const timer = setTimeout(() => load(search), 250);
-    return () => clearTimeout(timer);
+    return () => { clearTimeout(timer); latestRequest.current += 1; };
   }, [search, load]);
-
-  const doAdjust = async () => {
-    setBusy(true);
-    try {
-      await api.post("/admin/users/" + adjust.telegram_id + "/adjust", { ...adjForm, amount: parseFloat(adjForm.amount) });
-      toast.success("Saldo disesuaikan");
-      setAdjust(null);
-      await load(search);
-    } catch (err) {
-      toast.error(formatApiErrorDetail(err.response?.data?.detail));
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const doFreeze = async () => {
     setBusy(true);
@@ -100,6 +77,8 @@ export default function UsersPage() {
 
   return (
     <div className="space-y-4">
+      <div><h2 className="text-xl font-bold text-slate-100">Direktori pengguna</h2><p className="mt-1 text-sm text-slate-400">Akun web dan Telegram dalam satu daftar. Akun tertaut ditampilkan sekali.</p></div>
+      <div role="group" aria-label="Filter sumber pengguna" className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[["all","Semua pengguna",Users],["telegram","Telegram saja",Send],["web","Website saja",Globe],["linked","Web + Telegram",Link2]].map(([key,label,Icon]) => <button key={key} aria-pressed={source === key} onClick={() => { setSource(key); setPage(1); }} className={`flex items-center gap-3 rounded-xl border p-4 text-left transition ${source === key ? "border-cyan-500/60 bg-cyan-500/10 text-cyan-300" : "border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-600"}`}><Icon size={21}/><span><span className="block text-xs font-medium">{label}</span><b className="mt-1 block text-xl">{directory.source_counts[key] ?? "—"}</b></span></button>)}</div>
       <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4">
         <label className="text-xs text-slate-400">Cari pengguna</label>
         <div className="relative mt-1">
@@ -108,14 +87,16 @@ export default function UsersPage() {
             className={cls + " pl-9"}
             placeholder="Email, nama, @username, atau ID Telegram"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           />
         </div>
-        <p className="text-xs text-slate-600 mt-2">Cari berdasarkan email, nama, @username, atau Telegram ID.</p>
-        <p className="text-xs text-slate-500 mt-1">{users.length} pengguna ditampilkan</p>
+        <p className="text-xs text-slate-600 mt-2">Cari berdasarkan email, nama, @username, Telegram ID, atau ID internal.</p>
+        <p className="text-xs text-slate-500 mt-1">{directory.total} pengguna cocok · {users.length} ditampilkan pada halaman ini</p>
       </div>
 
-      <div className="bg-slate-900/60 border border-slate-800 rounded-xl overflow-x-auto">
+      {loadError && <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-300">{loadError}<button onClick={() => load(search)} className="font-semibold underline">Coba lagi</button></div>}
+      {loading && <p role="status" className="flex items-center gap-2 text-sm text-slate-400"><LoaderCircle size={16} className="animate-spin"/> Memuat pengguna…</p>}
+      <div aria-busy={loading} className="bg-slate-900/60 border border-slate-800 rounded-xl overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wide">
@@ -126,7 +107,7 @@ export default function UsersPage() {
               <th className="px-4 py-3">USD</th>
               <th className="px-4 py-3">IDR</th>
               <th className="px-4 py-3">Order</th>
-              <th className="px-4 py-3">Login</th>
+              <th className="px-4 py-3">Sumber akun</th>
               <th className="px-4 py-3">Telegram</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Bergabung</th>
@@ -143,7 +124,7 @@ export default function UsersPage() {
                 <td className="px-4 py-3 font-mono">{fmtUSD(u.balance_usd)}</td>
                 <td className="px-4 py-3 font-mono">{fmtIDR(u.balance_idr)}</td>
                 <td className="px-4 py-3 font-mono text-slate-400">{u.order_count || u.purchase_count || 0}</td>
-                <td className="px-4 py-3 text-xs text-slate-400">{u.email ? (u.telegram_id ? "Web + Telegram" : "Web") : "Telegram"}</td>
+                <td className="px-4 py-3 text-xs text-slate-400">{sourceLabels[u.source] || "Telegram"}</td>
                 <td className="px-4 py-3 text-xs text-slate-400">{u.telegram_id ? (u.username ? `Connected · @${u.username}` : "Connected") : "Not connected"}</td>
                 <td className="px-4 py-3">
                   {u.frozen
@@ -152,41 +133,26 @@ export default function UsersPage() {
                 </td>
                 <td className="px-4 py-3 text-xs text-slate-500">{fmtDate(u.created_at)}</td>
                 <td className="px-4 py-3 text-right">
-                  {u.telegram_id ? (
                   <div className="flex justify-end gap-1.5">
-                    <button onClick={() => { setAdjust(u); setAdjForm({ currency: u.currency || "USD", amount: "", reason: "" }); }} title="Sesuaikan saldo" className="p-2 rounded-lg text-slate-400 hover:text-cyan-400 hover:bg-slate-800"><Wallet size={15} /></button>
+                    <button onClick={() => setAdjust(u)} title="Sesuaikan saldo" className="p-2 rounded-lg text-slate-400 hover:text-cyan-400 hover:bg-slate-800"><Wallet size={15} /></button>
                     {u.telegram_account_connected && (
                       <button onClick={() => doJoinGroup(u)} title="Join Group dengan akun Telegram terhubung" className="p-2 rounded-lg text-slate-400 hover:text-violet-400 hover:bg-slate-800"><UserRoundCheck size={15} /></button>
                     )}
-                    {u.frozen
+                    {u.telegram_id && (u.frozen
                       ? <button onClick={() => doUnfreeze(u)} title="Buka blokir" className="p-2 rounded-lg text-emerald-400 hover:bg-emerald-500/10"><Sun size={15} /></button>
-                      : <button onClick={() => { setFreeze(u); setFreezeReason(""); }} title="Bekukan" className="p-2 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800"><Snowflake size={15} /></button>}
+                      : <button onClick={() => { setFreeze(u); setFreezeReason(""); }} title="Bekukan" className="p-2 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800"><Snowflake size={15} /></button>)}
                   </div>
-                  ) : <span className="text-xs text-slate-600">—</span>}
                 </td>
               </tr>
             ))}
-            {!users.length && <tr><td colSpan={12} className="px-4 py-10 text-center text-slate-500">Tidak ada pengguna yang cocok.</td></tr>}
+            {!loading && !users.length && <tr><td colSpan={12} className="px-4 py-10 text-center text-slate-500">Tidak ada pengguna yang cocok.</td></tr>}
           </tbody>
         </table>
       </div>
 
-      <Dialog open={!!adjust} onOpenChange={() => setAdjust(null)}>
-        <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-sm">
-          <DialogHeader><DialogTitle>Sesuaikan Saldo</DialogTitle></DialogHeader>
-          {adjust && (
-            <div className="space-y-3">
-              <p className="text-sm text-slate-400">{adjust.first_name || "-"} · {adjust.username ? "@" + adjust.username : "—"} · {adjust.telegram_id}</p>
-              <div className="grid grid-cols-2 gap-3">
-                <div><label className="text-xs text-slate-400">Mata Uang</label><select className={cls} value={adjForm.currency} onChange={(e) => setAdjForm({ ...adjForm, currency: e.target.value })}><option value="USD">USD</option><option value="IDR">IDR</option></select></div>
-                <div><label className="text-xs text-slate-400">Jumlah (+/-)</label><input type="number" step="0.01" className={cls} value={adjForm.amount} onChange={(e) => setAdjForm({ ...adjForm, amount: e.target.value })} /></div>
-              </div>
-              <input className={cls} placeholder="Alasan (opsional)" value={adjForm.reason} onChange={(e) => setAdjForm({ ...adjForm, reason: e.target.value })} />
-              <button onClick={doAdjust} disabled={busy || !adjForm.amount} className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5">{busy ? "Memproses..." : "Simpan Penyesuaian"}</button>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <nav aria-label="Halaman pengguna" className="flex flex-wrap items-center justify-between gap-3 text-sm text-slate-400"><span>Halaman {directory.page || 1} dari {directory.pages}</span><div className="flex gap-2"><button disabled={loading || (directory.page || 1) <= 1} onClick={() => setPage((directory.page || 1)-1)} className="rounded-lg border border-slate-700 px-4 py-2 disabled:opacity-35">Sebelumnya</button><button disabled={loading || (directory.page || 1) >= directory.pages} onClick={() => setPage((directory.page || 1)+1)} className="rounded-lg border border-slate-700 px-4 py-2 disabled:opacity-35">Berikutnya</button></div></nav>
+
+      <BalanceAdjustment user={adjust} close={() => setAdjust(null)} refresh={() => load(search)} />
 
       <Dialog open={!!freeze} onOpenChange={() => setFreeze(null)}>
         <DialogContent className="bg-slate-900 border-slate-800 text-slate-100 max-w-sm">

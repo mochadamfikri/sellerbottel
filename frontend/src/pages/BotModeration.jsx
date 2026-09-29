@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Ban, Eraser, Search, ShieldOff, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiErrorDetail } from "../lib/api";
+import FollowupSettings from "../components/FollowupSettings";
 
 const inputClass = "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500/60";
 
@@ -12,6 +13,8 @@ export default function BotModeration() {
   const [selected, setSelected] = useState(null);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const [deleteMessages, setDeleteMessages] = useState(false);
+  const [kickChannels, setKickChannels] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -43,9 +46,11 @@ export default function BotModeration() {
     try {
       const { data } = await api.post("/admin/bot-moderation/users/" + selected.telegram_id + "/silent-block", {
         reason,
-        delete_tracked_messages: true,
+        delete_tracked_messages: deleteMessages,
+        kick_channels: kickChannels,
       });
       toast.success("Silent block aktif. " + data.deletion.deleted + " pesan terlacak dihapus.");
+      if (data.channel_results?.some((row) => !row.ok)) toast.error("Sebagian channel gagal mengeluarkan pengguna. Periksa izin bot.");
       await openUser(selected);
       await load();
     } catch (err) {
@@ -80,6 +85,7 @@ export default function BotModeration() {
 
   return (
     <div className="space-y-5">
+      <FollowupSettings/>
       <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4">
         <div className="flex flex-col md:flex-row gap-3">
           <div className="relative flex-1">
@@ -121,10 +127,14 @@ export default function BotModeration() {
                 Status: <b className={selected.silent_blocked ? "text-rose-400" : "text-emerald-400"}>{selected.silent_blocked ? "Silent blocked" : "Aktif"}</b>
               </div>
               <textarea rows={3} className={inputClass} placeholder="Catatan internal (tidak dikirim ke pengguna)" value={reason} onChange={(e) => setReason(e.target.value)} />
+              <label className="flex gap-2 text-xs text-slate-400"><input type="checkbox" checked={deleteMessages} onChange={(e) => setDeleteMessages(e.target.checked)}/> Sekaligus hapus pesan terlacak</label>
+              <label className="flex gap-2 text-xs text-slate-400"><input type="checkbox" checked={kickChannels} onChange={(e) => setKickChannels(e.target.checked)}/> Sekaligus kick dari channel tindak lanjut</label>
+              <p className="text-xs text-slate-500">Tindakan manual tetap bisa dijalankan untuk pengguna yang dikecualikan dari otomatisasi.</p>
               <button onClick={clearMessages} disabled={busy} className="w-full flex items-center justify-center gap-2 border border-amber-500/30 text-amber-400 rounded-lg py-2.5 disabled:opacity-50"><Eraser size={16} /> Hapus Pesan Terlacak</button>
               {selected.silent_blocked
                 ? <button onClick={unblock} disabled={busy} className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg py-2.5 disabled:opacity-50"><Unlock size={16} /> Buka Silent Block</button>
-                : <button onClick={block} disabled={busy} className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg py-2.5 disabled:opacity-50"><Ban size={16} /> Hapus & Silent Block</button>}
+                : <button onClick={block} disabled={busy} className="w-full flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg py-2.5 disabled:opacity-50"><Ban size={16} /> Jalankan tindak lanjut manual</button>}
+              {selected.silent_blocked && kickChannels && <button onClick={block} disabled={busy} className="text-sm text-amber-400">Ulangi kick channel untuk pengguna ini</button>}
               <p className="text-[11px] text-slate-600 flex gap-2"><ShieldOff size={14} className="shrink-0" />Bot hanya dapat menghapus pesan yang ID-nya terlacak dan masih memenuhi batas penghapusan Telegram. Pesan lama yang tidak pernah dicatat backend tidak dapat dipulihkan dari Bot API.</p>
             </div>
           )}

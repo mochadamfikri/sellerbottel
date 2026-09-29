@@ -76,7 +76,7 @@ def test_text_broadcast_also_gets_generated_image():
 def test_daily_recap_sends_once_per_day(monkeypatch):
     sent = []
 
-    async def fake_chats():
+    async def fake_chats(kind="message"):
         return ["@channel"]
 
     async def fake_send(body):

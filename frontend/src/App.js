@@ -20,6 +20,7 @@ import Promotions from "./pages/Promotions";
 import Resellers from "./pages/Resellers";
 import BotModeration from "./pages/BotModeration";
 import Storefront from "./pages/Storefront";
+import Catalogs from "./pages/Catalogs";
 
 function Protected({ children, title }) {
   const { user } = useAuth();
@@ -55,6 +56,7 @@ function App() {
           <Route path="/store/profile" element={<Storefront view="profile" />} />
           <Route path="/admin" element={<Protected title="Ringkasan"><Overview /></Protected>} />
           <Route path="/products" element={<Protected title="Kelola Produk"><Products /></Protected>} />
+          <Route path="/catalogs" element={<Protected title="Kelola Katalog"><Catalogs /></Protected>} />
           <Route path="/orders" element={<Protected title="Orders"><Orders /></Protected>} />
           <Route path="/reports" element={<Protected title="Rekap & Laporan"><Reports /></Protected>} />
           <Route path="/inventory" element={<Protected title="Inventory"><Inventory /></Protected>} />

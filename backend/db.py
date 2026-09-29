@@ -46,6 +46,9 @@ DEFAULT_SETTINGS = {
     "broadcast_auto_image_enabled": False,
     "broadcast_channel_id": "",
     "broadcast_group_ids": "",
+    "transaction_channel_ids": "",
+    "recap_channel_ids": "",
+    "post_purchase_followup": {"mode": "none"},
     "stock_notifications_enabled": True,
     "daily_recap_enabled": False,
     "daily_recap_time": "00:05",
@@ -66,6 +69,9 @@ async def ensure_settings():
 
 
 async def ensure_indexes():
+    await db.inventory_items.create_index("marketing.event_id", unique=True,
+        partialFilterExpression={"marketing.event_id": {"$type": "string"}}, name="marketing_event_unique")
+    await db.broadcasts.create_index([("kind", 1), ("status", 1), ("next_scheduled_at", 1)], name="marketing_schedule")
     try:
         await db.inventory_items.drop_index("fingerprint_1")
     except Exception:

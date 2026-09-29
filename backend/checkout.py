@@ -51,7 +51,8 @@ async def stock_for(product):
             "status": "available",
         })
         if product.get("stock_mode") == "manual" and product.get("manual_stock") is not None:
-            return min(available, max(0, int(product.get("manual_stock") or 0)))
+            marketing = await db.inventory_items.count_documents({"product_id": product["_id"], "status": "marketing_allocated"})
+            return min(available, max(0, int(product.get("manual_stock") or 0) - marketing))
         return available
 
     stock = product.get("stock")
@@ -118,7 +119,9 @@ def _cart_after_purchase(cart, purchased_items):
 
 
 async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=None,
-                           unit_price_overrides=None, order_metadata=None):
+                           unit_price_overrides=None, order_metadata=None, purchase_source="BOT"):
+    if purchase_source not in {"WEB", "BOT"}:
+        raise ValueError("Invalid checkout channel")
     currency = user["currency"]
     field = CUR_FIELD[currency]
     telegram_id = user.get("telegram_id")
@@ -218,6 +221,7 @@ async def execute_checkout(user, cart_items, preserve_cart=False, coupon_code=No
     order = {
         "_id": order_id,
         "invoice_id": invoice_id,
+        "purchase_source": purchase_source,
         "user_tid": telegram_id,
         "customer_id": customer_id,
         "customer_email": user.get("email"),

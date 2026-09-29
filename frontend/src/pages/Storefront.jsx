@@ -1,43 +1,20 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { Search, ShoppingBag, UserRound, ArrowRight, Plus, Minus, LogOut, LogIn, UserPlus, Menu, PackageCheck, PackageSearch, PackageX, TrendingUp, Sparkles, Headset, ShieldCheck, CreditCard, Clock3, ClipboardList, Trash2, X, QrCode } from "lucide-react";
+import { Search, ShoppingBag, ArrowRight, Plus, Minus, PackageCheck, PackageX, TrendingUp, Sparkles, Headset, CreditCard, Trash2, X, QrCode, LoaderCircle } from "lucide-react";
 import api, { fmtIDR, fmtUSD, formatApiErrorDetail } from "../lib/api";
+import { catalogKey, catalogHref, groupCatalogs, variantLabel } from "../lib/catalog";
+import { CartToast, CheckoutFeedback } from "../components/StoreFeedback";
+import OrderDelivery from "../components/OrderDelivery";
+import StoreNavigation from "../components/StoreNavigation";
+import StoreProductDialog from "../components/StoreProductDialog";
+import StoreHome from "../components/StoreHome";
+import StoreProfile from "../components/StoreProfile";
+import "../storefront.css";
 
 const page = "min-h-screen bg-[#f7f8f6] text-slate-800";
 const button = "inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-800 px-5 py-3 font-semibold text-white shadow-sm transition hover:bg-emerald-900 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50";
 const secondary = "inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 font-semibold text-slate-700 transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-emerald-700 focus:ring-offset-2";
 const input = "w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-700 focus:ring-2 focus:ring-emerald-700/15";
-
-function Header({ count, profile, onLogout }) {
-  const [open, setOpen] = useState(false);
-  const authLinks = profile
-    ? <button type="button" onClick={() => { setOpen(false); onLogout?.(); }} className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700"><LogOut size={16}/> Keluar</button>
-    : <div className="flex items-center gap-2"><Link className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100" to="/store/login"><LogIn size={16}/> Masuk</Link><Link className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-800 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-900" to="/store/register"><UserPlus size={16}/> Daftar</Link></div>;
-  return <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
-    <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
-      <Link to="/store" className="flex min-w-0 items-center gap-2.5 text-emerald-950">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-900 text-[11px] font-black tracking-tight text-white shadow-sm">IDSE</span>
-        <span className="min-w-0"><span className="block truncate text-sm font-bold tracking-tight sm:text-base">IDSE Digital Product</span><span className="hidden text-[10px] font-medium tracking-wide text-slate-500 sm:block">TOKO PRODUK DIGITAL</span></span>
-      </Link>
-      <nav className="hidden items-center gap-3 text-sm font-semibold text-slate-600 xl:flex">
-        <Link className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 hover:bg-emerald-50 hover:text-emerald-800" to="/store/products"><PackageSearch size={17}/> Produk</Link>
-        <Link className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 hover:bg-emerald-50 hover:text-emerald-800" to="/store/deposit"><CreditCard size={17}/> Deposit</Link>
-        <Link className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 hover:bg-emerald-50 hover:text-emerald-800" to="/store/transactions"><Clock3 size={17}/> Transaksi</Link>
-        <Link className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 hover:bg-emerald-50 hover:text-emerald-800" to="/store/orders"><ClipboardList size={17}/> Pesanan</Link>
-      </nav>
-      <div className="flex shrink-0 items-center gap-2">
-        <Link aria-label={`Keranjang, ${count} item`} className="inline-flex items-center gap-1 rounded-lg px-2 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100" to="/store/cart"><ShoppingBag size={19}/><span>{count}</span></Link>
-        {profile && <Link aria-label="Profil pelanggan" className="rounded-lg p-2 text-slate-700 hover:bg-slate-100" to="/store/profile"><UserRound size={19}/></Link>}
-        <div className="hidden xl:block">{authLinks}</div>
-        <button aria-label={open ? "Tutup menu" : "Buka menu"} aria-expanded={open} className="rounded-lg p-2 text-slate-700 hover:bg-slate-100 xl:hidden" onClick={() => setOpen((value) => !value)}>{open ? <X size={19}/> : <Menu size={19}/>}</button>
-      </div>
-    </div>
-    {open && <nav className="animate-in fade-in slide-in-from-top-2 duration-150 grid gap-1 border-t border-slate-100 bg-white px-4 py-3 text-sm font-medium text-slate-700 motion-reduce:animate-none xl:hidden">
-      {[["Produk", "/store/products"], ["Deposit", "/store/deposit"], ["Transaksi", "/store/transactions"], ["Pesanan", "/store/orders"], ...(profile ? [["Akun", "/store/profile"]] : []), ...(!profile ? [["Masuk", "/store/login"], ["Daftar", "/store/register"]] : [])].map(([label, href]) => <Link key={href} className="rounded-lg px-3 py-2 hover:bg-slate-50" onClick={() => setOpen(false)} to={href}>{label}</Link>)}
-      {profile && <button type="button" onClick={() => { setOpen(false); onLogout?.(); }} className="flex items-center gap-2 rounded-lg px-3 py-2 text-left font-semibold text-rose-700 hover:bg-rose-50"><LogOut size={16}/> Keluar</button>}
-    </nav>}
-  </header>;
-}
 
 function money(product, currency) {
   const value = product[`price_${currency.toLowerCase()}_current`] ?? product[`price_${currency.toLowerCase()}`];
@@ -69,32 +46,42 @@ function ProductArtwork({ product }) {
   </div>;
 }
 
-function ProductCard({ product, add }) {
+function ProductCard({ product, add, onOpen, adding = false }) {
   const minimum = Math.max(1, Number(product.minimum_purchase_qty || 1));
   const noStock = product.stock != null && Number(product.stock) < minimum;
   return <article className="group overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
-    <Link to={`/store/product/${product._id}`} className="relative block aspect-square overflow-hidden bg-slate-100">
+    <Link to={`/store/product/${product._id}`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) { event.preventDefault(); onOpen(product); } }} className="relative block aspect-[4/3] overflow-hidden bg-slate-100">
       <ProductArtwork product={product}/>
       {product.image_url && <img src={product.image_url} alt={product.name} className="absolute inset-0 h-full w-full bg-white object-contain p-3 transition group-hover:scale-[1.02] sm:p-5" loading="lazy" onError={(event) => { event.currentTarget.style.display = "none"; }}/ >}
       <div className="absolute left-3 top-3 flex flex-wrap gap-1.5"><span className="rounded-md border border-slate-200 bg-white/95 px-2.5 py-1 text-[11px] font-semibold text-slate-700">{productTypeLabel(product)}</span><span className={`rounded-md border border-white/70 bg-white/95 px-2.5 py-1 text-[11px] font-semibold ${noStock ? "text-rose-700" : "text-emerald-800"}`}>{noStock ? "Out of Stock" : "Ready Stock"}</span></div>
     </Link>
     <div className="p-4 sm:p-5">
-      <Link to={`/store/product/${product._id}`} className="line-clamp-1 font-semibold text-slate-900 hover:text-emerald-800">{product.name}</Link>
-      <p className="mt-2 line-clamp-2 min-h-10 text-sm leading-5 text-slate-500">{product.description || "Produk pilihan IDSE Digital Product."}</p>
+      <Link to={`/store/product/${product._id}`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) { event.preventDefault(); onOpen(product); } }} className="line-clamp-1 font-semibold text-slate-900 hover:text-emerald-800">{product.name}</Link>
+      <span className="mt-2 inline-block rounded-md bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-800">{variantLabel(product)}</span><p className="mt-2 line-clamp-2 min-h-10 text-sm leading-5 text-slate-500">{product.description || "Produk pilihan IDSE Marketplace."}</p>
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <span className={`text-xs font-medium ${noStock ? "text-rose-700" : "text-slate-500"}`}>{noStock ? "Stok belum mencukupi" : product.stock == null ? "Stok tersedia" : `Stok ${product.stock}`}</span>
         {minimum > 1 && <span className="text-xs text-slate-500">Min. {minimum} pcs</span>}
       </div>
       <div className="mt-4 flex items-end justify-between gap-3 border-t border-slate-100 pt-3">
         <div><p className="text-[11px] text-slate-500">Harga mulai</p><p className="font-bold text-emerald-900">{money(product, "IDR")}</p></div>
-        <button className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-45" onClick={() => add(product)} disabled={noStock} aria-label={`Tambah ${product.name} ke keranjang`}><Plus size={16}/> Tambah</button>
+        <button className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-45" onClick={() => add(product)} disabled={noStock || adding} aria-busy={adding} aria-label={`Tambah ${product.name} ke keranjang`}>{adding ? <LoaderCircle size={16} className="animate-spin"/> : <Plus size={16}/>} {adding ? "Menambah…" : "Tambah"}</button>
       </div>
     </div>
   </article>;
 }
 
+function CatalogCard({ catalog }) {
+  const representative = catalog.products.find((p) => p.image_url) || catalog.products[0];
+  const ready = catalog.products.filter((p) => p.stock == null || Number(p.stock) >= Math.max(1, Number(p.minimum_purchase_qty || 1))).length;
+  const price = Math.min(...catalog.products.map((p) => Number(p.price_idr_current ?? p.price_idr ?? 0)));
+  return <Link to={catalogHref(catalog.name)} className="group overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+    <div className="relative h-32 overflow-hidden sm:h-40"><ProductArtwork product={{ ...representative, name: catalog.name }}/>{representative.image_url && <img src={representative.catalog_image_url || representative.image_url} alt="" className="absolute inset-0 h-full w-full bg-white object-contain p-4" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }}/>}</div>
+    <div className="p-3 sm:p-5"><h3 className="text-base font-bold sm:text-lg text-slate-900">{catalog.name}</h3><p className="mt-2 text-sm text-slate-500">{catalog.products.length} varian · {ready ? `${ready} tersedia` : "Stok habis"}</p><div className="mt-3 flex flex-wrap gap-1">{catalog.products.slice(0,2).map((p) => <span key={p._id} className="rounded-md bg-slate-50 px-2 py-1 text-[9px] font-medium text-slate-600">{variantLabel(p)}</span>)}{catalog.products.length > 2 && <span className="rounded-md bg-slate-50 px-2 py-1 text-[9px] text-slate-500">+{catalog.products.length-2} varian</span>}</div><div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4"><span className="text-sm text-emerald-900">Mulai <b>{fmtIDR(price)}</b></span><span className="inline-flex items-center gap-1 text-sm font-semibold text-emerald-800">Lihat pilihan <ArrowRight size={16}/></span></div></div>
+  </Link>;
+}
+
 function statusLabel(value) {
-  return ({ delivered: "Selesai", service_waiting: "Diproses", pending_payment: "Menunggu pembayaran", paid: "Dibayar", pending: "Menunggu", approved: "Berhasil", expired: "Kedaluwarsa", failed: "Gagal", delivery_failed: "Perlu bantuan", rejected: "Ditolak", cancelled: "Dibatalkan", refunded: "Dikembalikan" })[value] || value || "—";
+  return ({ delivered: "Selesai", completed: "Selesai", service_waiting: "Diproses", pending_payment: "Menunggu pembayaran", paid: "Dibayar", pending: "Menunggu", approved: "Berhasil", expired: "Kedaluwarsa", failed: "Gagal", delivery_failed: "Perlu bantuan", rejected: "Ditolak", cancelled: "Dibatalkan", refunded: "Dikembalikan" })[value] || value || "—";
 }
 
 function dateLabel(value) {
@@ -104,11 +91,22 @@ function dateLabel(value) {
 }
 
 export default function Storefront({ view = "home" }) {
+  const [theme, setTheme] = useState(() => { try { const saved = localStorage.getItem("idse_theme"); return ["auto", "light", "dark"].includes(saved) ? saved : "auto"; } catch (_) { return "auto"; } });
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const [addingIds, setAddingIds] = useState([]);
+  const [cartToast, setCartToast] = useState(null);
+  const [checkoutFeedback, setCheckoutFeedback] = useState(null);
+  const addTimers = useRef(new Map());
+  const feedbackProducts = useRef([]);
+  const closeCartToast = useCallback(() => setCartToast(null), []);
   const [products, setProducts] = useState([]);
   const [productLoading, setProductLoading] = useState(true);
   const [cart, setCart] = useState(() => { try { return JSON.parse(localStorage.getItem("store_cart") || "[]"); } catch { return []; } });
+  const cartRef = useRef(cart);
+  cartRef.current = cart;
   const [search, setSearch] = useState("");
   const [productFilter, setProductFilter] = useState("all");
+  const [catalogPage, setCatalogPage] = useState(1);
   const [profile, setProfile] = useState(null);
   const [orders, setOrders] = useState([]);
   const [transactions, setTransactions] = useState([]);
@@ -140,7 +138,32 @@ export default function Storefront({ view = "home" }) {
   const [transactionFilter, setTransactionFilter] = useState("all");
   const navigate = useNavigate();
   const location = useLocation();
+  const displayView = view === "detail" ? (location.state?.backgroundView || "products") : view;
+  const routeSearch = view === "detail" ? (location.state?.backgroundSearch || "") : location.search;
+  const selectedCatalog = new URLSearchParams(routeSearch).get("catalog");
+  const searchQuery = new URLSearchParams(routeSearch).get("q") || "";
+  const resolvedTheme = theme === "auto" ? (systemDark ? "dark" : "light") : theme;
+  const openProduct = (product) => {
+    setError("");
+    navigate(`/store/product/${product._id}`, { state: view === "detail" ? location.state : { productOrigin: location.pathname + location.search, backgroundView: view, backgroundSearch: location.search }, replace: view === "detail" });
+  };
+  const closeProduct = () => {
+    if (location.state?.productOrigin) navigate(-1);
+    else {
+      const product = products.find((p) => p._id === productId);
+      navigate(product ? catalogHref(product.catalog_name) : "/store/products", { replace: true });
+    }
+  };
   const { productId } = useParams();
+
+  useEffect(() => { document.title = "IDSE Marketplace"; try { localStorage.setItem("idse_theme", theme); } catch (_) {} }, [theme]);
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const listener = (event) => setSystemDark(event.matches);
+    media.addEventListener("change", listener);
+    const timers = addTimers.current;
+    return () => { media.removeEventListener("change", listener); timers.forEach(clearTimeout); };
+  }, []);
 
   useEffect(() => {
     const deadlines = [deposit, checkoutPayment, selected]
@@ -165,7 +188,9 @@ export default function Storefront({ view = "home" }) {
     return data;
   }, []);
 
-  useEffect(() => { loadProducts(search); }, [loadProducts, search]);
+  useEffect(() => { loadProducts(); }, [loadProducts]);
+  useEffect(() => { setSearch(searchQuery); setProductFilter("all"); }, [selectedCatalog, searchQuery]);
+  useEffect(() => { setCatalogPage(1); }, [search, productFilter, selectedCatalog]);
   useEffect(() => { localStorage.setItem("store_cart", JSON.stringify(cart)); }, [cart]);
   useEffect(() => { api.get("/store/config").then(({data}) => { setBotName(data.telegram_bot_username || ""); setContactConfig(data); }).catch(() => {}); }, []);
   useEffect(() => { loadProfile().catch(() => setProfile(null)); }, [loadProfile]);
@@ -185,6 +210,12 @@ export default function Storefront({ view = "home" }) {
     }, 10000);
     return () => window.clearInterval(timer);
   }, [view]);
+
+  useEffect(() => {
+    if (selected?.type !== "order") return;
+    const current = orders.find((order) => order._id === (selected._id || selected.id));
+    if (current && current.status !== selected.status) setSelected({ ...selected, ...current });
+  }, [orders, selected]);
 
   useEffect(() => {
     if (!deposit || deposit.status !== "pending") return undefined;
@@ -220,13 +251,17 @@ export default function Storefront({ view = "home" }) {
   }, [view, cart, couponCode]);
 
   useEffect(() => {
-    if (!checkoutPayment || checkoutPayment.status !== "pending_payment") return undefined;
+    if (!checkoutPayment || !["pending_payment", "paid", "service_waiting", "processing"].includes(checkoutPayment.status)) return undefined;
     const timer = window.setInterval(async () => {
       try {
         const { data } = await api.get("/store/orders");
         setOrders(data);
         const current = data.find((row) => row._id === checkoutPayment._id);
-        if (current && current.status !== "pending_payment") {
+        if (current && current.status !== checkoutPayment.status) {
+          if (["delivered", "completed", "delivery_failed"].includes(current.status)) {
+            setQrisDialogOpen(false);
+            setCheckoutFeedback({ status: current.status === "delivery_failed" ? "error" : "success", orderId: current._id, products: feedbackProducts.current, message: `Invoice ${current.invoice_id} · ${statusLabel(current.status)}` });
+          }
           setCheckoutPayment((value) => value ? { ...value, status: current.status } : value);
           if (current.status === "delivered") setNotice("Pembayaran QRIS terverifikasi. Pesanan selesai; periksa email Anda.");
           else if (current.status === "service_waiting") setNotice("Pembayaran terverifikasi. Pesanan layanan sedang diproses.");
@@ -240,6 +275,9 @@ export default function Storefront({ view = "home" }) {
   const filteredProducts = useMemo(() => {
     const isOut = (product) => product.stock != null && Number(product.stock) < Math.max(1, Number(product.minimum_purchase_qty || 1));
     let result = products.filter((product) => {
+      if (selectedCatalog && catalogKey(product.catalog_name) !== selectedCatalog) return false;
+      const term = search.trim().toLocaleLowerCase("id-ID");
+      if (term && !`${product.name} ${product.description || ""} ${product.catalog_name || ""}`.toLocaleLowerCase("id-ID").includes(term)) return false;
       if (productFilter === "out") return isOut(product);
       if (productFilter === "ready") return !isOut(product);
       if (productFilter === "service") return product.product_kind === "service";
@@ -248,22 +286,33 @@ export default function Storefront({ view = "home" }) {
     if (productFilter === "bestseller") {
       return result.sort((a, b) => Number(b.sales_count || 0) - Number(a.sales_count || 0) || Number(isOut(a)) - Number(isOut(b)));
     }
-    return result.sort((a, b) => Number(isOut(a)) - Number(isOut(b)));
-  }, [products, productFilter]);
-  const promotedProducts = useMemo(() => products.filter((product) => Number(product.discount_idr || 0) > 0), [products]);
+    return result.sort((a, b) => Number(isOut(a)) - Number(isOut(b)) || (selectedCatalog ? a.name.localeCompare(b.name, "id", { numeric: true }) : 0));
+  }, [products, productFilter, search, selectedCatalog]);
+  const catalogs = useMemo(() => groupCatalogs(filteredProducts), [filteredProducts]);
+  const selectedCatalogName = products.find((p) => catalogKey(p.catalog_name) === selectedCatalog)?.catalog_name || "Katalog";
+  const listing = selectedCatalog ? filteredProducts : catalogs;
+  const pageCount = Math.max(1, Math.ceil(listing.length / 12));
+  const currentPage = Math.min(catalogPage, pageCount);
+  const visibleListing = listing.slice((currentPage - 1) * 12, currentPage * 12);
   const depositExpired = deposit?.status === "pending" && Number.isFinite(Date.parse(deposit.expires_at || "")) && Date.parse(deposit.expires_at || "") <= Date.now();
   const checkoutExpired = checkoutPayment?.status === "pending_payment" && Number.isFinite(Date.parse(checkoutPayment.expires_at || "")) && Date.parse(checkoutPayment.expires_at || "") <= Date.now();
   const setCartAndResetKey = (next) => { setCheckoutKey(""); setCart(next); };
-  const add = (product) => setCartAndResetKey((items) => {
+  const add = (product, quantity) => {
+    if (addTimers.current.has(product._id) || busy) return;
     const minimum = Math.max(1, Number(product.minimum_purchase_qty || 1));
-    const existing = items.find((item) => item.pid === product._id);
-    if (existing) {
-      return items.map((item) => item.pid === product._id
-        ? { ...item, qty: Math.min(product.stock == null ? 100 : product.stock, Math.max(minimum, item.qty + 1)) }
-        : item);
-    }
-    return [...items, { pid: product._id, qty: minimum }];
-  });
+    const maximum = Math.min(100, product.stock == null ? 100 : Number(product.stock));
+    const increment = quantity == null ? 1 : Math.max(minimum, Number(quantity) || minimum);
+    if (maximum < minimum || (cartRef.current.find((item) => item.pid === product._id)?.qty || 0) + increment > maximum) { setError("Jumlah di keranjang sudah mencapai stok tersedia."); return; }
+    setAddingIds((ids) => [...ids, product._id]);
+    const timer = setTimeout(() => {
+      addTimers.current.delete(product._id); setAddingIds((ids) => ids.filter((id) => id !== product._id));
+      const items = cartRef.current;
+      const existing = items.find((item) => item.pid === product._id);
+      const next = existing ? items.map((item) => item.pid === product._id ? { ...item, qty: Math.min(maximum, Math.max(minimum, item.qty + increment)) } : item) : [...items, { pid: product._id, qty: Math.max(minimum, increment) }];
+      cartRef.current = next; setCartAndResetKey(next); setCartToast({ name: product.name, key: Date.now() });
+    }, 5000);
+    addTimers.current.set(product._id, timer);
+  };
   const changeQty = (pid, delta) => setCartAndResetKey((items) => items.map((item) => {
     if (item.pid !== pid) return item;
     const product = products.find((row) => row._id === pid);
@@ -293,6 +342,7 @@ export default function Storefront({ view = "home" }) {
   };
 
   const checkout = async () => {
+    if (busy || addingIds.length) return;
     if (!profile) { navigate("/store/login", { state: { from: "/store/cart" } }); return; }
     const invalid = cart.find((item) => {
       const product = products.find((row) => row._id === item.pid);
@@ -301,12 +351,14 @@ export default function Storefront({ view = "home" }) {
     if (invalid) { setError("Periksa minimum pembelian dan stok setiap produk di keranjang."); return; }
     const key = checkoutKey || (window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
     setCheckoutKey(key); setBusy(true); setError("");
+    feedbackProducts.current = cart.map((item) => products.find((product) => product._id === item.pid)).filter(Boolean);
+    setCheckoutFeedback({ status: "processing", products: feedbackProducts.current });
     try {
       const {data} = await api.post("/store/checkout", {items: cart, currency: "IDR", payment_method: paymentMethod, coupon_code: couponCode.trim() || null, idempotency_key: key});
       setCartAndResetKey([]); setCouponCode(""); setCheckoutKey(""); setQuote(null);
-      if (data.status === "pending_payment" && data.qr_image) { setCheckoutPayment(data); setQrisDialogOpen(true); }
-      else { setNotice(`Pesanan ${data.invoice_id} berstatus ${statusLabel(data.status)}.`); navigate("/store/orders"); }
-    } catch (e) { if (e.response?.status === 409 || (paymentMethod === "balance" && e.response?.status === 400)) setCheckoutKey(""); setError(formatApiErrorDetail(e.response?.data?.detail) || "Checkout gagal. Periksa saldo, stok, atau kupon lalu coba lagi."); }
+      if (data.status === "pending_payment" && data.qr_image) { setCheckoutFeedback(null); setCheckoutPayment(data); setQrisDialogOpen(true); }
+      else { if (["paid", "processing", "service_waiting"].includes(data.status)) setCheckoutPayment(data); setCheckoutFeedback({ status: ["delivered", "completed"].includes(data.status) ? "success" : data.status === "delivery_failed" ? "error" : "pending", orderId: data._id, products: feedbackProducts.current, message: `Invoice ${data.invoice_id} · ${statusLabel(data.status)}` }); setNotice(`Pesanan ${data.invoice_id} berstatus ${statusLabel(data.status)}.`); navigate("/store/orders"); }
+    } catch (e) { if (e.response?.status === 409 || (paymentMethod === "balance" && e.response?.status === 400)) setCheckoutKey(""); const message = formatApiErrorDetail(e.response?.data?.detail) || "Checkout gagal. Periksa saldo, stok, atau kupon lalu coba lagi."; setError(message); setCheckoutFeedback({ status: "error", products: feedbackProducts.current, message }); }
     finally { setBusy(false); }
   };
 
@@ -338,7 +390,7 @@ export default function Storefront({ view = "home" }) {
           const unit = Number(product?.price_idr_current ?? product?.price_idr ?? 0);
           return { name: product?.name || "Produk", qty: Number(item.qty || 1), unit_price: unit, subtotal: unit * Number(item.qty || 1) };
         });
-  const contactName = profile?.first_name || profile?.email || "belum masuk";
+  const contactName = profile?.display_name || profile?.first_name || profile?.email || "belum masuk";
   const contactQuantity = contactItems.reduce((sum, item) => sum + item.qty, 0);
   const contactTotal = view === "deposit" ? Number(deposit?.amount || depositAmount || 0) : (checkoutPayment?.total || quote?.total || contactItems.reduce((sum, item) => sum + item.subtotal, 0));
   const contactPaymentMethod = view === "deposit" ? "QRIS (deposit saldo)" : checkoutPayment ? `QRIS (${statusLabel(checkoutPayment.status)})` : cart.length ? "QRIS saat checkout" : "Belum dipilih";
@@ -357,7 +409,7 @@ export default function Storefront({ view = "home" }) {
       const title = resetMode ? "Reset kata sandi" : registering ? "Buat akun pengguna" : "Masuk ke akun";
       return <section className="mx-auto max-w-lg px-4 py-10 sm:px-6 sm:py-16">
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-9">
-          <p className="text-xs font-bold uppercase tracking-[.18em] text-emerald-800">IDSE Digital Product</p>
+          <p className="text-xs font-bold uppercase tracking-[.18em] text-emerald-800">IDSE Marketplace</p>
           <h1 className="mt-3 text-3xl font-bold tracking-tight text-slate-900">{title}</h1>
           <p className="mt-3 leading-6 text-slate-600">{resetMode ? "Kami akan mengirim kode reset ke email Anda." : registering ? "Daftar menggunakan email terverifikasi dan kata sandi. Telegram dapat dihubungkan nanti dari halaman akun." : "Masuk menggunakan email dan kata sandi akun IDSE Anda."}</p>
           <form className="mt-7 space-y-4" onSubmit={submitAccountForm}>
@@ -380,8 +432,8 @@ export default function Storefront({ view = "home" }) {
       {cart.length ? <div className="mt-7 grid gap-6 lg:grid-cols-[1fr_350px]">
         <div className="space-y-3">{cart.map((item) => { const product = products.find((p) => p._id === item.pid); const min = Math.max(1, Number(product?.minimum_purchase_qty || 1)); const low = item.qty < min; return <article key={item.pid} className="grid grid-cols-[76px_1fr] gap-3 rounded-xl border border-slate-200 bg-white p-3 sm:grid-cols-[100px_1fr] sm:gap-5 sm:p-5">
           <div className="relative aspect-square overflow-hidden rounded-lg bg-slate-100"><ProductArtwork product={product}/>{product?.image_url && <img src={product.image_url} alt={product.name} className="absolute inset-0 h-full w-full bg-white object-contain p-1" onError={(e) => {e.currentTarget.style.display="none";}}/>}</div>
-          <div className="min-w-0"><div className="flex items-start justify-between gap-2"><div><p className="font-semibold text-slate-900">{product?.name || "Produk tidak tersedia"}</p><p className="mt-1 text-sm text-slate-500">{product ? fmtIDR(product.price_idr_current ?? product.price_idr) + " / unit" : "Produk sudah tidak tersedia"}</p></div><button className="rounded-md p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-700" aria-label="Hapus produk dari keranjang" onClick={() => removeCartItem(item.pid)}><Trash2 size={17}/></button></div>
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><button className="rounded-md border border-slate-300 p-2 disabled:opacity-40" aria-label="Kurangi jumlah" onClick={() => changeQty(item.pid, -1)} disabled={item.qty <= min}><Minus size={15}/></button><span className="min-w-8 text-center font-semibold">{item.qty}</span><button className="rounded-md border border-slate-300 p-2 disabled:opacity-40" aria-label="Tambah jumlah" onClick={() => changeQty(item.pid, 1)} disabled={product?.stock != null && item.qty >= product.stock}><Plus size={15}/></button></div><p className="font-semibold text-slate-800">{fmtIDR(quote?.items?.find((line) => line.product_id === item.pid)?.subtotal ?? (product?.price_idr_current || 0) * item.qty)}</p></div>
+          <div className="min-w-0"><div className="flex items-start justify-between gap-2"><div><p className="font-semibold text-slate-900">{product?.name || "Produk tidak tersedia"}</p><p className="mt-1 text-sm text-slate-500">{product ? fmtIDR(product.price_idr_current ?? product.price_idr) + " / unit" : "Produk sudah tidak tersedia"}</p></div><button className="rounded-md p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-700" aria-label="Hapus produk dari keranjang" disabled={busy} onClick={() => removeCartItem(item.pid)}><Trash2 size={17}/></button></div>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><button className="rounded-md border border-slate-300 p-2 disabled:opacity-40" aria-label="Kurangi jumlah" onClick={() => changeQty(item.pid, -1)} disabled={busy || item.qty <= min}><Minus size={15}/></button><span className="min-w-8 text-center font-semibold">{item.qty}</span><button className="rounded-md border border-slate-300 p-2 disabled:opacity-40" aria-label="Tambah jumlah" onClick={() => changeQty(item.pid, 1)} disabled={busy || (product?.stock != null && item.qty >= product.stock)}><Plus size={15}/></button></div><p className="font-semibold text-slate-800">{fmtIDR(quote?.items?.find((line) => line.product_id === item.pid)?.subtotal ?? (product?.price_idr_current || 0) * item.qty)}</p></div>
             {low && <p className="mt-2 text-xs font-medium text-rose-700">Minimum pembelian {min} pcs untuk produk ini.</p>}{product?.stock != null && <p className="mt-1 text-xs text-slate-500">Tersedia {product.stock}</p>}
           </div>
         </article>; })}</div>
@@ -394,24 +446,14 @@ export default function Storefront({ view = "home" }) {
           {quoteError && <p role="alert" className="mt-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{quoteError}</p>}
           {quote?.coupon_error && <p role="alert" className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{quote.coupon_error}</p>}
           {error && <p role="alert" className="mt-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{error}</p>}
-          <button className={`${button} mt-5 w-full`} onClick={checkout} disabled={busy || quoteLoading || Boolean(quoteError) || Boolean(quote?.coupon_error) || cart.some((item) => {const product = products.find((p) => p._id === item.pid); return !product || item.qty < Math.max(1, Number(product.minimum_purchase_qty || 1)) || (product.stock != null && item.qty > product.stock);})}>{busy ? "Memproses pembayaran…" : paymentMethod === "balance" ? <><CreditCard size={18}/> Bayar dengan Saldo</> : <><QrCode size={18}/> Bayar dengan QRIS</>}<ArrowRight size={17}/></button>
+          <button className={`${button} mt-5 w-full`} onClick={checkout} disabled={busy || addingIds.length > 0 || quoteLoading || Boolean(quoteError) || Boolean(quote?.coupon_error) || cart.some((item) => {const product = products.find((p) => p._id === item.pid); return !product || item.qty < Math.max(1, Number(product.minimum_purchase_qty || 1)) || (product.stock != null && item.qty > product.stock);})}>{busy ? "Memproses pembayaran…" : paymentMethod === "balance" ? <><CreditCard size={18}/> Bayar dengan Saldo</> : <><QrCode size={18}/> Bayar dengan QRIS</>}<ArrowRight size={17}/></button>
           <Link className="mt-3 flex items-center justify-center gap-2 text-sm font-semibold text-emerald-800" to="/store/deposit"><CreditCard size={16}/> Deposit saldo Telegram melalui QRIS</Link>
           <p className="mt-4 text-xs leading-5 text-slate-500">Checkout saldo memakai saldo web jika Telegram belum ditautkan. Setelah ditautkan, saldo web digabung satu kali ke saldo Telegram dan checkout memakai saldo gabungan. QRIS dibayar langsung dan diverifikasi otomatis.</p>
         </aside>
       </div> : <div className="mt-8 rounded-xl border border-slate-200 bg-white p-10 text-center"><ShoppingBag className="mx-auto text-slate-300" size={35}/><p className="mt-3 text-slate-600">Keranjang Anda masih kosong.</p><Link className={`${button} mt-5`} to="/store/products">Jelajahi produk</Link></div>}
     </section>;
 
-    if (view === "profile") return <section className="mx-auto max-w-4xl px-4 py-8 sm:px-6 sm:py-12">
-      <p className="text-xs font-bold uppercase tracking-widest text-emerald-800">Akun IDSE</p><h1 className="mt-2 text-3xl font-bold">Profil</h1>
-      {profile && <div className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex items-center gap-4 border-b border-slate-100 p-5 sm:p-7"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 text-lg font-bold text-emerald-900">{String(profile.email || "ID").slice(0, 2).toUpperCase()}</div><div className="min-w-0"><p className="break-all font-semibold text-slate-900">{profile.email}</p><p className="mt-1 text-sm text-slate-500">Akun pengguna</p></div></div>
-        <div className="grid gap-3 p-5 sm:grid-cols-2 sm:p-7"><div className="rounded-lg border border-slate-200 bg-slate-50 p-4"><p className="text-sm text-slate-500">Saldo IDR</p><p className="mt-1 text-xl font-bold">{fmtIDR(profile.balance_idr)}</p></div><div className="rounded-lg border border-slate-200 bg-slate-50 p-4"><p className="text-sm text-slate-500">Saldo USD</p><p className="mt-1 text-xl font-bold">{fmtUSD(profile.balance_usd)}</p></div></div>
-        <div className="mx-5 rounded-lg border border-slate-200 p-4 sm:mx-7"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="font-semibold">Telegram</p><p className="mt-1 text-sm text-slate-600">{profile.telegram_linked ? `Terhubung${profile.username ? ` · @${profile.username}` : ""}` : "Belum terhubung · opsional"}</p>{profile.telegram_linked && <p className="mt-1 text-xs text-slate-500">ID Telegram: {profile.telegram_id}. Saldo terhubung memakai saldo Telegram.</p>}</div><span className={`rounded-full px-3 py-1 text-xs font-semibold ${profile.telegram_linked ? "bg-emerald-100 text-emerald-900" : "bg-slate-100 text-slate-600"}`}>{profile.telegram_linked ? "Connected" : "Not connected"}</span></div>
-          {!profile.telegram_linked && <><p className="mt-3 text-sm leading-6 text-slate-600">Akun toko dapat dipakai tanpa Telegram. Jika ditautkan, saldo web yang ada dipindahkan satu kali ke saldo Telegram. Setelah itu pembayaran saldo memakai saldo gabungan.</p><button className={`${secondary} mt-3`} onClick={createLinkCode}>Buat kode penghubung</button>{linkCode && <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm"><p>Buka {botName ? <a className="font-semibold text-emerald-800 underline" href={`https://t.me/${botName}`} target="_blank" rel="noreferrer">@{botName}</a> : "bot Telegram IDSE"} dan kirim perintah berikut:</p><code className="mt-2 block break-all font-mono font-semibold">/link {linkCode}</code><p className="mt-2 text-xs text-slate-500">Kode berlaku 10 menit. Muat ulang profil setelah menyelesaikan tautan.</p></div>}</>}
-        </div>
-        <div className="flex flex-wrap gap-2 p-5 sm:p-7"><Link className={button} to="/store/deposit">Deposit saldo</Link><Link className={secondary} to="/store/transactions">Riwayat transaksi</Link><Link className={secondary} to="/store/orders">Pesanan</Link><button className="ml-auto inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-500 hover:bg-slate-50" onClick={logout}><LogOut size={16}/> Keluar</button></div>
-      </div>}
-    </section>;
+    if (view === "profile") return <StoreProfile profile={profile} onUpdate={setProfile} onRefresh={loadProfile} onLogout={logout} onLink={createLinkCode} linkCode={linkCode} botName={botName} linkError={error}/>;
 
     if (view === "deposit") return <section className="mx-auto max-w-5xl px-4 py-8 sm:px-6 sm:py-12">
       <p className="text-xs font-bold uppercase tracking-widest text-emerald-800">Saldo</p><h1 className="mt-2 text-3xl font-bold">Deposit melalui QRIS</h1><p className="mt-3 max-w-2xl leading-6 text-slate-600">Pembayaran diperiksa otomatis oleh sistem. Saldo hanya ditambahkan setelah transaksi QRIS terverifikasi.</p>
@@ -433,33 +475,33 @@ export default function Storefront({ view = "home" }) {
           {rows.map((row) => <button key={row.id || row._id} onClick={() => setSelected(row)} className="grid w-full gap-2 border-b border-slate-100 px-4 py-4 text-left transition hover:bg-slate-50 sm:grid-cols-[1.2fr_1fr_1fr_1fr_1fr] sm:items-center sm:gap-3 sm:px-5"><span className="font-mono text-sm font-semibold text-emerald-900">{row.reference || row.invoice_id || "—"}</span><span className="text-sm text-slate-600">{row.type === "deposit" ? `Deposit · ${row.payment_method || "QRIS"}` : "Pesanan"}</span><span className="text-xs text-slate-500">{dateLabel(row.created_at)}</span><span className="text-sm font-semibold">{row.currency === "USD" ? fmtUSD(row.amount) : fmtIDR(row.amount)}</span><span className="w-fit rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">{statusLabel(row.status)}</span></button>)}
           {!rows.length && <div className="px-5 py-12 text-center text-sm text-slate-500">Belum ada {view === "orders" ? "pesanan" : "transaksi"}.</div>}
         </div>
-        {selected && <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/40 p-0 sm:items-center sm:p-4" role="presentation" onClick={(e) => { if (e.target === e.currentTarget) setSelected(null); }}><section role="dialog" aria-modal="true" aria-labelledby="transaction-title" className="max-h-[90vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 shadow-xl sm:max-w-xl sm:rounded-2xl sm:p-7"><div className="flex items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-widest text-emerald-800">Detail transaksi</p><h2 id="transaction-title" className="mt-2 break-all text-xl font-bold">{selected.reference || selected.invoice_id}</h2></div><button className="rounded-lg p-2 hover:bg-slate-100" onClick={() => setSelected(null)} aria-label="Tutup"><X size={18}/></button></div><div className="mt-5 grid gap-3 sm:grid-cols-2"><div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-500">Status</p><p className="mt-1 font-semibold">{statusLabel(selected.status)}</p></div><div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-500">Waktu</p><p className="mt-1 text-sm font-medium">{dateLabel(selected.created_at)}</p></div><div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-500">Jumlah</p><p className="mt-1 font-semibold">{selected.currency === "USD" ? fmtUSD(selected.amount) : fmtIDR(selected.amount)}</p></div><div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-500">Pembayaran</p><p className="mt-1 font-semibold">{selected.payment_method || (selected.type === "deposit" ? "QRIS" : "Saldo")}</p></div></div>{selected.status === "pending_payment" && selected.payment_method === "qris" && <button className={`${button} mt-4 w-full`} onClick={() => reopenQris(selected._id)}><QrCode size={17}/> Tampilkan QRIS untuk bayar</button>}{selected.items?.length > 0 && <div className="mt-5"><h3 className="font-semibold">Produk</h3><div className="mt-2 space-y-2">{selected.items.map((item, idx) => <div key={idx} className="rounded-lg border border-slate-200 p-3"><p className="font-medium">{item.name} × {item.qty}</p><p className="mt-1 text-sm text-slate-500">{selected.currency === "USD" ? fmtUSD(item.unit_price) : fmtIDR(item.unit_price)} / unit · Subtotal {selected.currency === "USD" ? fmtUSD(item.subtotal) : fmtIDR(item.subtotal)}</p></div>)}</div></div>}{selected.delivery_email_status && <p className="mt-4 text-sm text-slate-600">Status email produk: {statusLabel(selected.delivery_email_status === "sent" ? "delivered" : selected.delivery_email_status)}</p>}</section></div>}
+        {selected && <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/40 p-0 sm:items-center sm:p-4" role="presentation" onClick={(e) => { if (e.target === e.currentTarget) setSelected(null); }}><section role="dialog" aria-modal="true" aria-labelledby="transaction-title" className="max-h-[90vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 shadow-xl sm:max-w-xl sm:rounded-2xl sm:p-7"><div className="flex items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-widest text-emerald-800">Detail transaksi</p><h2 id="transaction-title" className="mt-2 break-all text-xl font-bold">{selected.reference || selected.invoice_id}</h2></div><button className="rounded-lg p-2 hover:bg-slate-100" onClick={() => setSelected(null)} aria-label="Tutup"><X size={18}/></button></div><div className="mt-5 grid gap-3 sm:grid-cols-2"><div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-500">Status</p><p className="mt-1 font-semibold">{statusLabel(selected.status)}</p></div><div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-500">Waktu</p><p className="mt-1 text-sm font-medium">{dateLabel(selected.created_at)}</p></div><div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-500">Jumlah</p><p className="mt-1 font-semibold">{selected.currency === "USD" ? fmtUSD(selected.amount) : fmtIDR(selected.amount)}</p></div><div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-500">Pembayaran</p><p className="mt-1 font-semibold">{selected.payment_method || (selected.type === "deposit" ? "QRIS" : "Saldo")}</p></div></div>{selected.status === "pending_payment" && selected.payment_method === "qris" && <button className={`${button} mt-4 w-full`} onClick={() => reopenQris(selected._id || selected.id)}><QrCode size={17}/> Tampilkan QRIS untuk bayar</button>}{selected.items?.length > 0 && <div className="mt-5"><h3 className="font-semibold">Produk</h3><div className="mt-2 space-y-2">{selected.items.map((item, idx) => <div key={idx} className="rounded-lg border border-slate-200 p-3"><p className="font-medium">{item.name} × {item.qty}</p><p className="mt-1 text-sm text-slate-500">{selected.currency === "USD" ? fmtUSD(item.unit_price) : fmtIDR(item.unit_price)} / unit · Subtotal {selected.currency === "USD" ? fmtUSD(item.subtotal) : fmtIDR(item.subtotal)}</p></div>)}</div></div>}{selected.type === "order" && <OrderDelivery orderId={selected._id || selected.id} status={selected.status}/>} {selected.delivery_email_status && <p className="mt-4 text-sm text-slate-600">Status email produk: {statusLabel(selected.delivery_email_status === "sent" ? "delivered" : selected.delivery_email_status)}</p>}</section></div>}
       </section>;
     }
 
-    if (view === "detail") {
-      const product = products.find((row) => row._id === productId);
-      if (!product) return <section className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8"><Link className="text-sm text-emerald-800" to="/store/products">← Kembali ke katalog</Link><p className="mt-6 rounded-xl bg-white p-8 text-center text-slate-500">Produk tidak ditemukan atau sedang tidak tersedia.</p></section>;
-      const min = Math.max(1, Number(product.minimum_purchase_qty || 1));
-      const noStock = product.stock === 0 || (product.stock != null && product.stock < min);
-      return <section className="mx-auto grid max-w-7xl gap-8 px-4 py-8 sm:px-6 sm:py-12 md:grid-cols-2 lg:px-8"><div className="relative aspect-square overflow-hidden rounded-xl border border-slate-200 bg-slate-100"><ProductArtwork product={product}/>{product.image_url && <img src={product.image_url} alt={product.name} className="absolute inset-0 h-full w-full bg-white object-contain p-5" onError={(e) => {e.currentTarget.style.display="none";}}/>}</div><div className="self-center"><Link className="text-sm font-semibold text-emerald-800 hover:underline" to="/store/products">← Semua produk</Link><p className="mt-7 text-xs font-semibold uppercase tracking-widest text-slate-500">{productTypeLabel(product)}</p><h1 className="mt-2 text-3xl font-bold text-slate-900 sm:text-4xl">{product.name}</h1><p className="mt-5 whitespace-pre-line leading-7 text-slate-600">{product.description || "Produk pilihan dari IDSE Digital Product."}</p><p className="mt-7 text-2xl font-bold text-emerald-900">{money(product, currency)}</p><p className={`mt-2 text-sm ${noStock ? "text-rose-700" : "text-slate-500"}`}>{noStock ? "Stok tidak mencukupi minimum pembelian" : product.stock == null ? "Stok tersedia" : `${product.stock} tersedia`}</p>{min > 1 && <p className="mt-2 text-sm font-medium text-slate-600">Minimum pembelian {min} pcs</p>}<button className={`${button} mt-7 w-full sm:w-auto`} onClick={() => add(product)} disabled={noStock}>Tambah ke keranjang <Plus size={17}/></button></div></section>;
-    }
+    if (displayView === "products") return <section className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
+      {selectedCatalog && <Link to="/store/products" onClick={() => { setSearch(""); setProductFilter("all"); }} className="text-sm font-semibold text-emerald-800">← Semua katalog</Link>}
+      <div className="mt-3 flex flex-wrap items-end justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-widest text-emerald-800">Katalog IDSE</p><h1 className="mt-2 text-3xl font-bold">{selectedCatalog ? selectedCatalogName : "Pilih katalog"}</h1><p className="mt-3 text-slate-500">{selectedCatalog ? "Pilih varian atau durasi yang sesuai kebutuhan Anda." : "Temukan layanan favorit, lalu pilih produk dan durasinya."}</p></div><label className="relative block w-full sm:max-w-sm"><Search className="absolute left-3 top-3.5 text-slate-400" size={18}/><input aria-label="Cari katalog atau produk" className={`${input} pl-10`} placeholder={selectedCatalog ? "Cari varian di katalog ini" : "Cari katalog atau produk"} value={search} onChange={(e) => setSearch(e.target.value)}/></label></div>
+      <CatalogFilter value={productFilter} setValue={setProductFilter}/>
+      {error && <p role="alert" className="mt-5 rounded-lg bg-rose-50 p-4 text-rose-800">{error}</p>}
+      {productLoading ? <p role="status" className="mt-7 rounded-xl bg-white p-8 text-center text-slate-500">Memuat katalog…</p> : <><p className="mt-5 text-sm text-slate-500">{listing.length} {selectedCatalog ? "pilihan produk" : "katalog"}</p><div className={`mt-4 grid gap-4 ${selectedCatalog ? "sm:grid-cols-2" : "grid-cols-2"} lg:grid-cols-3 xl:grid-cols-4`}>{visibleListing.map((item) => selectedCatalog ? <ProductCard key={item._id} product={item} add={add} onOpen={openProduct} adding={addingIds.includes(item._id) || busy}/> : <CatalogCard key={item.key} catalog={item}/>)}</div></>}
+      {!productLoading && !error && !listing.length && <p className="mt-6 rounded-xl bg-white p-8 text-center text-slate-500">Tidak ada pilihan yang sesuai. Coba ubah pencarian atau filter.</p>}
+      {!productLoading && pageCount > 1 && <nav aria-label="Halaman katalog" className="mt-8 flex items-center justify-center gap-4"><button className={secondary} disabled={currentPage === 1} onClick={() => setCatalogPage(currentPage - 1)}>Sebelumnya</button><span className="text-sm">{currentPage} / {pageCount}</span><button className={secondary} disabled={currentPage === pageCount} onClick={() => setCatalogPage(currentPage + 1)}>Berikutnya</button></nav>}
+    </section>;
 
-    if (view === "products") return <section className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-12 lg:px-8"><div className="flex flex-wrap items-end justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-widest text-emerald-800">Katalog IDSE</p><h1 className="mt-2 text-3xl font-bold">Temukan produk</h1></div><label className="relative block w-full sm:max-w-sm"><Search className="absolute left-3 top-3.5 text-slate-400" size={18}/><input className={`${input} pl-10`} placeholder="Cari nama atau deskripsi produk" value={search} onChange={(e) => setSearch(e.target.value)}/></label></div><CatalogFilter value={productFilter} setValue={setProductFilter}/>{error && <p role="alert" className="mt-5 rounded-lg bg-rose-50 p-4 text-rose-800">{error}</p>}{productLoading ? <p role="status" className="mt-7 rounded-xl bg-white p-8 text-center text-slate-500">Memuat produk…</p> : <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{filteredProducts.map((p) => <ProductCard key={p._id} product={p} add={add}/>)}</div>}{!productLoading && !error && !filteredProducts.length && <p className="mt-6 rounded-xl bg-white p-8 text-center text-slate-500">Produk tidak ditemukan.</p>}</section>;
+    return <StoreHome products={products} loading={productLoading} error={error} search={search} setSearch={setSearch} onOpen={openProduct}
+      renderCatalog={(catalog) => <CatalogCard key={catalog.key} catalog={catalog}/>}
+      renderProduct={(product) => <ProductCard key={product._id} product={product} add={add} onOpen={openProduct} adding={addingIds.includes(product._id) || busy}/>}/>;
 
-    return <>
-      <section className="border-b border-slate-200 bg-white"><div className="mx-auto grid max-w-7xl gap-8 px-4 py-12 sm:px-6 sm:py-16 md:grid-cols-[1.15fr_.85fr] md:items-center lg:px-8 lg:py-20"><div><p className="text-xs font-bold uppercase tracking-[.2em] text-emerald-800">IDSE Digital Product</p><h1 className="mt-4 max-w-2xl text-4xl font-bold leading-tight tracking-tight text-slate-950 sm:text-5xl">Produk digital, lebih mudah ditemukan dan dibeli.</h1><p className="mt-5 max-w-xl text-base leading-7 text-slate-600">Jelajahi katalog, cek ketersediaan, lalu bayar langsung melalui QRIS. Status pesanan diperbarui setelah pembayaran terverifikasi.</p><form className="mt-7 flex max-w-xl gap-2" onSubmit={(e) => {e.preventDefault();navigate("/store/products");}}><label className="relative min-w-0 flex-1"><Search className="absolute left-3 top-3.5 text-slate-400" size={18}/><input className={`${input} pl-10`} placeholder="Cari produk digital" value={search} onChange={(e) => setSearch(e.target.value)}/></label><button className={button}>Cari</button></form><Link to="/store/products" className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-emerald-800 hover:underline">Lihat semua produk <ArrowRight size={16}/></Link></div><div className="grid gap-3 sm:grid-cols-3 md:grid-cols-1"><TrustItem icon={<PackageCheck/>} title="Ketersediaan tercatat" text="Stok katalog mengikuti inventory yang tersedia."/><TrustItem icon={<ShieldCheck/>} title="QRIS terverifikasi" text="Pesanan hanya diproses setelah pembayaran dikonfirmasi."/><TrustItem icon={<Clock3/>} title="Status pesanan jelas" text="Riwayat menampilkan proses dan hasil order."/></div></div></section>
-      <section className="mx-auto max-w-7xl px-4 py-10 sm:px-6 sm:py-14 lg:px-8"><div className="flex flex-wrap items-end justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-widest text-emerald-800">Jelajahi</p><h2 className="mt-2 text-2xl font-bold">Pilihan produk</h2></div><Link className="text-sm font-semibold text-emerald-800 hover:underline" to="/store/products">Buka katalog →</Link></div><CatalogFilter value={productFilter} setValue={setProductFilter}/>
-        {promotedProducts.length > 0 && <div className="mt-10"><SectionTitle eyebrow="Harga promo aktif" title="Penawaran saat ini" href="/store/products"/><div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{promotedProducts.slice(0,3).map((p)=><ProductCard key={p._id} product={p} add={add}/>)}</div></div>}
-        <div className="mt-10"><SectionTitle eyebrow="Pilihan terbaru" title="Produk tersedia" href="/store/products"/>{error ? <p role="alert" className="mt-5 rounded-lg bg-rose-50 p-4 text-rose-800">{error}</p> : productLoading ? <p className="mt-5 rounded-xl bg-white p-8 text-center text-slate-500">Memuat produk…</p> : <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{filteredProducts.slice(0, 6).map((p) => <ProductCard key={p._id} product={p} add={add}/>)}</div>}{!productLoading && !error && !products.length && <p className="mt-5 rounded-xl bg-white p-8 text-center text-slate-500">Belum ada produk aktif.</p>}</div>
-      </section>
-    </>;
   })();
 
-  return <div className={`${page} storefront-font`}><Header count={cart.reduce((sum, item) => sum + item.qty, 0)} profile={profile} onLogout={logout}/>{content}<footer className="border-t border-slate-200 bg-white"><div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 py-7 text-sm text-slate-500 sm:px-6 lg:px-8"><span>© {new Date().getFullYear()} IDSE Digital Product</span><div className="flex flex-wrap gap-4"><Link to="/store/products">Produk</Link><Link to="/store/deposit">Deposit</Link><Link to="/store/transactions">Transaksi</Link>{profile && <Link to="/store/profile">Akun</Link>}</div></div></footer>
+  return <div className={`${page} storefront-font storefront-theme`} data-theme={resolvedTheme}><StoreNavigation resolvedTheme={resolvedTheme} theme={theme} setTheme={setTheme} count={cart.reduce((sum, item) => sum + item.qty, 0)} profile={profile} onLogout={logout}/>{content}<footer className="border-t border-slate-200 bg-white"><div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 py-7 text-sm text-slate-500 sm:px-6 lg:px-8"><span>© {new Date().getFullYear()} IDSE Marketplace</span><div className="flex flex-wrap gap-4"><Link to="/store/products">Katalog</Link><Link to="/store/deposit">Deposit</Link><Link to="/store/transactions">Transaksi</Link>{profile && <Link to="/store/profile">Akun</Link>}</div></div></footer>
     {qrisDialogOpen && checkoutPayment && <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/45 p-0 sm:items-center sm:p-4" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setQrisDialogOpen(false); }}><section role="dialog" aria-modal="true" aria-labelledby="qris-title" className="max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 shadow-2xl sm:max-w-lg sm:rounded-2xl sm:p-7"><div className="flex items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-widest text-emerald-800">Pembayaran terverifikasi otomatis</p><h2 id="qris-title" className="mt-2 text-xl font-bold text-slate-900">QRIS All Payment</h2></div><button aria-label="Tutup" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100" onClick={() => setQrisDialogOpen(false)}><X size={18}/></button></div><div className="mt-4 grid grid-cols-2 gap-3"><div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-500">Invoice</p><p className="mt-1 break-all font-mono text-sm font-semibold">{checkoutPayment.invoice_id}</p></div><div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-500">Status</p><p className="mt-1 text-sm font-semibold">{statusLabel(checkoutExpired ? "expired" : checkoutPayment.status)}</p></div></div>
       {checkoutPayment.status === "pending_payment" && !checkoutExpired ? <><div className="mt-4 flex justify-between rounded-lg border border-emerald-100 bg-emerald-50 p-4"><span className="text-sm text-slate-600">Bayar tepat sejumlah</span><b className="text-lg text-emerald-950">{fmtIDR(checkoutPayment.payment_amount)}</b></div><p className="mt-2 text-xs text-slate-500">QR hanya berlaku {checkoutPayment.expires_in_minutes || 5} menit, sampai {dateLabel(checkoutPayment.expires_at)}. Nominal sudah termasuk biaya layanan dan kode unik.</p>{checkoutPayment.qr_image && <div className="mt-4 flex flex-col items-center rounded-xl border border-slate-200 p-4"><img className="h-64 w-64 max-w-full object-contain" src={checkoutPayment.qr_image} alt="QRIS All Payment"/><p className="mt-3 text-center text-sm font-medium text-slate-800">Cara pembayaran</p><p className="mt-1 text-center text-sm text-slate-600">Pindai melalui aplikasi e-wallet atau mobile banking yang mendukung QRIS.</p><p className="mt-1 text-center text-xs text-slate-500">Status pembayaran akan diperiksa otomatis.</p></div>}</> : checkoutExpired || checkoutPayment.status === "expired" ? <p role="status" className="mt-4 rounded-lg bg-amber-50 p-4 text-sm text-amber-900">Kode QR sudah tidak berlaku karena waktu pembayaran habis. Silakan buat checkout baru untuk meminta QRIS baru.</p> : <p role="status" className="mt-4 rounded-lg bg-emerald-50 p-4 text-sm text-emerald-900">{checkoutPayment.status === "delivered" ? "Pembayaran terverifikasi. Rincian pesanan dikirim ke email." : checkoutPayment.status === "service_waiting" ? "Pembayaran terverifikasi. Pesanan layanan sedang diproses." : checkoutPayment.status === "delivery_failed" ? "Pembayaran terverifikasi, tetapi tim perlu memeriksa pengiriman." : `Status pembayaran: ${statusLabel(checkoutPayment.status)}.`}</p>}
       <div className="mt-5 flex flex-wrap justify-end gap-2"><button className={secondary} onClick={() => { setQrisDialogOpen(false); navigate("/store/orders"); }}>Lihat pesanan</button><button className={button} onClick={() => setQrisDialogOpen(false)}>Tutup</button></div></section></div>}
+    <StoreProductDialog open={view === "detail"} product={products.find((p) => p._id === productId)} products={products} loading={productLoading} theme={resolvedTheme} adding={addingIds.includes(productId) || busy} onSelect={openProduct} onAdd={add} onClose={closeProduct} error={error}/>
+    <CartToast item={cartToast} onClose={closeCartToast}/>
+    <CheckoutFeedback feedback={checkoutFeedback} onClose={() => setCheckoutFeedback(null)}/>
     <ContactBubbles whatsappNumber={contactConfig.whatsapp_contact_number} telegramTarget={contactConfig.telegram_contact_target} message={whatsappMessage} />
   </div>;
 }
@@ -525,12 +567,4 @@ function WhatsAppLogo() {
 
 function TelegramLogo() {
   return <svg viewBox="0 0 24 24" width="29" height="29" aria-hidden="true" fill="currentColor"><path d="M21.7 4.2 18.5 20c-.24 1.12-.9 1.4-1.82.87l-5.03-3.7-2.43 2.34c-.27.28-.5.5-1.03.5l.36-5.1 9.28-8.39c.4-.36-.09-.56-.62-.2L5.75 13.55.78 12c-1.08-.34-1.1-1.08.23-1.6L20.45 2.8c.9-.33 1.68.22 1.25 1.4Z"/></svg>;
-}
-
-function SectionTitle({ eyebrow, title, href }) {
-  return <div className="flex items-end justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-widest text-emerald-800">{eyebrow}</p><h2 className="mt-2 text-2xl font-bold">{title}</h2></div>{href && <Link className="text-sm font-semibold text-emerald-800 hover:underline" to={href}>Lihat semua →</Link>}</div>;
-}
-
-function TrustItem({ icon, title, text }) {
-  return <div className="flex gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4"><span className="text-emerald-800">{icon}</span><div><p className="text-sm font-semibold text-slate-800">{title}</p><p className="mt-1 text-xs leading-5 text-slate-500">{text}</p></div></div>;
 }

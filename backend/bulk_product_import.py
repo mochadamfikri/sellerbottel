@@ -9,6 +9,7 @@ from db import db
 from rates import get_rate
 from services import now_iso, notify_product_created
 from inventory import add_records, available_count
+from inventory_admin import align_records
 
 
 PRODUCT_SHEET_NAME = "product"
@@ -78,13 +79,16 @@ def _generate_description(name: str, points: str, kind: str, wait_minutes: int |
 def _column_map(headers: list[str]) -> dict[str, int]:
     aliases = {
         "name": ["nama product", "nama produk", "product", "produk", "name"],
+        "catalog_name": ["katalog", "nama katalog", "catalog", "catalog_name"],
+        "minimum": ["minimum pembelian", "minimum_purchase_qty"],
+        "schema": ["kolom inventory", "inventory_schema"],
         "short_description": [
             "deskripsi singkat", "short description", "poin deskripsi",
             "point deskripsi", "deskripsi", "description", "desc",
         ],
         "price_usd": ["harga usd", "price usd", "usd", "price"],
-        "price_idr": ["harga idr", "price idr", "idr"],
-        "kind": ["jenis product", "jenis produk", "product kind", "tipe product", "tipe produk"],
+        "price_idr": ["harga", "harga idr", "price idr", "idr"],
+        "kind": ["jenis (inventory/jasa)", "jenis", "jenis product", "jenis produk", "product kind", "tipe product", "tipe produk"],
         "wait": ["waktu tunggu (menit)", "waktu tunggu", "wait minutes", "service wait minutes"],
         "message": ["pesan jasa", "pesan antrean jasa", "service message", "service message template"],
     }
@@ -125,9 +129,28 @@ def _parse_product_rows(ws, rate: float):
         name = cell("name")
         if not name:
             continue
+        catalog = " ".join(cell("catalog_name").split())
+        if len(catalog) > 80:
+            errors.append(f"Baris {row_no}: nama katalog maksimal 80 karakter.")
+            continue
+        try:
+            minimum = int(cell("minimum")) if cell("minimum") else None
+            if minimum is not None and not 1 <= minimum <= 1000:
+                raise ValueError()
+        except ValueError:
+            errors.append(f"Baris {row_no}: minimum pembelian harus 1–1000.")
+            continue
+        schema = [field.strip() for field in cell("schema").split(",") if field.strip()]
+        if schema:
+            from inventory_admin import validate_schema
+            try:
+                schema = validate_schema(schema)
+            except HTTPException as exc:
+                errors.append(f"Baris {row_no}: {exc.detail}")
+                continue
 
         kind_raw = cell("kind").casefold()
-        if kind_raw.startswith("a.") or "digital" in kind_raw or "data" in kind_raw:
+        if kind_raw == "inventory" or kind_raw.startswith("a.") or "digital" in kind_raw or "data" in kind_raw:
             kind = "digital"
         elif kind_raw.startswith("b.") or "jasa" in kind_raw or "service" in kind_raw:
             kind = "service"
@@ -172,6 +195,9 @@ def _parse_product_rows(ws, rate: float):
         products.append({
             "row_no": row_no,
             "name": name,
+            "catalog_name": catalog,
+            "minimum_purchase_qty": minimum,
+            "inventory_schema": schema,
             "description": description,
             "short_description": points,
             "price_usd": round(price_usd, 2),
@@ -216,7 +242,7 @@ def _inventory_from_sheet(ws):
     return schema, records
 
 
-async def import_workbook(data: bytes):
+async def import_workbook(data: bytes, metadata_only: bool = False):
     try:
         import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
@@ -246,6 +272,15 @@ async def import_workbook(data: bytes):
     for item in products:
         existing = await db.products.find_one({"name": item["name"]})
         pid = existing["_id"] if existing else str(uuid.uuid4())
+        if existing and existing.get("product_kind", "digital") != item["product_kind"] and await db.inventory_items.count_documents({"product_id": pid}):
+            errors.append(f'{item["name"]}: jenis produk tidak dapat diganti karena sudah memiliki inventory.')
+            continue
+        if existing and item.get("inventory_schema") and existing.get("inventory_schema"):
+            try:
+                align_records(item["inventory_schema"], [], existing["inventory_schema"])
+            except HTTPException as exc:
+                errors.append(f'{item["name"]}: {exc.detail}')
+                continue
 
         doc = {
             "name": item["name"],
@@ -268,12 +303,19 @@ async def import_workbook(data: bytes):
             "updated_at": now_iso(),
         }
 
+        if item.get("catalog_name"):
+            doc["catalog_name"] = item["catalog_name"]
+        if item.get("minimum_purchase_qty") is not None:
+            doc["minimum_purchase_qty"] = item["minimum_purchase_qty"]
+        if item.get("inventory_schema") and not (existing or {}).get("inventory_schema"):
+            doc["inventory_schema"] = item["inventory_schema"]
+
         if existing:
             await db.products.update_one({"_id": pid}, {"$set": doc})
             updated += 1
         else:
             doc["_id"] = pid
-            doc["inventory_schema"] = []
+            doc.setdefault("inventory_schema", [])
             doc["created_at"] = now_iso()
             await db.products.insert_one(doc)
             imported += 1
@@ -284,17 +326,21 @@ async def import_workbook(data: bytes):
 
         result = {"name": item["name"], "product_id": pid, "description_generated": True}
 
-        if item["product_kind"] == "digital":
+        if item["product_kind"] == "digital" and not metadata_only:
             ws = sheet_map.get(_norm(item["name"]))
             if ws is None:
-                errors.append(
-                    f'Product "{item["name"]}": sheet inventory dengan nama "{item["name"]}" tidak ditemukan.'
-                )
+                result["inventory_note"] = "Produk disimpan. Upload inventory kemudian melalui Kelola Inventory."
             else:
                 schema, records = _inventory_from_sheet(ws)
                 if not schema:
                     errors.append(f'Product "{item["name"]}": sheet inventory kosong.')
                 else:
+                    try:
+                        schema, records = align_records(schema, records, (existing or {}).get("inventory_schema") or item.get("inventory_schema") or [])
+                    except HTTPException as exc:
+                        errors.append(f'{item["name"]}: {exc.detail}')
+                        details.append(result)
+                        continue
                     inv = await add_records(pid, records, schema)
                     inventory_created += inv["created"]
                     inventory_skipped += inv["skipped"]

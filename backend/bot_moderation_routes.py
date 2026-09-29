@@ -63,6 +63,7 @@ async def user_detail(telegram_id: int):
 class BlockBody(BaseModel):
     reason: str = ""
     delete_tracked_messages: bool = True
+    kick_channels: bool = False
 
 
 async def _delete_tracked_private_messages(chat_id: int):
@@ -94,6 +95,10 @@ async def silent_block(telegram_id: int, body: BlockBody):
     user = await db.bot_users.find_one({"telegram_id": telegram_id})
     if not user:
         raise HTTPException(404, "Pengguna tidak ditemukan.")
+    if body.kick_channels:
+        from db import get_settings
+        if not ((await get_settings()).get("post_purchase_followup") or {}).get("channel_ids"):
+            raise HTTPException(400, "Simpan channel tindak lanjut terlebih dahulu.")
 
     deletion = {"tracked": 0, "deleted": 0, "failed_batches": 0}
     if body.delete_tracked_messages:
@@ -110,7 +115,13 @@ async def silent_block(telegram_id: int, body: BlockBody):
             "state_data": {},
         }},
     )
-    return {"ok": True, "silent_blocked": True, "deletion": deletion}
+    channels = []
+    if body.kick_channels:
+        from post_purchase import kick_channels
+        from db import get_settings
+        settings = await get_settings()
+        channels = await kick_channels(telegram_id, (settings.get("post_purchase_followup") or {}).get("channel_ids", []))
+    return {"ok": True, "silent_blocked": True, "deletion": deletion, "channel_results": channels}
 
 
 @router.post("/users/{telegram_id}/unblock")

@@ -2,7 +2,7 @@ STRINGS = {
     "id": {
         "choose_currency": "🏪 <b>Selamat datang di Toko Produk Digital!</b>\n\nSilakan pilih mata uang yang ingin Anda gunakan:\n\n💵 <b>USD</b> — deposit via crypto (USDT/USDC)\n🇮🇩 <b>IDR</b> — deposit via transfer bank\n\nPilihan ini bisa diubah kapan saja lewat menu Pengaturan.",
         "main_title": "🏪 <b>Toko Produk Digital</b>\n\nHalo, {name}! 👋\nSaldo Anda: <b>{balance}</b>\n\nSilakan pilih menu:",
-        "btn_products": "🛍 Lihat Produk", "btn_cart": "🛒 Keranjang", "btn_deposit": "💰 Deposit",
+        "btn_products": "📚 Katalog Produk", "btn_cart": "🛒 Keranjang", "btn_deposit": "💰 Deposit",
         "btn_balance": "💳 Saldo Saya", "btn_history": "📜 Riwayat", "btn_settings": "⚙️ Pengaturan",
         "btn_help": "❓ Bantuan", "btn_stock": "📦 Stok", "btn_main": "🏠 Menu Utama", "btn_back": "◀️ Kembali",
         "btn_cancel": "❌ Batal", "btn_buy": "🛒 Beli Sekarang ({price})", "btn_add_cart": "➕ Tambah ke Keranjang",
@@ -99,7 +99,7 @@ STRINGS = {
     "en": {
         "choose_currency": "🏪 <b>Welcome to the Digital Product Store!</b>\n\nPlease choose your preferred currency:\n\n💵 <b>USD</b> — deposit via crypto (USDT/USDC)\n🇮🇩 <b>IDR</b> — deposit via bank transfer\n\nYou can change this anytime in Settings.",
         "main_title": "🏪 <b>Digital Product Store</b>\n\nHello, {name}! 👋\nYour balance: <b>{balance}</b>\n\nPlease choose a menu:",
-        "btn_products": "🛍 Browse Products", "btn_cart": "🛒 Cart", "btn_deposit": "💰 Deposit",
+        "btn_products": "📚 Product Catalogs", "btn_cart": "🛒 Cart", "btn_deposit": "💰 Deposit",
         "btn_balance": "💳 My Balance", "btn_history": "📜 History", "btn_settings": "⚙️ Settings",
         "btn_help": "❓ Help", "btn_stock": "📦 Stock", "btn_main": "🏠 Main Menu", "btn_back": "◀️ Back",
         "btn_cancel": "❌ Cancel", "btn_buy": "🛒 Buy Now ({price})", "btn_add_cart": "➕ Add to Cart",
