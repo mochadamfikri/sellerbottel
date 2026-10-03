@@ -10,6 +10,7 @@ import logging
 from fastapi import FastAPI, APIRouter, Request, HTTPException, Depends
 from starlette.middleware.cors import CORSMiddleware
 
+from config import validate_environment
 from db import client, db, ensure_settings, ensure_indexes
 from auth import get_current_admin
 from auth import router as auth_router, seed_admin
@@ -38,6 +39,8 @@ from bot2 import process_update2, run_bot2_payment_monitor
 from i18n import load_overrides
 from tgapi import tg
 from gopay_provider import run_gopay_monitor
+from v2_platform_routes import router as v2_platform_router
+from v2_tenant_routes import router as v2_tenant_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -109,6 +112,8 @@ app.include_router(bot_moderation_router)
 app.include_router(storefront_router)
 app.include_router(balance_admin_router)
 app.include_router(marketing_router)
+app.include_router(v2_platform_router)
+app.include_router(v2_tenant_router, prefix="/api/v2/tenant")
 
 if os.environ.get("PROMOTION_ENABLED", "").lower() in {"1", "true", "yes"}:
     app.include_router(promo_router)
@@ -129,6 +134,9 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
+    environment = validate_environment()
+    logger.info("Environment mode: %s", environment)
+
     if not os.environ.get("CORS_ORIGINS"):
         raise RuntimeError("CORS_ORIGINS wajib di-set.")
     if not os.environ.get("TELEGRAM_WEBHOOK_SECRET"):

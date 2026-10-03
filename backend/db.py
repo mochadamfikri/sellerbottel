@@ -112,6 +112,24 @@ async def ensure_indexes():
     await db.bot_message_history.create_index([("lang", 1), ("key", 1), ("version", -1)])
     await db.required_channels.create_index("channel_id", unique=True)
     await db.broadcasts.create_index([("created_at", -1)])
+    # V2 platform tenant registry. A tenant slug and its isolated database
+    # assignment must each be globally unique in the control plane.
+    await db.tenants.create_index("slug", unique=True, name="tenant_slug_unique")
+    await db.tenants.create_index(
+        "database_name", unique=True, name="tenant_database_name_unique"
+    )
+    await db.tenants.create_index([("status", 1), ("created_at", -1)])
+    # Platform-wide, append-only audit trail.
+    await db.audit_events.create_index("occurred_at")
+    await db.audit_events.create_index("actor.id")
+    await db.audit_events.create_index("action")
+    await db.audit_events.create_index("target")
+    await db.audit_events.create_index(
+        "idempotency_key",
+        unique=True,
+        partialFilterExpression={"idempotency_key": {"$type": "string"}},
+        name="audit_event_idempotency_unique",
+    )
     await db.stock_events.create_index([("status", 1), ("created_at", 1)])
     await db.processed_updates.create_index("update_id", unique=True)
     await db.processed_updates_bot2.create_index("update_id", unique=True)
