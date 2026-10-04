@@ -9,6 +9,24 @@ from pymongo.errors import DuplicateKeyError
 _SENSITIVE_METADATA_KEY_PARTS = ("token", "password", "secret", "authorization")
 _REDACTED = "***"
 
+# Canonical action names for privileged tenant control-plane changes.  Keep this
+# allowlist here so callers cannot introduce near-duplicate lifecycle actions.
+TENANT_CREATED = "tenant.created"
+TENANT_PROVISIONED = "tenant.provisioned"
+TENANT_STATUS_UPDATED = "tenant.status_updated"
+TENANT_PLAN_UPDATED = "tenant.plan_updated"
+TENANT_MEMBER_ADDED = "tenant.member_added"
+TENANT_MEMBER_REMOVED = "tenant.member_removed"
+
+PLATFORM_AUDIT_ACTIONS = frozenset({
+    TENANT_CREATED,
+    TENANT_PROVISIONED,
+    TENANT_STATUS_UPDATED,
+    TENANT_PLAN_UPDATED,
+    TENANT_MEMBER_ADDED,
+    TENANT_MEMBER_REMOVED,
+})
+
 
 def sanitize_metadata(value):
     """Return a copy of *value* with sensitive mapping values redacted."""
@@ -129,3 +147,34 @@ async def write_audit_event(
         return {"ok": True, "_id": existing["_id"], "duplicate": True}
 
     return {"ok": True, "_id": result.inserted_id, "duplicate": False}
+
+
+async def write_platform_audit_event(
+    *,
+    actor,
+    action,
+    tenant_id,
+    target=None,
+    metadata=None,
+    idempotency_key=None,
+):
+    """Write a platform control-plane audit event for tenant lifecycle changes.
+
+    This helper enforces canonical lifecycle actions and marks their scope as
+    the platform control plane, distinguishing them from tenant-internal actions.
+    """
+    if action not in PLATFORM_AUDIT_ACTIONS:
+        raise ValueError(
+            f"action {action!r} is not a recognized platform audit action; "
+            f"use one of {sorted(PLATFORM_AUDIT_ACTIONS)}"
+        )
+
+    return await write_audit_event(
+        actor=actor,
+        action=action,
+        tenant_id=tenant_id,
+        platform="control-plane",
+        metadata=metadata,
+        target=target,
+        idempotency_key=idempotency_key,
+    )

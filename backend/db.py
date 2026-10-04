@@ -119,6 +119,12 @@ async def ensure_indexes():
         "database_name", unique=True, name="tenant_database_name_unique"
     )
     await db.tenants.create_index([("status", 1), ("created_at", -1)])
+    # Tenant memberships for Phase 2 role-based authorization.
+    await db.tenant_memberships.create_index(
+        [("tenant_id", 1), ("user_id", 1)], unique=True, name="tenant_user_unique"
+    )
+    await db.tenant_memberships.create_index([("tenant_id", 1), ("created_at", 1)])
+    await db.tenant_memberships.create_index("user_id")
     # Platform-wide, append-only audit trail.
     await db.audit_events.create_index("occurred_at")
     await db.audit_events.create_index("actor.id")

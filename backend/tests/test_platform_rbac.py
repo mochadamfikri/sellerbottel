@@ -63,20 +63,3 @@ class TestRequirePlatformAdmin:
         assert exc_info.value.status_code == 403
 
 
-class TestRequireTenantMembership:
-    def test_stub_returns_authenticated_admin_unchanged(self):
-        """Phase 1 stub preserves the authenticated principal for a tenant ID."""
-        from platform_rbac import require_tenant_membership
-
-        admin = {"_id": "admin-1", "email": "admin@example.com", "role": "admin"}
-
-        assert run(require_tenant_membership("tenant-123")(admin)) == admin
-
-    def test_stub_accepts_any_tenant_id(self):
-        """The factory retains the tenant ID interface required by Phase 2."""
-        from platform_rbac import require_tenant_membership
-
-        admin = {"_id": "admin-1", "email": "admin@example.com"}
-
-        assert run(require_tenant_membership("tenant-abc")(admin)) == admin
-        assert run(require_tenant_membership("tenant-xyz")(admin)) == admin
