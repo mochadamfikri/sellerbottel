@@ -1,6 +1,10 @@
 """Platform and tenant authorization dependencies."""
+from __future__ import annotations
+
+import re
 from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Any
 from uuid import uuid4
 
 from fastapi import Depends, HTTPException
@@ -97,16 +101,75 @@ def _principal_user_id(admin: dict) -> str | None:
     return admin.get("_id") or admin.get("user_id") or admin.get("email")
 
 
-def require_tenant_role(tenant_id: str, min_role: str) -> Callable:
-    """Return a dependency requiring a tenant membership at ``min_role`` or above."""
+# UUID v4 pattern for distinguishing UUIDs from slugs
+_UUID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _is_uuid(value: str) -> bool:
+    """Return whether ``value`` looks like a UUID v4 string."""
+    return bool(_UUID_PATTERN.fullmatch(value))
+
+
+async def resolve_tenant_id_or_slug(
+    tenant_id_or_slug: str,
+    *,
+    registry: Any | None = None,
+) -> str:
+    """Resolve a tenant identifier to its canonical UUID.
+
+    If *tenant_id_or_slug* is already a UUID, return it unchanged.
+    Otherwise treat it as a slug and look it up in *registry*.
+
+    When *registry* is None, attempts to discover the configured global
+    registry from tenant_context module. If unavailable, passes through
+    the value unchanged for backward compatibility.
+
+    Raises:
+        HTTPException 404: slug not found in registry.
+    """
+    if _is_uuid(tenant_id_or_slug):
+        return tenant_id_or_slug
+
+    # It's a slug — resolve via registry if available
+    if registry is None:
+        # Auto-discover from tenant_context if configured
+        try:
+            from tenant_context import _tenant_registry
+            registry = _tenant_registry
+        except ImportError:
+            pass
+
+    # If still no registry, pass through for backward compatibility
+    if registry is None:
+        return tenant_id_or_slug
+
+    tenant = await registry.get_tenant(tenant_id_or_slug)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Unknown tenant slug")
+
+    return tenant["_id"]
+
+
+def require_tenant_role(
+    tenant_id: str, min_role: str, *, registry: Any | None = None
+) -> Callable:
+    """Return a dependency requiring a tenant membership at ``min_role`` or above.
+
+    *tenant_id* may be a UUID (direct membership lookup) or a slug that is
+    resolved to a UUID via *registry* before checking memberships.
+    """
     _validate_tenant_role(min_role)
 
     async def tenant_role_required(
         admin: dict = Depends(get_current_admin),
     ) -> dict:
+        resolved_id = await resolve_tenant_id_or_slug(tenant_id, registry=registry)
         user_id = _principal_user_id(admin)
         membership = (
-            await get_tenant_membership(db, tenant_id, user_id) if user_id is not None else None
+            await get_tenant_membership(db, resolved_id, user_id) if user_id is not None else None
         )
         if (
             membership is None
@@ -119,6 +182,6 @@ def require_tenant_role(tenant_id: str, min_role: str) -> Callable:
     return tenant_role_required
 
 
-def require_tenant_membership(tenant_id: str) -> Callable:
+def require_tenant_membership(tenant_id: str, *, registry: Any | None = None) -> Callable:
     """Return a dependency requiring at least viewer membership in a tenant."""
-    return require_tenant_role(tenant_id, "tenant_viewer")
+    return require_tenant_role(tenant_id, "tenant_viewer", registry=registry)

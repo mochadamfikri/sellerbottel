@@ -87,7 +87,7 @@ async def test_create_list_and_get_tenant_without_database_credentials():
     tenant = created.json()
     assert tenant["slug"] == "acme-shop"
     assert tenant["name"] == "Acme Shop"
-    assert tenant["status"] == "active"
+    assert tenant["status"] == "provisioning"
     assert tenant["id"]
     assert "database_credentials" not in tenant
     assert "db_credentials" not in tenant

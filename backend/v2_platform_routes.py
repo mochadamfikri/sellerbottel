@@ -1,7 +1,6 @@
 """V2 platform-control-plane tenant registry routes."""
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Any, Literal
 
@@ -10,16 +9,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from audit_events import write_audit_event
 from db import db
+from dependencies import get_tenant_registry
 from platform_rbac import (
     add_tenant_member,
     list_tenant_members,
     remove_tenant_member,
     require_platform_admin,
 )
-from tenant_registry import TenantRegistry
+from tenant_registry import MongoTenantRegistry
 
 router = APIRouter(prefix="/api/v2/platform", tags=["v2-platform"])
-tenant_registry = TenantRegistry(environment=os.environ)
 
 
 class CreateTenantBody(BaseModel):
@@ -69,28 +68,30 @@ class TenantResponse(BaseModel):
     id: str
     slug: str
     name: str
-    status: Literal["active", "suspended"]
+    status: Literal["provisioning", "active", "suspended", "disabled", "failed"]
     database_name: str
     created_at: datetime
 
 
 def _tenant_response(tenant: dict[str, object]) -> TenantResponse:
     """Expose tenant metadata only; never return database credentials."""
+    status = str(tenant["status"])
     return TenantResponse(
         id=str(tenant["_id"]),
         slug=str(tenant["slug"]),
         name=str(tenant["name"]),
-        status=str(tenant["status"]),
+        status=status,  # type: ignore[arg-type]
         database_name=str(tenant["database_name"]),
         created_at=tenant["created_at"],  # type: ignore[arg-type]
     )
 
 
-def _find_tenant(tenant_id: str) -> dict[str, object] | None:
+async def _find_tenant(tenant_id: str, registry: MongoTenantRegistry) -> dict[str, object] | None:
+    tenants = await registry.list_tenants()
     return next(
         (
             tenant
-            for tenant in tenant_registry.list_tenants()
+            for tenant in tenants
             if str(tenant["_id"]) == tenant_id
         ),
         None,
@@ -111,8 +112,8 @@ async def _audit(admin: dict, action: str, tenant_id: str, metadata: dict[str, A
     )
 
 
-def _require_tenant(tenant_id: str) -> dict[str, object]:
-    tenant = _find_tenant(tenant_id)
+async def _require_tenant(tenant_id: str, registry: MongoTenantRegistry) -> dict[str, object]:
+    tenant = await _find_tenant(tenant_id, registry)
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
     return tenant
@@ -137,9 +138,15 @@ async def _provision_database(database_name: str) -> None:
 async def create_tenant(
     body: CreateTenantBody,
     admin: dict = Depends(require_platform_admin),
+    registry: MongoTenantRegistry = Depends(get_tenant_registry),
 ) -> TenantResponse:
     try:
-        tenant = tenant_registry.create_tenant(slug=body.slug, name=body.name)
+        # MongoTenantRegistry requires plan; use "demo" as default
+        tenant = await registry.create_tenant(
+            slug=body.slug,
+            name=body.name,
+            plan="demo",
+        )
     except ValueError as error:
         detail = str(error)
         if "already exists" in detail:
@@ -154,16 +161,19 @@ async def create_tenant(
 @router.get("/tenants", response_model=list[TenantResponse])
 async def list_tenants(
     _: dict = Depends(require_platform_admin),
+    registry: MongoTenantRegistry = Depends(get_tenant_registry),
 ) -> list[TenantResponse]:
-    return [_tenant_response(tenant) for tenant in tenant_registry.list_tenants()]
+    tenants = await registry.list_tenants()
+    return [_tenant_response(tenant) for tenant in tenants]
 
 
 @router.get("/tenants/{tenant_id}", response_model=TenantResponse)
 async def get_tenant(
     tenant_id: str,
     _: dict = Depends(require_platform_admin),
+    registry: MongoTenantRegistry = Depends(get_tenant_registry),
 ) -> TenantResponse:
-    tenant = _find_tenant(tenant_id)
+    tenant = await _find_tenant(tenant_id, registry)
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
     return _tenant_response(tenant)
@@ -174,11 +184,12 @@ async def update_tenant_status(
     tenant_id: str,
     body: UpdateTenantStatusBody,
     admin: dict = Depends(require_platform_admin),
+    registry: MongoTenantRegistry = Depends(get_tenant_registry),
 ) -> TenantResponse:
-    tenant = _find_tenant(tenant_id)
+    tenant = await _find_tenant(tenant_id, registry)
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
-    updated = tenant_registry.update_status(str(tenant["slug"]), body.status)
+    updated = await registry.update_status(str(tenant["slug"]), body.status)
     await _audit(admin, "tenant.status_updated", tenant_id, {"status": body.status})
     return _tenant_response(updated)
 
@@ -190,12 +201,14 @@ async def update_tenant_status(
 async def provision_tenant(
     tenant_id: str,
     admin: dict = Depends(require_platform_admin),
+    registry: MongoTenantRegistry = Depends(get_tenant_registry),
 ) -> ProvisionTenantResponse:
-    tenant = _require_tenant(tenant_id)
+    tenant = await _require_tenant(tenant_id, registry)
     database_name = str(tenant["database_name"])
     
     await _provision_database(database_name)
-    tenant_registry.mark_provisioned(str(tenant["slug"]))
+    # MongoTenantRegistry starts with status="provisioning", set to "active"
+    await registry.update_status(str(tenant["slug"]), "active")
     
     await _audit(admin, "tenant.provisioned", tenant_id, {"database_name": database_name})
     
@@ -211,8 +224,9 @@ async def add_member(
     tenant_id: str,
     body: AddTenantMemberBody,
     admin: dict = Depends(require_platform_admin),
+    registry: MongoTenantRegistry = Depends(get_tenant_registry),
 ) -> TenantMemberResponse:
-    _require_tenant(tenant_id)
+    await _require_tenant(tenant_id, registry)
     
     try:
         member = await add_tenant_member(db, tenant_id, body.user_id, body.role)
@@ -228,8 +242,9 @@ async def add_member(
 async def list_members(
     tenant_id: str,
     _: dict = Depends(require_platform_admin),
+    registry: MongoTenantRegistry = Depends(get_tenant_registry),
 ) -> list[TenantMemberResponse]:
-    _require_tenant(tenant_id)
+    await _require_tenant(tenant_id, registry)
     members = await list_tenant_members(db, tenant_id)
     return [_member_response(member) for member in members]
 
@@ -239,8 +254,9 @@ async def remove_member(
     tenant_id: str,
     user_id: str,
     admin: dict = Depends(require_platform_admin),
+    registry: MongoTenantRegistry = Depends(get_tenant_registry),
 ) -> Response:
-    _require_tenant(tenant_id)
+    await _require_tenant(tenant_id, registry)
     
     removed = await remove_tenant_member(db, tenant_id, user_id)
     if not removed:
@@ -256,11 +272,14 @@ async def update_plan(
     tenant_id: str,
     body: UpdateTenantPlanBody,
     admin: dict = Depends(require_platform_admin),
+    registry: MongoTenantRegistry = Depends(get_tenant_registry),
 ) -> TenantPlanResponse:
-    tenant = _require_tenant(tenant_id)
+    tenant = await _require_tenant(tenant_id, registry)
     
     try:
-        tenant_registry.update_plan(str(tenant["slug"]), body.plan, body.quotas)
+        await registry.update_plan(str(tenant["slug"]), body.plan)
+        if body.quotas:
+            await registry.set_quotas(str(tenant["slug"]), dict(body.quotas))
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
     

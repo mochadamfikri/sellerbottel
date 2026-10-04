@@ -41,6 +41,9 @@ from tgapi import tg
 from gopay_provider import run_gopay_monitor
 from v2_platform_routes import router as v2_platform_router
 from v2_tenant_routes import router as v2_tenant_router
+from dependencies import get_tenant_registry
+from tenant_context import configure_tenant_registry_resolver
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -115,6 +118,10 @@ app.include_router(marketing_router)
 app.include_router(v2_platform_router)
 app.include_router(v2_tenant_router, prefix="/api/v2/tenant")
 
+# Import and mount v2_commerce_routes
+from v2_commerce_routes import router as v2_commerce_router
+app.include_router(v2_commerce_router, prefix="/api/v2/tenant")
+
 if os.environ.get("PROMOTION_ENABLED", "").lower() in {"1", "true", "yes"}:
     app.include_router(promo_router)
     app.include_router(promo_accounts_router, prefix="/api/admin/promo", dependencies=[Depends(get_current_admin)])
@@ -150,6 +157,17 @@ async def startup():
         "Bot 2: %s",
         "enabled" if os.environ.get("BOT2_ENABLED", "").lower() in {"1", "true", "yes"} else "disabled",
     )
+
+    # Wire the persistent tenant registry resolver before any routes are exercised.
+    mongo_registry = get_tenant_registry()
+    configure_tenant_registry_resolver(mongo_registry, client)
+    logger.info("Tenant registry resolver configured (MongoTenantRegistry)")
+
+    # Ensure platform indexes exist before any tenant operations
+    from platform_indexes import ensure_platform_indexes
+    platform_db = client[mongo_registry.platform_database_name]
+    await ensure_platform_indexes(platform_db)
+    logger.info("Platform indexes ensured")
 
     await ensure_settings()
     await ensure_indexes()

@@ -12,7 +12,10 @@ from urllib.parse import urlparse
 
 _VALID_ENVIRONMENTS = frozenset({"development", "test", "production"})
 _TRUE_VALUES = frozenset({"1", "true", "yes"})
-_PRODUCTION_DATABASE_NAMES = frozenset({"sellerbottel"})
+# Production database names that must never be targeted outside production.
+# 'sellerbottel': legacy single-tenant production database
+# 'sellerbottel_platform': V2 multi-tenant control plane database (standard)
+_PRODUCTION_DATABASE_NAMES = frozenset({"sellerbottel", "sellerbottel_platform"})
 
 
 def get_environment() -> str:

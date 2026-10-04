@@ -112,6 +112,20 @@ class TestDevDbName:
         with pytest.raises(ValueError, match="production"):
             validate_db_name()
 
+    @pytest.mark.parametrize("environment", ["development", "test"])
+    def test_rejects_v2_platform_database_outside_production(self, monkeypatch, environment):
+        monkeypatch.setenv("ENVIRONMENT", environment)
+        monkeypatch.setenv("DB_NAME", "sellerbottel_platform")
+        from config import validate_db_name
+        with pytest.raises(ValueError, match="production"):
+            validate_db_name()
+
+    def test_allows_v2_platform_database_in_production(self, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("DB_NAME", "sellerbottel_platform")
+        from config import validate_db_name
+        validate_db_name()
+
 
 # ---------------------------------------------------------------------------
 # 4. External integration flags default to disabled
