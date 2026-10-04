@@ -15,6 +15,7 @@ ESSENTIAL_COLLECTIONS = (
     "products",
     "inventory_items",
     "purchases",
+    "deposits",
     "store_customers",
     "bot_users",
 )
@@ -34,7 +35,7 @@ async def provision_tenant_database(tenant_id: str, database_client: Any) -> dic
     await database.settings.update_one(
         {"_id": "main"}, {"$setOnInsert": settings}, upsert=True
     )
-    await database._meta.update_one(
+    await database["_meta"].update_one(
         {"_id": "schema"},
         {
             "$setOnInsert": {
@@ -46,13 +47,15 @@ async def provision_tenant_database(tenant_id: str, database_client: Any) -> dic
     )
 
     await database.products.create_index(
-        [("active", 1), ("created_at", -1)], name="active_created_at"
+        [("tenant_id", 1), ("active", 1), ("created_at", -1)],
+        name="active_created_at",
     )
     await database.inventory_items.create_index(
-        [("product_id", 1), ("status", 1)], name="product_status"
+        [("tenant_id", 1), ("product_id", 1), ("status", 1)],
+        name="product_status",
     )
     await database.inventory_items.create_index(
-        [("product_id", 1), ("fingerprint", 1)],
+        [("tenant_id", 1), ("product_id", 1), ("fingerprint", 1)],
         unique=True,
         name="product_fingerprint_unique",
     )
@@ -60,7 +63,28 @@ async def provision_tenant_database(tenant_id: str, database_client: Any) -> dic
         "invoice_id", unique=True, sparse=True, name="invoice_id_unique"
     )
     await database.purchases.create_index(
-        [("user_tid", 1), ("created_at", -1)], name="user_created_at"
+        [("tenant_id", 1), ("user_tid", 1), ("created_at", -1)],
+        name="user_created_at",
+    )
+    await database.purchases.create_index(
+        [("tenant_id", 1), ("customer_id", 1), ("idempotency_key", 1)],
+        unique=True,
+        name="store_customer_idempotency_unique",
+        partialFilterExpression={"idempotency_key": {"$type": "string"}},
+    )
+    await database.deposits.create_index(
+        "tx_hash",
+        unique=True,
+        partialFilterExpression={"tx_hash": {"$type": "string"}},
+        name="tx_hash_unique",
+    )
+    await database.deposits.create_index(
+        [("tenant_id", 1), ("user_tid", 1), ("created_at", -1)],
+        name="user_created_at",
+    )
+    await database.deposits.create_index(
+        [("tenant_id", 1), ("customer_id", 1), ("created_at", -1)],
+        name="customer_created_at",
     )
     await database.store_customers.create_index(
         "email", unique=True, name="email_unique"

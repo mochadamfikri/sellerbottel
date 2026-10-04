@@ -69,33 +69,87 @@ def test_provision_tenant_database_creates_meta_collection_with_schema_version()
 def test_provision_tenant_database_creates_essential_indexes():
     """provision_tenant_database must create indexes for core collections."""
     from mongomock_motor import AsyncMongoMockClient
-    
+
     client = AsyncMongoMockClient()
-    
+
     async def run():
         await provision_tenant_database("gamma-store", client)
-        
+
         db = client["sellerbottel_tenant_gamma_store"]
-        
-        # Verify essential collections have indexes
-        # Note: mongomock may not fully support index inspection, but we can verify
-        # the provisioning function attempts to create them
-        products_indexes = await db.products.index_information()
-        assert len(products_indexes) > 0  # _id index always exists
-        
-        inventory_indexes = await db.inventory_items.index_information()
-        assert len(inventory_indexes) > 0
-        
-        purchases_indexes = await db.purchases.index_information()
-        assert len(purchases_indexes) > 0
-        
-        customers_indexes = await db.store_customers.index_information()
-        assert len(customers_indexes) > 0
-        
-        bot_users_indexes = await db.bot_users.index_information()
-        assert len(bot_users_indexes) > 0
-    
+
+        assert "active_created_at" in await db.products.index_information()
+        assert "product_status" in await db.inventory_items.index_information()
+        assert "product_fingerprint_unique" in await db.inventory_items.index_information()
+        assert "invoice_id_unique" in await db.purchases.index_information()
+        assert "user_created_at" in await db.purchases.index_information()
+        assert "store_customer_idempotency_unique" in await db.purchases.index_information()
+        assert "tx_hash_unique" in await db.deposits.index_information()
+        assert "user_created_at" in await db.deposits.index_information()
+        assert "customer_created_at" in await db.deposits.index_information()
+
     asyncio.run(run())
+
+
+def test_provision_tenant_database_preserves_global_customer_identity_indexes():
+    """Customer identities keep global field keys rather than tenant-scoped keys."""
+    from mongomock_motor import AsyncMongoMockClient
+
+    client = AsyncMongoMockClient()
+
+    async def run():
+        await provision_tenant_database("global-identity-store", client)
+        db = client["sellerbottel_tenant_global_identity_store"]
+
+        customer_indexes = await db.store_customers.index_information()
+        bot_user_indexes = await db.bot_users.index_information()
+
+        assert customer_indexes["email_unique"]["key"] == [("email", 1)]
+        assert customer_indexes["email_unique"]["unique"] is True
+        assert customer_indexes["telegram_id_unique"]["key"] == [("telegram_id", 1)]
+        assert customer_indexes["telegram_id_unique"]["unique"] is True
+        assert bot_user_indexes["telegram_id_unique"]["key"] == [("telegram_id", 1)]
+        assert bot_user_indexes["telegram_id_unique"]["unique"] is True
+
+    asyncio.run(run())
+
+
+def test_provision_tenant_database_keeps_invoice_numbers_unique_per_tenant():
+    """Invoice uniqueness is enforced in each isolated tenant database."""
+    from mongomock_motor import AsyncMongoMockClient
+
+    client = AsyncMongoMockClient()
+
+    async def run():
+        await provision_tenant_database("invoice-a", client)
+        await provision_tenant_database("invoice-b", client)
+
+        await client["sellerbottel_tenant_invoice_a"].purchases.insert_one(
+            {"invoice_id": "INV-1"}
+        )
+        await client["sellerbottel_tenant_invoice_b"].purchases.insert_one(
+            {"invoice_id": "INV-1"}
+        )
+
+    asyncio.run(run())
+
+
+def test_provision_tenant_database_keeps_inventory_fingerprints_isolated():
+    """Inventory fingerprints are unique only within their tenant database."""
+    from mongomock_motor import AsyncMongoMockClient
+
+    client = AsyncMongoMockClient()
+
+    async def run():
+        await provision_tenant_database("inventory-a", client)
+        await provision_tenant_database("inventory-b", client)
+
+        inventory_item = {"product_id": "product-1", "fingerprint": "same-stock"}
+        await client["sellerbottel_tenant_inventory_a"].inventory_items.insert_one(inventory_item)
+        await client["sellerbottel_tenant_inventory_b"].inventory_items.insert_one(inventory_item)
+
+    asyncio.run(run())
+
+
 
 
 def test_provision_tenant_database_derives_correct_database_name():
