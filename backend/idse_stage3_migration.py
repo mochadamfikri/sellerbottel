@@ -185,25 +185,28 @@ class IDSEStage3Migration:
         self.target_uri = target_uri
         self.source_uri = source_uri
 
-    def _discover_source_collections(self) -> list[str]:
+    async def _discover_source_collections(self) -> list[str]:
         if hasattr(self.source, "collections") and isinstance(self.source.collections, dict):
             return list(self.source.collections.keys())
         if hasattr(self.source, "list_collection_names"):
             try:
                 names = self.source.list_collection_names()
+                # Handle async list_collection_names (Motor)
+                if hasattr(names, "__await__"):
+                    names = await names
                 if isinstance(names, list):
                     return names
             except Exception:
                 pass
         return list(SAFE_BUSINESS_COLLECTIONS)
 
-    def seed_invoice_counter(self) -> dict[str, Any]:
+    async def seed_invoice_counter(self) -> dict[str, Any]:
         """Seed per-tenant invoice counter based on highest legacy sequence or source counter (never lower)."""
         candidates: list[int] = [0]
 
         # 1. Inspect purchases collection
         try:
-            purchases = list(self.source["purchases"].find())
+            purchases = await self.source["purchases"].find({}).to_list(length=None)
             candidates.append(len(purchases))
             for p in purchases:
                 inv_id = str(p.get("invoice_id", "")).strip()
@@ -224,7 +227,7 @@ class IDSEStage3Migration:
 
         # 2. Inspect source counters collection
         try:
-            source_counters = list(self.source["counters"].find())
+            source_counters = await self.source["counters"].find({}).to_list(length=None)
             daily_sum = 0
             for c in source_counters:
                 seq = c.get("seq")
@@ -244,7 +247,7 @@ class IDSEStage3Migration:
         # 3. Check existing target counter (never lower)
         counter_id = f"{self.tenant_id}:invoice"
         try:
-            target_counters = list(self.target["counters"].find({"_id": counter_id}))
+            target_counters = await self.target["counters"].find({"_id": counter_id}).to_list(length=None)
             for tc in target_counters:
                 val = tc.get("value")
                 if isinstance(val, int):
@@ -255,7 +258,7 @@ class IDSEStage3Migration:
         highest = max(candidates)
 
         if not self.dry_run:
-            self.target["counters"].update_one(
+            await self.target["counters"].update_one(
                 {"_id": counter_id},
                 {
                     "$setOnInsert": {
@@ -276,32 +279,32 @@ class IDSEStage3Migration:
             "dry_run": self.dry_run,
         }
 
-    def financial_reconciliation(self) -> dict[str, Any]:
+    async def financial_reconciliation(self) -> dict[str, Any]:
         """Compute financial counts and Decimal totals for purchases and deposits from source and target."""
         # Purchases
         try:
-            src_purchases = list(self.source["purchases"].find())
+            src_purchases = await self.source["purchases"].find({}).to_list(length=None)
         except Exception:
             src_purchases = []
 
         try:
-            tgt_purchases = list(self.target["purchases"].find({"tenant_id": self.tenant_id}))
+            tgt_purchases = await self.target["purchases"].find({"tenant_id": self.tenant_id}).to_list(length=None)
             if not tgt_purchases:
                 # Fallback to all target purchases if tenant filter returned nothing
-                tgt_purchases = list(self.target["purchases"].find())
+                tgt_purchases = await self.target["purchases"].find({}).to_list(length=None)
         except Exception:
             tgt_purchases = []
 
         # Deposits
         try:
-            src_deposits = list(self.source["deposits"].find())
+            src_deposits = await self.source["deposits"].find({}).to_list(length=None)
         except Exception:
             src_deposits = []
 
         try:
-            tgt_deposits = list(self.target["deposits"].find({"tenant_id": self.tenant_id}))
+            tgt_deposits = await self.target["deposits"].find({"tenant_id": self.tenant_id}).to_list(length=None)
             if not tgt_deposits:
-                tgt_deposits = list(self.target["deposits"].find())
+                tgt_deposits = await self.target["deposits"].find({}).to_list(length=None)
         except Exception:
             tgt_deposits = []
 
@@ -370,9 +373,9 @@ class IDSEStage3Migration:
             "passed": len(mismatches) == 0,
         }
 
-    def run(self) -> dict[str, Any]:
+    async def run(self) -> dict[str, Any]:
         """Execute or plan migration across safe tenant business collections."""
-        available_names = self._discover_source_collections()
+        available_names = await self._discover_source_collections()
 
         collections_report: dict[str, dict[str, int]] = {}
         refused_collections: list[str] = []
@@ -391,7 +394,7 @@ class IDSEStage3Migration:
 
             # Fetch source docs
             try:
-                docs = list(self.source[col_name].find())
+                docs = await self.source[col_name].find({}).to_list(length=None)
             except Exception:
                 docs = []
 
@@ -408,13 +411,13 @@ class IDSEStage3Migration:
                     # Check if already exists in target
                     already_exists = False
                     try:
-                        existing = list(target_col.find({"_id": doc_id}))
+                        existing = await target_col.find({"_id": doc_id}).to_list(length=None)
                         already_exists = len(existing) > 0
                     except Exception:
                         pass
 
                     # Idempotent upsert keyed by legacy _id
-                    target_col.update_one(
+                    await target_col.update_one(
                         {"_id": doc_id},
                         {"$setOnInsert": transformed},
                         upsert=True,
@@ -427,7 +430,7 @@ class IDSEStage3Migration:
 
                 # Record progress using bracket syntax
                 progress_key = f"{self.tenant_id}:{col_name}"
-                progress_collection.update_one(
+                await progress_collection.update_one(
                     {"_id": progress_key},
                     {
                         "$setOnInsert": {

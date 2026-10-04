@@ -28,6 +28,27 @@ def make_tenant_context(tenant_id: str, database):
     )
 
 
+def _test_app_with_overrides(context, auth_override=None):
+    """Create test app with context and optional auth overrides."""
+    from v2_commerce_routes import router, require_tenant_viewer, require_tenant_operator
+    from tenant_context import get_tenant_context
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_tenant_context] = lambda: context
+    from v2_commerce_routes import require_tenant_viewer, require_tenant_operator
+    app.dependency_overrides[require_tenant_viewer] = lambda: {"_id": "test-user"}
+    app.dependency_overrides[require_tenant_operator] = lambda: {"_id": "test-user"}
+
+    # Default: bypass auth for existing tests
+    if auth_override is None:
+        auth_override = {"_id": "test_user"}
+    app.dependency_overrides[require_tenant_viewer] = lambda: auth_override
+    app.dependency_overrides[require_tenant_operator] = lambda: auth_override
+
+    return app
+
+
 @async_test
 async def test_create_product_uses_tenant_context():
     """POST /products creates product scoped to injected tenant context."""
@@ -40,6 +61,9 @@ async def test_create_product_uses_tenant_context():
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_tenant_context] = lambda: context
+    from v2_commerce_routes import require_tenant_viewer, require_tenant_operator
+    app.dependency_overrides[require_tenant_viewer] = lambda: {"_id": "test-user"}
+    app.dependency_overrides[require_tenant_operator] = lambda: {"_id": "test-user"}
 
     client = TestClient(app)
     response = client.post("/products", json={
@@ -78,6 +102,9 @@ async def test_list_products_scoped_to_tenant():
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_tenant_context] = lambda: context
+    from v2_commerce_routes import require_tenant_viewer, require_tenant_operator
+    app.dependency_overrides[require_tenant_viewer] = lambda: {"_id": "test-user"}
+    app.dependency_overrides[require_tenant_operator] = lambda: {"_id": "test-user"}
 
     client = TestClient(app)
     response = client.get("/products")
@@ -106,6 +133,9 @@ async def test_patch_product_scoped_to_tenant():
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_tenant_context] = lambda: context
+    from v2_commerce_routes import require_tenant_viewer, require_tenant_operator
+    app.dependency_overrides[require_tenant_viewer] = lambda: {"_id": "test-user"}
+    app.dependency_overrides[require_tenant_operator] = lambda: {"_id": "test-user"}
 
     client = TestClient(app)
 
@@ -131,6 +161,9 @@ async def test_add_inventory_scoped_to_tenant():
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_tenant_context] = lambda: context
+    from v2_commerce_routes import require_tenant_viewer, require_tenant_operator
+    app.dependency_overrides[require_tenant_viewer] = lambda: {"_id": "test-user"}
+    app.dependency_overrides[require_tenant_operator] = lambda: {"_id": "test-user"}
 
     client = TestClient(app)
     response = client.post("/inventory", json={
@@ -176,6 +209,9 @@ async def test_get_inventory_hides_secret_fields():
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_tenant_context] = lambda: context
+    from v2_commerce_routes import require_tenant_viewer, require_tenant_operator
+    app.dependency_overrides[require_tenant_viewer] = lambda: {"_id": "test-user"}
+    app.dependency_overrides[require_tenant_operator] = lambda: {"_id": "test-user"}
 
     client = TestClient(app)
     response = client.get("/inventory/prod-123")
@@ -204,6 +240,9 @@ async def test_create_order_scoped_to_tenant():
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_tenant_context] = lambda: context
+    from v2_commerce_routes import require_tenant_viewer, require_tenant_operator
+    app.dependency_overrides[require_tenant_viewer] = lambda: {"_id": "test-user"}
+    app.dependency_overrides[require_tenant_operator] = lambda: {"_id": "test-user"}
 
     client = TestClient(app)
     response = client.post("/orders", json={
@@ -239,6 +278,9 @@ async def test_list_orders_scoped_to_tenant():
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_tenant_context] = lambda: context
+    from v2_commerce_routes import require_tenant_viewer, require_tenant_operator
+    app.dependency_overrides[require_tenant_viewer] = lambda: {"_id": "test-user"}
+    app.dependency_overrides[require_tenant_operator] = lambda: {"_id": "test-user"}
 
     client = TestClient(app)
     response = client.get("/orders")
@@ -262,6 +304,9 @@ async def test_create_wallet_entry_scoped_to_tenant():
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_tenant_context] = lambda: context
+    from v2_commerce_routes import require_tenant_viewer, require_tenant_operator
+    app.dependency_overrides[require_tenant_viewer] = lambda: {"_id": "test-user"}
+    app.dependency_overrides[require_tenant_operator] = lambda: {"_id": "test-user"}
 
     client = TestClient(app)
     response = client.post("/wallet/entries", json={
@@ -317,6 +362,9 @@ async def test_get_wallet_balance_scoped_to_tenant():
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_tenant_context] = lambda: context
+    from v2_commerce_routes import require_tenant_viewer, require_tenant_operator
+    app.dependency_overrides[require_tenant_viewer] = lambda: {"_id": "test-user"}
+    app.dependency_overrides[require_tenant_operator] = lambda: {"_id": "test-user"}
 
     client = TestClient(app)
     response = client.get("/wallet/cust-123/balance?currency=USD")
@@ -339,6 +387,9 @@ async def test_sandbox_payment_scoped_to_tenant():
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_tenant_context] = lambda: context
+    from v2_commerce_routes import require_tenant_viewer, require_tenant_operator
+    app.dependency_overrides[require_tenant_viewer] = lambda: {"_id": "test-user"}
+    app.dependency_overrides[require_tenant_operator] = lambda: {"_id": "test-user"}
 
     client = TestClient(app)
     response = client.post("/payments/sandbox", json={

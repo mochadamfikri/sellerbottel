@@ -16,6 +16,16 @@ from tenant_context import TenantContext, get_tenant_context
 from tenant_inventory import TenantInventoryRepository
 from tenant_orders_repository import TenantOrdersRepository
 from wallet_ledger import create_ledger_entry, wallet_balance
+from platform_rbac import require_tenant_role_dynamic
+from auth import get_current_admin
+
+# Authorization dependencies are dynamic because tenant scope comes from
+# the X-Tenant-ID-derived TenantContext at request time.
+require_tenant_viewer = require_tenant_role_dynamic("tenant_viewer")
+require_tenant_operator = require_tenant_role_dynamic("tenant_operator")
+
+VIEWER_ACCESS = [Depends(require_tenant_viewer)]
+OPERATOR_ACCESS = [Depends(require_tenant_operator)]
 
 router = APIRouter(tags=["v2-commerce"])
 
@@ -75,7 +85,7 @@ class SandboxPaymentRequest(BaseModel):
 
 # Product endpoints
 
-@router.post("/products")
+@router.post("/products", dependencies=OPERATOR_ACCESS)
 async def create_product(
     request: CreateProductRequest,
     context: Annotated[TenantContext, Depends(get_tenant_context)],
@@ -87,7 +97,7 @@ async def create_product(
     return product
 
 
-@router.get("/products")
+@router.get("/products", dependencies=VIEWER_ACCESS)
 async def list_products(
     context: Annotated[TenantContext, Depends(get_tenant_context)],
 ) -> list[dict[str, Any]]:
@@ -97,7 +107,7 @@ async def list_products(
     return products
 
 
-@router.patch("/products/{product_id}")
+@router.patch("/products/{product_id}", dependencies=OPERATOR_ACCESS)
 async def update_product(
     product_id: str,
     request: UpdateProductRequest,
@@ -116,7 +126,7 @@ async def update_product(
 
 # Inventory endpoints
 
-@router.post("/inventory")
+@router.post("/inventory", dependencies=OPERATOR_ACCESS)
 async def add_inventory(
     request: AddInventoryRequest,
     context: Annotated[TenantContext, Depends(get_tenant_context)],
@@ -128,7 +138,7 @@ async def add_inventory(
     return item
 
 
-@router.get("/inventory/{product_id}")
+@router.get("/inventory/{product_id}", dependencies=VIEWER_ACCESS)
 async def get_inventory(
     product_id: str,
     context: Annotated[TenantContext, Depends(get_tenant_context)],
@@ -157,7 +167,7 @@ async def get_inventory(
 
 # Order endpoints
 
-@router.post("/orders")
+@router.post("/orders", dependencies=OPERATOR_ACCESS)
 async def create_order(
     request: CreateOrderRequest,
     context: Annotated[TenantContext, Depends(get_tenant_context)],
@@ -182,7 +192,7 @@ async def create_order(
     return order
 
 
-@router.get("/orders")
+@router.get("/orders", dependencies=VIEWER_ACCESS)
 async def list_orders(
     context: Annotated[TenantContext, Depends(get_tenant_context)],
 ) -> list[dict[str, Any]]:
@@ -195,7 +205,7 @@ async def list_orders(
 
 # Wallet endpoints
 
-@router.post("/wallet/entries")
+@router.post("/wallet/entries", dependencies=OPERATOR_ACCESS)
 async def create_wallet_entry(
     request: CreateWalletEntryRequest,
     context: Annotated[TenantContext, Depends(get_tenant_context)],
@@ -214,7 +224,7 @@ async def create_wallet_entry(
     return jsonable_encoder(result, custom_encoder={ObjectId: str})
 
 
-@router.get("/wallet/{customer_id}/balance")
+@router.get("/wallet/{customer_id}/balance", dependencies=VIEWER_ACCESS)
 async def get_wallet_balance(
     customer_id: str,
     currency: str,
@@ -236,7 +246,7 @@ async def get_wallet_balance(
 
 # Sandbox payment endpoint
 
-@router.post("/payments/sandbox")
+@router.post("/payments/sandbox", dependencies=OPERATOR_ACCESS)
 async def create_sandbox_payment(
     request: SandboxPaymentRequest,
     context: Annotated[TenantContext, Depends(get_tenant_context)],

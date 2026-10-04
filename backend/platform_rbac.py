@@ -11,6 +11,7 @@ from fastapi import Depends, HTTPException
 
 from auth import get_current_admin
 from db import db
+from tenant_context import TenantContext, get_tenant_context
 
 PLATFORM_ADMIN_ROLE = "platform_admin"
 LEGACY_ADMIN_ROLE = "admin"
@@ -180,6 +181,53 @@ def require_tenant_role(
         return admin
 
     return tenant_role_required
+
+
+def require_tenant_role_dynamic(
+    min_role: str, *, _test_platform_db: Any | None = None
+) -> Callable:
+    """Return a dependency requiring tenant membership at ``min_role`` or above,
+    resolved dynamically from injected TenantContext.
+
+    This factory accepts min_role and returns an async dependency that receives
+    both TenantContext (via Depends) and current admin, then checks membership
+    against the resolved tenant_id from context.
+
+    Args:
+        min_role: Minimum tenant role required (tenant_viewer, tenant_operator, etc.)
+        _test_platform_db: Test-only override for membership database.
+
+    Returns:
+        FastAPI dependency callable.
+    """
+    _validate_tenant_role(min_role)
+
+    async def dynamic_role_check(
+        context: TenantContext = Depends(get_tenant_context),
+        admin: dict = Depends(get_current_admin),
+    ) -> dict:
+        # Resolve tenant_id from context (could be slug, needs canonical UUID)
+        resolved_id = await resolve_tenant_id_or_slug(context.tenant_id, registry=None)
+
+        # Check membership in platform database
+        platform_db = _test_platform_db if _test_platform_db is not None else db
+        user_id = _principal_user_id(admin)
+        membership = (
+            await get_tenant_membership(platform_db, resolved_id, user_id)
+            if user_id is not None
+            else None
+        )
+
+        if (
+            membership is None
+            or TENANT_ROLE_LEVELS.get(membership.get("role"), -1)
+            < TENANT_ROLE_LEVELS[min_role]
+        ):
+            raise HTTPException(status_code=403, detail="Tenant role access required")
+
+        return admin
+
+    return dynamic_role_check
 
 
 def require_tenant_membership(tenant_id: str, *, registry: Any | None = None) -> Callable:

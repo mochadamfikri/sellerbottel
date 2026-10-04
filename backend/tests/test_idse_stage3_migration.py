@@ -1,98 +1,118 @@
-"""Offline behavioral tests for the IDSE Stage 3 migration tool."""
-from copy import deepcopy
+"""Offline behavioral tests for the async IDSE Stage 3 migration tool."""
+import asyncio
 from decimal import Decimal
+from functools import wraps
 
 import pytest
+from mongomock_motor import AsyncMongoMockClient
 
 
-class Collection:
-    def __init__(self, documents=()):
-        self.documents = {doc["_id"]: deepcopy(doc) for doc in documents}
-        self.write_count = 0
+def async_test(function):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        return asyncio.run(function(*args, **kwargs))
 
-    def find(self, query=None):
-        query = query or {}
-        return [deepcopy(doc) for doc in self.documents.values()
-                if all(doc.get(key) == value for key, value in query.items())]
-
-    def count_documents(self, query=None):
-        return len(self.find(query))
-
-    def update_one(self, selector, update, upsert=False):
-        self.write_count += 1
-        key = selector["_id"]
-        if key not in self.documents and upsert:
-            self.documents[key] = deepcopy(update.get("$setOnInsert", {}))
-        return None
-
-
-class Database:
-    def __init__(self, collections=()):
-        self.collections = {name: Collection(docs) for name, docs in collections}
-
-    def __getitem__(self, name):
-        return self.collections.setdefault(name, Collection())
+    return wrapper
 
 
 def tool(source, target, *, dry_run=True):
     from idse_stage3_migration import IDSEStage3Migration
+
     return IDSEStage3Migration(source, target, dry_run=dry_run, environment="development")
 
 
-def test_dry_run_returns_plan_without_target_writes():
-    source = Database([("products", [{"_id": "p1", "name": "Plan", "custom_business_field": "kept"}])])
-    target = Database()
+def database(name):
+    return AsyncMongoMockClient()[name]
 
-    report = tool(source, target).run()
+
+@async_test
+async def test_async_mongo_handles_migrate_idempotently_and_reconcile():
+    """Real async Mongo handles migrate safely, rerun idempotently, and reconcile."""
+    source = database("idse_stage3_async_source")
+    target = database("idse_stage3_async_target")
+    await source["purchases"].insert_one({"_id": "p1", "invoice_id": "INV-20261004-0007", "total": "12.50"})
+    await source["deposits"].insert_one({"_id": "d1", "amount": "2", "credited_amount": "2"})
+    await source["products"].insert_one({"_id": "product-1", "name": "Plan", "secret": "never-copy"})
+
+    first = await tool(source, target, dry_run=False).run()
+    second = await tool(source, target, dry_run=False).run()
+    reconciliation = await tool(source, target).financial_reconciliation()
+
+    assert first["total_migrated"] == 3
+    assert second["total_migrated"] == 0
+    assert second["total_skipped"] == 3
+    assert await target["products"].count_documents({"_id": "product-1", "tenant_id": "idse", "secret": {"$exists": False}}) == 1
+    assert reconciliation["passed"] is True
+
+
+@async_test
+async def test_dry_run_returns_plan_without_target_writes():
+    source = database("idse_stage3_dry_source")
+    target = database("idse_stage3_dry_target")
+    await source["products"].insert_one({"_id": "p1", "name": "Plan", "custom_business_field": "kept"})
+
+    report = await tool(source, target).run()
 
     assert report["dry_run"] is True
     assert report["collections"]["products"]["planned"] == 1
-    assert target["products"].write_count == 0
-    assert target["migration_progress"].write_count == 0
+    assert await target["products"].count_documents({}) == 0
+    assert await target["migration_progress"].count_documents({}) == 0
 
 
-def test_execute_is_idempotent_and_does_not_overwrite_existing_target_document():
-    source = Database([("products", [{"_id": "p1", "name": "Source"}])])
-    target = Database([("products", [{"_id": "p1", "name": "Existing", "tenant_id": "idse"}])])
+@async_test
+async def test_execute_is_idempotent_and_does_not_overwrite_existing_target_document():
+    source = database("idse_stage3_existing_source")
+    target = database("idse_stage3_existing_target")
+    await source["products"].insert_one({"_id": "p1", "name": "Source"})
+    await target["products"].insert_one({"_id": "p1", "name": "Existing", "tenant_id": "idse"})
 
-    first = tool(source, target, dry_run=False).run()
-    second = tool(source, target, dry_run=False).run()
+    first = await tool(source, target, dry_run=False).run()
+    second = await tool(source, target, dry_run=False).run()
 
     assert first["collections"]["products"] == {"migrated": 0, "skipped": 1, "planned": 1}
     assert second["collections"]["products"]["skipped"] == 1
-    assert target["products"].documents["p1"]["name"] == "Existing"
+    assert (await target["products"].find_one({"_id": "p1"}))["name"] == "Existing"
 
 
-def test_secret_collection_is_refused_and_never_planned():
-    source = Database([("tg_accounts", [{"_id": "a1", "session_encrypted": "never-copy"}])])
-    target = Database()
+@async_test
+async def test_secret_collection_is_refused_and_never_planned():
+    source = database("idse_stage3_secret_source")
+    target = database("idse_stage3_secret_target")
+    await source["tg_accounts"].insert_one({"_id": "a1", "session_encrypted": "never-copy"})
 
-    report = tool(source, target).run()
+    report = await tool(source, target).run()
 
     assert "tg_accounts" not in report["collections"]
     assert "tg_accounts" in report["refused_collections"]
-    assert target["tg_accounts"].write_count == 0
+    assert await target["tg_accounts"].count_documents({}) == 0
 
 
-def test_migrated_business_document_is_tenant_tagged_and_secret_fields_are_stripped():
-    source = Database([("inventory_items", [{"_id": "i1", "product_id": "p1", "secret": "credential", "note": "business"}])])
-    target = Database()
+@async_test
+async def test_migrated_business_document_is_tenant_tagged_and_secret_fields_are_stripped():
+    source = database("idse_stage3_sanitize_source")
+    target = database("idse_stage3_sanitize_target")
+    await source["inventory_items"].insert_one({"_id": "i1", "product_id": "p1", "secret": "credential", "note": "business"})
 
-    tool(source, target, dry_run=False).run()
+    await tool(source, target, dry_run=False).run()
 
-    result = target["inventory_items"].documents["i1"]
+    result = await target["inventory_items"].find_one({"_id": "i1"})
     assert result["tenant_id"] == "idse"
     assert result["note"] == "business"
     assert "secret" not in result
 
 
-def test_reconciliation_mismatch_fails_explicit_verification():
+@async_test
+async def test_reconciliation_mismatch_fails_explicit_verification():
     from idse_stage3_migration import ReconciliationMismatch, verify_reconciliation
 
-    source = Database([("purchases", [{"_id": "p1", "total": "12.50"}]), ("deposits", [{"_id": "d1", "amount": "2"}])])
-    target = Database([("purchases", [{"_id": "p1", "tenant_id": "idse", "total": "11.50"}]), ("deposits", [{"_id": "d1", "tenant_id": "idse", "amount": "2"}])])
+    source = database("idse_stage3_reconcile_source")
+    target = database("idse_stage3_reconcile_target")
+    await source["purchases"].insert_one({"_id": "p1", "total": "12.50"})
+    await source["deposits"].insert_one({"_id": "d1", "amount": "2"})
+    await target["purchases"].insert_one({"_id": "p1", "tenant_id": "idse", "total": "11.50"})
+    await target["deposits"].insert_one({"_id": "d1", "tenant_id": "idse", "amount": "2"})
 
-    report = tool(source, target).financial_reconciliation()
+    report = await tool(source, target).financial_reconciliation()
 
     assert report["source"]["purchases"]["total"] == Decimal("12.50")
     assert report["target"]["purchases"]["total"] == Decimal("11.50")
@@ -101,26 +121,28 @@ def test_reconciliation_mismatch_fails_explicit_verification():
         verify_reconciliation(report)
 
 
-def test_counter_seed_uses_highest_invoice_sequence_or_source_counter_never_lower():
-    source = Database([
-        ("purchases", [{"_id": "p1", "invoice_id": "INV-20261004-0007"}, {"_id": "p2", "invoice_id": "idse-12"}]),
-        ("counters", [{"_id": "invoice:20261004", "seq": 19}]),
+@async_test
+async def test_counter_seed_uses_highest_invoice_sequence_or_source_counter_never_lower():
+    source = database("idse_stage3_counter_source")
+    target = database("idse_stage3_counter_target")
+    await source["purchases"].insert_many([
+        {"_id": "p1", "invoice_id": "INV-20261004-0007"},
+        {"_id": "p2", "invoice_id": "idse-12"},
     ])
-    target = Database()
+    await source["counters"].insert_one({"_id": "invoice:20261004", "seq": 19})
 
-    result = tool(source, target, dry_run=False).seed_invoice_counter()
+    result = await tool(source, target, dry_run=False).seed_invoice_counter()
 
     assert result["value"] == 19
-    assert target["counters"].documents["idse:invoice"] == {
+    assert await target["counters"].find_one({"_id": "idse:invoice"}) == {
         "_id": "idse:invoice", "tenant_id": "idse", "counter_name": "invoice", "value": 19
     }
 
 
 def test_rejects_production_and_port_27017():
-    from idse_stage3_migration import MigrationSafetyError
-    from idse_stage3_migration import IDSEStage3Migration
+    from idse_stage3_migration import IDSEStage3Migration, MigrationSafetyError
 
     with pytest.raises(MigrationSafetyError):
-        IDSEStage3Migration(Database(), Database(), environment="production")
+        IDSEStage3Migration(database("idse_stage3_prod_source"), database("idse_stage3_prod_target"), environment="production")
     with pytest.raises(MigrationSafetyError):
-        IDSEStage3Migration(Database(), Database(), target_uri="mongodb://localhost:27017/forbidden")
+        IDSEStage3Migration(database("idse_stage3_port_source"), database("idse_stage3_port_target"), target_uri="mongodb://localhost:27017/forbidden")
